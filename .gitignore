@@ -1,0 +1,15 @@
+# .gitignore
+# macOS
+.DS_Store
+# Xcode
+*.xcuserstate
+**/xcuserdata/**
+DerivedData/
+# SwiftPM
+.build/
+.swiftpm/
+# Other
+.idea/
+.vscode/
+.cursor/
+*.dSYM

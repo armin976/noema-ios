@@ -1,0 +1,907 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		643340A02E5A584A00DDA633 /* RevenueCat in Frameworks */ = {isa = PBXBuildFile; productRef = 6433409F2E5A584A00DDA633 /* RevenueCat */; };
+		643340A22E5A584A00DDA633 /* RevenueCatUI in Frameworks */ = {isa = PBXBuildFile; productRef = 643340A12E5A584A00DDA633 /* RevenueCatUI */; };
+		64431EBB2E5E2F5E00BD5E8C /* SwiftMath in Frameworks */ = {isa = PBXBuildFile; productRef = 64431EBA2E5E2F5E00BD5E8C /* SwiftMath */; };
+		64526FA72E5FE1870058E4D0 /* LeapModelDownloader in Frameworks */ = {isa = PBXBuildFile; productRef = 64526FA62E5FE1870058E4D0 /* LeapModelDownloader */; };
+		64526FA92E5FE1870058E4D0 /* LeapSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 64526FA82E5FE1870058E4D0 /* LeapSDK */; };
+		64733FCB2E4E925C00F7AC43 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 64DCAF812E41264C001DA82F /* MLX */; };
+		64733FCC2E4E925C00F7AC43 /* MLXFFT in Frameworks */ = {isa = PBXBuildFile; productRef = 64DCAF832E41264C001DA82F /* MLXFFT */; };
+		64733FCD2E4E925C00F7AC43 /* MLXFast in Frameworks */ = {isa = PBXBuildFile; productRef = 64DCAF852E41264C001DA82F /* MLXFast */; };
+		64733FCE2E4E925C00F7AC43 /* MLXLinalg in Frameworks */ = {isa = PBXBuildFile; productRef = 64DCAF872E41264C001DA82F /* MLXLinalg */; };
+		64733FCF2E4E925C00F7AC43 /* MLXNN in Frameworks */ = {isa = PBXBuildFile; productRef = 64DCAF892E41264C001DA82F /* MLXNN */; };
+		64733FD02E4E925C00F7AC43 /* MLXOptimizers in Frameworks */ = {isa = PBXBuildFile; productRef = 64DCAF8B2E41264C001DA82F /* MLXOptimizers */; };
+		64733FD12E4E925C00F7AC43 /* MLXRandom in Frameworks */ = {isa = PBXBuildFile; productRef = 64DCAF8D2E41264C001DA82F /* MLXRandom */; };
+		6473409D2E4E9C2F00F7AC43 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 6473409C2E4E9C2F00F7AC43 /* MLXLLM */; };
+		6473409F2E4E9C2F00F7AC43 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 6473409E2E4E9C2F00F7AC43 /* MLXLMCommon */; };
+		647340A12E4E9C2F00F7AC43 /* MLXMNIST in Frameworks */ = {isa = PBXBuildFile; productRef = 647340A02E4E9C2F00F7AC43 /* MLXMNIST */; };
+		647340A32E4E9C2F00F7AC43 /* MLXVLM in Frameworks */ = {isa = PBXBuildFile; productRef = 647340A22E4E9C2F00F7AC43 /* MLXVLM */; };
+		64ABE8DF2E494DC700821D00 /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64ABE8DE2E494DC600821D00 /* Accelerate.framework */; };
+		64ABE8E22E494DCE00821D00 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64ABE8E02E494DCE00821D00 /* Metal.framework */; };
+		64ABE8E32E494DCE00821D00 /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64ABE8E12E494DCE00821D00 /* MetalKit.framework */; };
+		64D506812E5387A40022E586 /* StoreKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64D506802E5387A40022E586 /* StoreKit.framework */; };
+		64D5069E2E53BFB30022E586 /* CryptoKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64D5069D2E53BFB30022E586 /* CryptoKit.framework */; };
+		A8259F0A2A424CF1B4856CCF /* NoemaPackages in Frameworks */ = {isa = PBXBuildFile; productRef = 21FF187598A740D3901EFE90 /* NoemaPackages */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		642CDB482E231968009017C6 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 642CDB2D2E231965009017C6 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 642CDB342E231965009017C6;
+			remoteInfo = Noema;
+		};
+		642CDB522E231968009017C6 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 642CDB2D2E231965009017C6 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 642CDB342E231965009017C6;
+			remoteInfo = Noema;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		644184182E4CE8AF00C5E265 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		642CDB352E231965009017C6 /* Noema.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Noema.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		642CDB472E231968009017C6 /* NoemaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NoemaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		642CDB512E231968009017C6 /* NoemaUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NoemaUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		643392BC2E5E228B004C2269 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
+		643392BE2E5E229E004C2269 /* CoreText.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreText.framework; path = System/Library/Frameworks/CoreText.framework; sourceTree = SDKROOT; };
+		643392C02E5E22A4004C2269 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
+		643392C22E5E22AE004C2269 /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
+		643392C42E5E22BB004C2269 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
+		644183FF2E4CE8AD00C5E265 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		644184012E4CE8AD00C5E265 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
+		64ABE8DE2E494DC600821D00 /* Accelerate.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Accelerate.framework; path = System/Library/Frameworks/Accelerate.framework; sourceTree = SDKROOT; };
+		64ABE8E02E494DCE00821D00 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
+		64ABE8E12E494DCE00821D00 /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
+		64D506802E5387A40022E586 /* StoreKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = StoreKit.framework; path = System/Library/Frameworks/StoreKit.framework; sourceTree = SDKROOT; };
+		64D5069D2E53BFB30022E586 /* CryptoKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CryptoKit.framework; path = System/Library/Frameworks/CryptoKit.framework; sourceTree = SDKROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		64AE28E52E771B0D00DEDA56 /* Exceptions for "Noema" folder in "Noema" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 642CDB342E231965009017C6 /* Noema */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		642CDB372E231965009017C6 /* Noema */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				64AE28E52E771B0D00DEDA56 /* Exceptions for "Noema" folder in "Noema" target */,
+			);
+			path = Noema;
+			sourceTree = "<group>";
+		};
+		642CDB4A2E231968009017C6 /* NoemaTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = NoemaTests;
+			sourceTree = "<group>";
+		};
+		642CDB542E231968009017C6 /* NoemaUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = NoemaUITests;
+			sourceTree = "<group>";
+		};
+		644184032E4CE8AD00C5E265 /* NoemaEmbeddingActivity */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = NoemaEmbeddingActivity;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		642CDB322E231965009017C6 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6473409D2E4E9C2F00F7AC43 /* MLXLLM in Frameworks */,
+				64526FA72E5FE1870058E4D0 /* LeapModelDownloader in Frameworks */,
+				64733FD12E4E925C00F7AC43 /* MLXRandom in Frameworks */,
+				64733FD02E4E925C00F7AC43 /* MLXOptimizers in Frameworks */,
+				64733FCF2E4E925C00F7AC43 /* MLXNN in Frameworks */,
+				643340A02E5A584A00DDA633 /* RevenueCat in Frameworks */,
+				64733FCE2E4E925C00F7AC43 /* MLXLinalg in Frameworks */,
+				64526FA92E5FE1870058E4D0 /* LeapSDK in Frameworks */,
+				64733FCD2E4E925C00F7AC43 /* MLXFast in Frameworks */,
+				647340A32E4E9C2F00F7AC43 /* MLXVLM in Frameworks */,
+				643340A22E5A584A00DDA633 /* RevenueCatUI in Frameworks */,
+				647340A12E4E9C2F00F7AC43 /* MLXMNIST in Frameworks */,
+				6473409F2E4E9C2F00F7AC43 /* MLXLMCommon in Frameworks */,
+				64733FCC2E4E925C00F7AC43 /* MLXFFT in Frameworks */,
+				64733FCB2E4E925C00F7AC43 /* MLX in Frameworks */,
+				64ABE8E22E494DCE00821D00 /* Metal.framework in Frameworks */,
+				64ABE8E32E494DCE00821D00 /* MetalKit.framework in Frameworks */,
+				64ABE8DF2E494DC700821D00 /* Accelerate.framework in Frameworks */,
+				64D5069E2E53BFB30022E586 /* CryptoKit.framework in Frameworks */,
+				64D506812E5387A40022E586 /* StoreKit.framework in Frameworks */,
+				A8259F0A2A424CF1B4856CCF /* NoemaPackages in Frameworks */,
+				64431EBB2E5E2F5E00BD5E8C /* SwiftMath in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		642CDB442E231968009017C6 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		642CDB4E2E231968009017C6 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		642CDB2C2E231965009017C6 = {
+			isa = PBXGroup;
+			children = (
+				642CDB372E231965009017C6 /* Noema */,
+				642CDB4A2E231968009017C6 /* NoemaTests */,
+				642CDB542E231968009017C6 /* NoemaUITests */,
+				644184032E4CE8AD00C5E265 /* NoemaEmbeddingActivity */,
+				64AD2F612E26FE5F00BAE465 /* Frameworks */,
+				642CDB362E231965009017C6 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		642CDB362E231965009017C6 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				642CDB352E231965009017C6 /* Noema.app */,
+				642CDB472E231968009017C6 /* NoemaTests.xctest */,
+				642CDB512E231968009017C6 /* NoemaUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		64AD2F612E26FE5F00BAE465 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				643392C42E5E22BB004C2269 /* UIKit.framework */,
+				643392C22E5E22AE004C2269 /* QuartzCore.framework */,
+				643392C02E5E22A4004C2269 /* CoreGraphics.framework */,
+				643392BE2E5E229E004C2269 /* CoreText.framework */,
+				643392BC2E5E228B004C2269 /* Foundation.framework */,
+				64D5069D2E53BFB30022E586 /* CryptoKit.framework */,
+				64D506802E5387A40022E586 /* StoreKit.framework */,
+				64ABE8E02E494DCE00821D00 /* Metal.framework */,
+				64ABE8E12E494DCE00821D00 /* MetalKit.framework */,
+				64ABE8DE2E494DC600821D00 /* Accelerate.framework */,
+				644183FF2E4CE8AD00C5E265 /* WidgetKit.framework */,
+				644184012E4CE8AD00C5E265 /* SwiftUI.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		642CDB342E231965009017C6 /* Noema */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 642CDB5B2E231968009017C6 /* Build configuration list for PBXNativeTarget "Noema" */;
+			buildPhases = (
+				642CDB312E231965009017C6 /* Sources */,
+				642CDB322E231965009017C6 /* Frameworks */,
+				642CDB332E231965009017C6 /* Resources */,
+				644184182E4CE8AF00C5E265 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				642CDB372E231965009017C6 /* Noema */,
+			);
+			name = Noema;
+			packageProductDependencies = (
+				64DCAF812E41264C001DA82F /* MLX */,
+				64DCAF832E41264C001DA82F /* MLXFFT */,
+				64DCAF852E41264C001DA82F /* MLXFast */,
+				64DCAF872E41264C001DA82F /* MLXLinalg */,
+				64DCAF892E41264C001DA82F /* MLXNN */,
+				64DCAF8B2E41264C001DA82F /* MLXOptimizers */,
+				64DCAF8D2E41264C001DA82F /* MLXRandom */,
+				21FF187598A740D3901EFE90 /* NoemaPackages */,
+				6473409C2E4E9C2F00F7AC43 /* MLXLLM */,
+				6473409E2E4E9C2F00F7AC43 /* MLXLMCommon */,
+				647340A02E4E9C2F00F7AC43 /* MLXMNIST */,
+				647340A22E4E9C2F00F7AC43 /* MLXVLM */,
+				6433409F2E5A584A00DDA633 /* RevenueCat */,
+				643340A12E5A584A00DDA633 /* RevenueCatUI */,
+				64431EBA2E5E2F5E00BD5E8C /* SwiftMath */,
+				64526FA62E5FE1870058E4D0 /* LeapModelDownloader */,
+				64526FA82E5FE1870058E4D0 /* LeapSDK */,
+			);
+			productName = Noema;
+			productReference = 642CDB352E231965009017C6 /* Noema.app */;
+			productType = "com.apple.product-type.application";
+		};
+		642CDB462E231968009017C6 /* NoemaTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 642CDB5E2E231968009017C6 /* Build configuration list for PBXNativeTarget "NoemaTests" */;
+			buildPhases = (
+				642CDB432E231968009017C6 /* Sources */,
+				642CDB442E231968009017C6 /* Frameworks */,
+				642CDB452E231968009017C6 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				642CDB492E231968009017C6 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				642CDB4A2E231968009017C6 /* NoemaTests */,
+			);
+			name = NoemaTests;
+			packageProductDependencies = (
+			);
+			productName = NoemaTests;
+			productReference = 642CDB472E231968009017C6 /* NoemaTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		642CDB502E231968009017C6 /* NoemaUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 642CDB612E231968009017C6 /* Build configuration list for PBXNativeTarget "NoemaUITests" */;
+			buildPhases = (
+				642CDB4D2E231968009017C6 /* Sources */,
+				642CDB4E2E231968009017C6 /* Frameworks */,
+				642CDB4F2E231968009017C6 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				642CDB532E231968009017C6 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				642CDB542E231968009017C6 /* NoemaUITests */,
+			);
+			name = NoemaUITests;
+			packageProductDependencies = (
+			);
+			productName = NoemaUITests;
+			productReference = 642CDB512E231968009017C6 /* NoemaUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		642CDB2D2E231965009017C6 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2600;
+				LastUpgradeCheck = 2600;
+				TargetAttributes = {
+					642CDB342E231965009017C6 = {
+						CreatedOnToolsVersion = 16.4;
+						LastSwiftMigration = 2600;
+					};
+					642CDB462E231968009017C6 = {
+						CreatedOnToolsVersion = 16.4;
+						TestTargetID = 642CDB342E231965009017C6;
+					};
+					642CDB502E231968009017C6 = {
+						CreatedOnToolsVersion = 16.4;
+						TestTargetID = 642CDB342E231965009017C6;
+					};
+				};
+			};
+			buildConfigurationList = 642CDB302E231965009017C6 /* Build configuration list for PBXProject "Noema" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 642CDB2C2E231965009017C6;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				64DCAF802E41264C001DA82F /* XCRemoteSwiftPackageReference "mlx-swift" */,
+				2FB3F4F8C56943ACAEC3C135 /* XCLocalSwiftPackageReference "." */,
+				6473409B2E4E9C2E00F7AC43 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */,
+				6433409E2E5A584A00DDA633 /* XCRemoteSwiftPackageReference "purchases-ios-spm" */,
+				64431EB92E5E2F5E00BD5E8C /* XCRemoteSwiftPackageReference "SwiftMath" */,
+				64526FA52E5FE1870058E4D0 /* XCRemoteSwiftPackageReference "leap-ios" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 642CDB362E231965009017C6 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				642CDB342E231965009017C6 /* Noema */,
+				642CDB462E231968009017C6 /* NoemaTests */,
+				642CDB502E231968009017C6 /* NoemaUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		642CDB332E231965009017C6 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		642CDB452E231968009017C6 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		642CDB4F2E231968009017C6 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		642CDB312E231965009017C6 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		642CDB432E231968009017C6 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		642CDB4D2E231968009017C6 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		642CDB492E231968009017C6 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 642CDB342E231965009017C6 /* Noema */;
+			targetProxy = 642CDB482E231968009017C6 /* PBXContainerItemProxy */;
+		};
+		642CDB532E231968009017C6 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 642CDB342E231965009017C6 /* Noema */;
+			targetProxy = 642CDB522E231968009017C6 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		642CDB592E231968009017C6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = XX3Z6V9TU9;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		642CDB5A2E231968009017C6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = XX3Z6V9TU9;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		642CDB5C2E231968009017C6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = Noema/Noema.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = XX3Z6V9TU9;
+				ENABLE_PREVIEWS = YES;
+				GCC_C_LANGUAGE_STANDARD = c23;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"GGML_USE_ACCELERATE=1",
+					"ACCELERATE_NEW_LAPACK=1",
+					"ACCELERATE_LAPACK_ILP64=1",
+					"GGML_VERSION=\"dev\"",
+					"GGML_COMMIT=\"local\"",
+				);
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "";
+				INFOPLIST_FILE = Noema/Info.plist;
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				OTHER_CFLAGS = (
+					"-O3",
+					"-DGGML_USE_ACCELERATE",
+					"-DGGML_METAL_NDEBUG",
+				);
+				OTHER_CPLUSPLUSFLAGS = (
+					"$(OTHER_CFLAGS)",
+					"-std=c++17",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = arminproducts.Noema;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "Noema/Noema-Bridging.h";
+				SWIFT_OBJC_INTEROP_MODE = objcxx;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		642CDB5D2E231968009017C6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
+				CLANG_CXX_STANDARD_LIBRARY_HARDENING = extensive;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = Noema/Noema.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = XX3Z6V9TU9;
+				ENABLE_PREVIEWS = YES;
+				GCC_C_LANGUAGE_STANDARD = c23;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"GGML_USE_ACCELERATE=1",
+					"ACCELERATE_NEW_LAPACK=1",
+					"ACCELERATE_LAPACK_ILP64=1",
+					"GGML_VERSION=\"dev\"",
+					"GGML_COMMIT=\"local\"",
+				);
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "";
+				INFOPLIST_FILE = Noema/Info.plist;
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				OTHER_CFLAGS = (
+					"-O3",
+					"-DGGML_USE_ACCELERATE",
+					"-DGGML_METAL_NDEBUG",
+				);
+				OTHER_CPLUSPLUSFLAGS = (
+					"$(OTHER_CFLAGS)",
+					"-std=c++17",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = arminproducts.Noema;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "Noema/Noema-Bridging.h";
+				SWIFT_OBJC_INTEROP_MODE = objcxx;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		642CDB5F2E231968009017C6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = arminproducts.NoemaTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Noema.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Noema";
+			};
+			name = Debug;
+		};
+		642CDB602E231968009017C6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = arminproducts.NoemaTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Noema.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Noema";
+			};
+			name = Release;
+		};
+		642CDB622E231968009017C6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = arminproducts.NoemaUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Noema;
+			};
+			name = Debug;
+		};
+		642CDB632E231968009017C6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = arminproducts.NoemaUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Noema;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		642CDB302E231965009017C6 /* Build configuration list for PBXProject "Noema" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				642CDB592E231968009017C6 /* Debug */,
+				642CDB5A2E231968009017C6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		642CDB5B2E231968009017C6 /* Build configuration list for PBXNativeTarget "Noema" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				642CDB5C2E231968009017C6 /* Debug */,
+				642CDB5D2E231968009017C6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		642CDB5E2E231968009017C6 /* Build configuration list for PBXNativeTarget "NoemaTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				642CDB5F2E231968009017C6 /* Debug */,
+				642CDB602E231968009017C6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		642CDB612E231968009017C6 /* Build configuration list for PBXNativeTarget "NoemaUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				642CDB622E231968009017C6 /* Debug */,
+				642CDB632E231968009017C6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		2FB3F4F8C56943ACAEC3C135 /* XCLocalSwiftPackageReference "." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = .;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		6433409E2E5A584A00DDA633 /* XCRemoteSwiftPackageReference "purchases-ios-spm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/RevenueCat/purchases-ios-spm.git";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+		64431EB92E5E2F5E00BD5E8C /* XCRemoteSwiftPackageReference "SwiftMath" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/mgriebling/SwiftMath.git";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+		64526FA52E5FE1870058E4D0 /* XCRemoteSwiftPackageReference "leap-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/Liquid4All/leap-ios.git";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+		6473409B2E4E9C2E00F7AC43 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ml-explore/mlx-swift-examples";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+		64DCAF802E41264C001DA82F /* XCRemoteSwiftPackageReference "mlx-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ml-explore/mlx-swift.git";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		21FF187598A740D3901EFE90 /* NoemaPackages */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 2FB3F4F8C56943ACAEC3C135 /* XCLocalSwiftPackageReference "." */;
+			productName = NoemaPackages;
+		};
+		6433409F2E5A584A00DDA633 /* RevenueCat */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6433409E2E5A584A00DDA633 /* XCRemoteSwiftPackageReference "purchases-ios-spm" */;
+			productName = RevenueCat;
+		};
+		643340A12E5A584A00DDA633 /* RevenueCatUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6433409E2E5A584A00DDA633 /* XCRemoteSwiftPackageReference "purchases-ios-spm" */;
+			productName = RevenueCatUI;
+		};
+		64431EBA2E5E2F5E00BD5E8C /* SwiftMath */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 64431EB92E5E2F5E00BD5E8C /* XCRemoteSwiftPackageReference "SwiftMath" */;
+			productName = SwiftMath;
+		};
+		64526FA62E5FE1870058E4D0 /* LeapModelDownloader */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 64526FA52E5FE1870058E4D0 /* XCRemoteSwiftPackageReference "leap-ios" */;
+			productName = LeapModelDownloader;
+		};
+		64526FA82E5FE1870058E4D0 /* LeapSDK */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 64526FA52E5FE1870058E4D0 /* XCRemoteSwiftPackageReference "leap-ios" */;
+			productName = LeapSDK;
+		};
+		6473409C2E4E9C2F00F7AC43 /* MLXLLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6473409B2E4E9C2E00F7AC43 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
+			productName = MLXLLM;
+		};
+		6473409E2E4E9C2F00F7AC43 /* MLXLMCommon */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6473409B2E4E9C2E00F7AC43 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
+			productName = MLXLMCommon;
+		};
+		647340A02E4E9C2F00F7AC43 /* MLXMNIST */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6473409B2E4E9C2E00F7AC43 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
+			productName = MLXMNIST;
+		};
+		647340A22E4E9C2F00F7AC43 /* MLXVLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6473409B2E4E9C2E00F7AC43 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
+			productName = MLXVLM;
+		};
+		64DCAF812E41264C001DA82F /* MLX */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 64DCAF802E41264C001DA82F /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLX;
+		};
+		64DCAF832E41264C001DA82F /* MLXFFT */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 64DCAF802E41264C001DA82F /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLXFFT;
+		};
+		64DCAF852E41264C001DA82F /* MLXFast */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 64DCAF802E41264C001DA82F /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLXFast;
+		};
+		64DCAF872E41264C001DA82F /* MLXLinalg */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 64DCAF802E41264C001DA82F /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLXLinalg;
+		};
+		64DCAF892E41264C001DA82F /* MLXNN */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 64DCAF802E41264C001DA82F /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLXNN;
+		};
+		64DCAF8B2E41264C001DA82F /* MLXOptimizers */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 64DCAF802E41264C001DA82F /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLXOptimizers;
+		};
+		64DCAF8D2E41264C001DA82F /* MLXRandom */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 64DCAF802E41264C001DA82F /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLXRandom;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 642CDB2D2E231965009017C6 /* Project object */;
+}
