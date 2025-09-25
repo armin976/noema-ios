@@ -41,7 +41,7 @@ final class PythonRunner: NSObject {
         ready = true
     }
 
-    func run(code: String, files: [URL] = [], timeoutMs: Int = 15000) async throws -> PythonResult {
+    func run(code: String, files: [PythonMountFile] = [], timeoutMs: Int = 15000) async throws -> PythonResult {
         guard ready, let webView else { throw RunnerError.notStarted }
         guard continuation == nil else { throw RunnerError.alreadyRunning }
         currentStdout = ""
@@ -49,12 +49,10 @@ final class PythonRunner: NSObject {
 
         let payload: [String: Any] = [
             "code": code,
-            "files": try files.map { url in
-                let data = try Data(contentsOf: url)
-                let encoded = data.base64EncodedString()
-                return [
-                    "name": url.lastPathComponent,
-                    "data": encoded
+            "files": files.map { file in
+                [
+                    "name": file.name,
+                    "data": file.data.base64EncodedString()
                 ]
             },
             "timeoutMs": timeoutMs

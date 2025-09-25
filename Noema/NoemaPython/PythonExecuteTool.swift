@@ -4,6 +4,7 @@ struct PythonExecuteParams: Codable {
     let code: String
     let file_ids: [String]?
     let timeout_ms: Int?
+    let force: Bool?
 }
 
 struct PythonExecuteResult: Codable {
@@ -19,7 +20,7 @@ private final class PythonRuntimeManager {
     private let runner = PythonRunner()
     private var isStarted = false
 
-    func run(code: String, files: [URL], timeout: Int) async throws -> PythonResult {
+    func run(code: String, files: [PythonMountFile], timeout: Int) async throws -> PythonResult {
         if !isStarted {
             try await runner.start()
             isStarted = true
@@ -38,8 +39,16 @@ private final class PythonRuntimeManager {
 }
 
 final class PythonExecuteTool: Tool {
+    static let toolVersion = "1.0.0"
+
     let name = "python.execute"
     let description = "Execute Python code in the embedded Pyodide runtime."
+    private let cache: PythonResultCache
+
+    init(cache: PythonResultCache = .shared) {
+        self.cache = cache
+    }
+
     let schema: String = {
         let dict: [String: Any] = [
             "type": "object",
@@ -56,6 +65,11 @@ final class PythonExecuteTool: Tool {
                     "minimum": 1000,
                     "maximum": 60000,
                     "default": 15000
+                ],
+                "force": [
+                    "type": "boolean",
+                    "description": "Skip result cache and re-run the code.",
+                    "default": false
                 ]
             ],
             "required": ["code"]
@@ -70,30 +84,53 @@ final class PythonExecuteTool: Tool {
             throw ToolError.executionFailed("Python execution is disabled in settings.")
         }
         let timeout = params.timeout_ms ?? 15_000
-        let files = resolveFileURLs(for: params.file_ids ?? [])
-        let result = try await MainActor.run { try await PythonRuntimeManager.shared.run(code: params.code, files: files, timeout: timeout) }
-        let payload = PythonExecuteResult(
-            stdout: result.stdout,
-            stderr: result.stderr,
-            tables: result.tables.map { $0.base64EncodedString() },
-            images: result.images.map { $0.base64EncodedString() }
-        )
+        let mountFiles = resolveFiles(for: params.file_ids ?? [])
+        let key = PyRunKey(code: params.code, files: mountFiles, runnerVersion: Self.toolVersion)
+
+        if params.force != true, let entry = cache.lookup(key), let cached = try? entry.loadResult() {
+            let payload = buildPayload(from: cached)
+            let data = try JSONEncoder().encode(payload)
+            NotificationCenter.default.post(name: .pythonExecutionDidComplete, object: payload)
+            return data
+        }
+
+        let result = try await MainActor.run {
+            try await PythonRuntimeManager.shared.run(code: params.code, files: mountFiles, timeout: timeout)
+        }
+
+        do {
+            try cache.write(key, from: result)
+        } catch {
+            Task { await logger.log("[PythonExecuteTool] Failed to persist cache: \(error.localizedDescription)") }
+        }
+
+        let payload = buildPayload(from: result)
         let data = try JSONEncoder().encode(payload)
         NotificationCenter.default.post(name: .pythonExecutionDidComplete, object: payload)
         return data
     }
 
-    private func resolveFileURLs(for ids: [String]) -> [URL] {
-        var urls: [URL] = []
+    private func buildPayload(from result: PythonResult) -> PythonExecuteResult {
+        PythonExecuteResult(
+            stdout: result.stdout,
+            stderr: result.stderr,
+            tables: result.tables.map { $0.base64EncodedString() },
+            images: result.images.map { $0.base64EncodedString() }
+        )
+    }
+
+    private func resolveFiles(for ids: [String]) -> [PythonMountFile] {
+        var files: [PythonMountFile] = []
         let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let datasetRoot = root.appendingPathComponent("Datasets", isDirectory: true)
         for id in ids {
             let url = datasetRoot.appendingPathComponent(id)
-            if FileManager.default.fileExists(atPath: url.path) {
-                urls.append(url)
+            if FileManager.default.fileExists(atPath: url.path),
+               let data = try? Data(contentsOf: url) {
+                files.append(PythonMountFile(url: url, data: data))
             }
         }
-        return urls
+        return files
     }
 }
 

@@ -33,6 +33,7 @@ var targets: [Target] = [
             "ModelScannerTests.swift",
             "NoemaTests.swift",
             "NotebookStoreTests.swift",
+            "PythonResultCacheTests.swift",
             "PreScanTests.swift",
             "PromptBuilderFamilyTests.swift",
             "SettingsPropagationTests.swift",
