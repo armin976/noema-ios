@@ -59,6 +59,13 @@ When tool calling is enabled, the model can issue JSON tool calls and receive st
 
 The entire workflow functions in airplane mode and satisfies App Store rule 2.5.2 because all executable code is user-authored and shipped inside the binary.
 
+### Result caching for Pyodide runs
+
+- **Deterministic cache keys** – Each `python.execute` call now computes a key derived from the SHA-256 hashes of the code string, mounted file contents, and the embedded runner version. Cached outputs live under `Library/Caches/python/<key>/`.
+- **Artifacts on disk** – Cache entries persist `stdout.txt`, `stderr.txt`, a JSON array of base64-encoded table payloads (`tables.json`), any rendered figures inside an `images/` folder, and `meta.json` describing bundled artifacts.
+- **Force reruns when needed** – Pass `"force": true` in the tool arguments (or tap *Force Rerun* in the notebook UI) to bypass the cache. This is handy after modifying a dataset in Files.app.
+- **Clear cache programmatically** – `PythonResultCache.shared.clear()` removes all cached runs, which is useful while testing or to reclaim disk space.
+
 ### Low-RAM, high-knowledge design
 Instead of embedding all knowledge inside huge model weights, Noema emphasises external knowledge sources. By pairing compact models with large local datasets (textbooks, PDFs, etc.), you can store far more information on-device than would be possible if the weights contained all of it. Retrieval-augmented generation ensures that the assistant cites relevant passages from your data rather than hallucinating answers.
 
