@@ -9,11 +9,13 @@ struct MainShell: View {
     @EnvironmentObject private var datasetManager: DatasetManager
     @EnvironmentObject private var tabRouter: TabRouter
     @EnvironmentObject private var downloadController: DownloadController
+    @EnvironmentObject private var inspectorController: InspectorController
+    @AppStorage("inspectorEnabled") private var inspectorEnabled = false
 
     @State private var showSplash = true
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .trailing) {
             SpacesSidebar {
                 MainView()
                     .environmentObject(experience)
@@ -22,6 +24,17 @@ struct MainShell: View {
                     .environmentObject(datasetManager)
                     .environmentObject(tabRouter)
                     .environmentObject(downloadController)
+            }
+
+            if inspectorEnabled, inspectorController.isPresented {
+                Color.black.opacity(0.001)
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture { inspectorController.dismiss() }
+
+                InspectorHost(controller: inspectorController)
+                    .environmentObject(tabRouter)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
             }
 
             if showSplash {
@@ -51,6 +64,12 @@ struct MainShell: View {
                 if isFirstLaunch {
                     experience.reopenOnboarding()
                 }
+            }
+        }
+        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: inspectorController.isPresented)
+        .onChange(of: inspectorEnabled) { enabled in
+            if !enabled {
+                inspectorController.dismiss()
             }
         }
     }

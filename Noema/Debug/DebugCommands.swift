@@ -3,11 +3,14 @@ import SwiftUI
 import UIKit
 
 struct DebugCommands: Commands {
+    @ObservedObject var inspectorController: InspectorController
+
     var body: some Commands {
         CommandMenu("Debug") {
             Button("Run Self-Check") {
                 Task { await DebugSelfCheckPresenter.shared.runSelfCheck() }
             }
+            InspectorDebugMenuItems(inspectorController: inspectorController)
         }
     }
 }

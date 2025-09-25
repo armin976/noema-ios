@@ -14,12 +14,14 @@ struct NoemaApp: App {
                 .environmentObject(appEnvironment.datasetManager)
                 .environmentObject(appEnvironment.downloadController)
                 .environmentObject(appEnvironment.tabRouter)
+                .environmentObject(appEnvironment.inspectorController)
                 .preferredColorScheme(appEnvironment.preferredColorScheme)
         }
         .commands {
             KeyboardShortcutCommands(experience: appEnvironment.experience)
+            InspectorCommands(inspectorController: appEnvironment.inspectorController)
 #if DEBUG
-            DebugCommands()
+            DebugCommands(inspectorController: appEnvironment.inspectorController)
 #endif
         }
     }
