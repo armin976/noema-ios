@@ -21,6 +21,7 @@ struct LocalDatasetDetailView: View {
     @State private var showStartOnBatteryConfirm = false
     @State private var showConfirmOnBatteryConfirm = false
     @State private var showDisabledUseReason = false
+    @State private var showReindexConfirm = false
 
     var body: some View {
         NavigationStack {
@@ -343,6 +344,14 @@ struct LocalDatasetDetailView: View {
                             )
                         }
                     }
+                    if (!needsIndexing && !isCurrentlyIndexing) || isReady {
+                        Button("Reindex Dataset") {
+                            showReindexConfirm = true
+                        }
+                        .buttonStyle(.bordered)
+                        .frame(maxWidth: .infinity)
+                        .disabled(isCurrentlyIndexing)
+                    }
                     if isCurrentlyIndexing, let s = datasetManager.processingStatus[dataset.datasetID] {
                         VStack(alignment: .center) {
                             ProgressView(value: s.progress)
@@ -375,6 +384,17 @@ struct LocalDatasetDetailView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(disabledUseDatasetReason)
+            }
+            .confirmationDialog("Reindex dataset?", isPresented: $showReindexConfirm, titleVisibility: .visible) {
+                Button("Reindex") {
+                    Task {
+                        await chatVM.unload()
+                        datasetManager.reindex(dataset: dataset)
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("We'll refresh files from their original locations and rebuild embeddings.")
             }
             .task {
                 loadFiles()

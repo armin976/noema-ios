@@ -103,8 +103,12 @@ struct DatasetsExploreView: View {
                       allowsMultipleSelection: true) { result in
             switch result {
             case .success(let urls):
-                // Filter out non-allowed just in case
-                let filtered = urls.filter { allowedExtensions().contains($0.pathExtension.lowercased()) }
+                // Filter out non-allowed just in case, but keep picked folders.
+                let filtered = urls.filter { url in
+                    let ext = url.pathExtension.lowercased()
+                    if ext.isEmpty { return isDirectory(url) }
+                    return allowedExtensions().contains(ext)
+                }
                 guard !filtered.isEmpty else { return }
                 pendingPickedURLs = filtered
                 datasetName = suggestName(from: filtered) ?? "Imported Dataset"
@@ -321,9 +325,13 @@ struct DatasetsExploreView: View {
     private func allowedUTTypes() -> [UTType] {
         var types: [UTType] = [.pdf, .plainText]
         if let epub = UTType(filenameExtension: "epub") { types.append(epub) }
+        types.append(.folder)
         return types
     }
     private func suggestName(from urls: [URL]) -> String? {
+        if let folder = urls.first(where: { isDirectory($0) }) {
+            return folder.lastPathComponent.replacingOccurrences(of: "[_-]+", with: " ", options: .regularExpression)
+        }
         // Prefer first PDF title metadata
         if let pdfURL = urls.first(where: { $0.pathExtension.lowercased() == "pdf" }) {
             if let doc = PDFDocument(url: pdfURL), let title = doc.documentAttributes?[PDFDocumentAttribute.titleAttribute] as? String, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -335,6 +343,13 @@ struct DatasetsExploreView: View {
             return u.deletingPathExtension().lastPathComponent.replacingOccurrences(of: "[_-]+", with: " ", options: .regularExpression)
         }
         return nil
+    }
+    private func isDirectory(_ url: URL) -> Bool {
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) {
+            return isDir.boolValue
+        }
+        return url.hasDirectoryPath
     }
     private func performImport() async {
         let name = datasetName.trimmingCharacters(in: .whitespacesAndNewlines)
