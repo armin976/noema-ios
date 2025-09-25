@@ -62,7 +62,12 @@ final class DatasetsExploreViewModel: ObservableObject {
     private func handleSearchInput(_ text: String) {
         searchTask?.cancel()
         let trimmed = text.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { isSearching = false; isLoadingSearch = false; return }
+        guard !trimmed.isEmpty else {
+            isSearching = false
+            isLoadingSearch = false
+            searchError = nil
+            return
+        }
         isSearching = true
         searchTask = Task { [weak self] in
             await self?.search(query: trimmed, reset: true)
@@ -77,6 +82,7 @@ final class DatasetsExploreViewModel: ObservableObject {
             searchResults.removeAll()
         }
 
+        searchError = nil
         isLoadingSearch = true
         let reg = registry
         let startPage = page

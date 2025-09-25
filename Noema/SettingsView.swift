@@ -42,8 +42,7 @@ struct SettingsView: View {
     @StateObject private var settings = SettingsModel()
     @EnvironmentObject var chatVM: ChatVM
     @EnvironmentObject var modelManager: AppModelManager
-    @Environment(\.dismiss) private var dismiss
-    @State private var showOnboarding = false
+    @EnvironmentObject var experience: AppExperienceCoordinator
     @State private var showLogs = false
     @State private var shareLogs = false
     @State private var showChatsCleared = false
@@ -75,6 +74,7 @@ struct SettingsView: View {
                     }
                     .listRowBackground(Color.yellow.opacity(0.1))
                 }
+                quickActionsSection
                 modeSection
                 ramSection
                 Section {
@@ -123,9 +123,6 @@ struct SettingsView: View {
                     settings.defaultModelPath = ""
                 }
             }
-            .fullScreenCover(isPresented: $showOnboarding) {
-                OnboardingView(showOnboarding: $showOnboarding)
-            }
             .onReceive(modelManager.$downloadedModels) { models in
                 if !models.contains(where: { $0.url.path == settings.defaultModelPath }) {
                     settings.defaultModelPath = ""
@@ -166,6 +163,23 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showUpgradeSheet) {
                 UpgradeView()
+            }
+        }
+    }
+
+    private var quickActionsSection: some View {
+        Section("Quick Actions") {
+            Button {
+                experience.presentShortcutHelp()
+            } label: {
+                Label("Keyboard Shortcuts", systemImage: "command")
+            }
+
+            Button {
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                experience.reopenOnboarding()
+            } label: {
+                Label("Replay Onboarding", systemImage: "sparkles")
             }
         }
     }
@@ -275,12 +289,6 @@ struct SettingsView: View {
                     settings.defaultModelPath = ""
                 }
             }
-
-            Button("Reopen Onboarding") {
-                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                showOnboarding = true
-            }
-
         }
     }
 
@@ -381,6 +389,93 @@ struct SettingsView: View {
         settings.isAdvancedMode
             ? "Advanced mode shows developer options and diagnostics."
             : "Simple mode hides advanced settings for a cleaner interface."
+    }
+}
+
+private struct ShortcutSection: Identifiable {
+    let id = UUID()
+    let title: String
+    let shortcuts: [ShortcutInfo]
+}
+
+private struct ShortcutInfo: Identifiable {
+    let id = UUID()
+    let title: String
+    let detail: String
+    let key: String
+}
+
+struct KeyboardShortcutCheatSheetView: View {
+    let onDismiss: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    private let sections: [ShortcutSection] = [
+        ShortcutSection(
+            title: "Chat",
+            shortcuts: [
+                ShortcutInfo(title: "New chat", detail: "Start a fresh conversation.", key: "⌘N"),
+                ShortcutInfo(title: "Send message", detail: "Send the text currently in the composer.", key: "⌘↩︎"),
+                ShortcutInfo(title: "Stop response", detail: "Cancel the active generation.", key: "⌘."),
+                ShortcutInfo(title: "Focus composer", detail: "Move focus to the message input field.", key: "⌘K")
+            ]
+        ),
+        ShortcutSection(
+            title: "Navigation",
+            shortcuts: [
+                ShortcutInfo(title: "Keyboard cheat sheet", detail: "Show this list of shortcuts.", key: "⌘?")
+            ]
+        )
+    ]
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(sections) { section in
+                    Section(section.title) {
+                        ForEach(section.shortcuts) { ShortcutRow(shortcut: $0) }
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("Keyboard Shortcuts")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") {
+                        dismiss()
+                        onDismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct ShortcutRow: View {
+    let shortcut: ShortcutInfo
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(shortcut.title)
+                    .font(.body.weight(.semibold))
+                Text(shortcut.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(shortcut.key)
+                .font(.system(.body, design: .monospaced))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color(.secondarySystemBackground))
+                )
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(shortcut.title), \(shortcut.key)")
+        .accessibilityHint(shortcut.detail)
     }
 }
 
