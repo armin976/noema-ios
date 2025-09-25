@@ -9,6 +9,7 @@ public enum AppErrorCode: String, Codable, Sendable {
     case exportFailed
     case pathDenied
     case crewBudget
+    case autoFlow
     case unknown
 }
 
@@ -43,6 +44,8 @@ public enum ErrorPresenter {
             return "Export failed."
         case .crewBudget:
             return "Crew hit budget limit."
+        case .autoFlow:
+            return "AutoFlow error."
         default:
             return error.message
         }
