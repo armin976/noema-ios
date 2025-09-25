@@ -72,6 +72,54 @@ All processing happens on your device. The app never sends your chats, files or 
 
 ---
 
+## Crew Mode
+
+Crew Mode introduces a local, policy-driven multi-agent system that plans and re-plans on-device without network access. A shared `Blackboard` holds typed facts, generated artifacts, and an event bus that powers reactive task scheduling. As the state changes, policies evaluate the new context and emit follow-on work, creating a dynamic task graph that adapts in real time.
+
+### Overview
+
+1. **Blackboard store + event bus** – Actors read/write typed facts and artifacts while observers receive a live stream of `BlackboardEvent` updates.
+2. **Policy engine** – Built-in policies (Boot, EDA, Plot, Critique, Synthesis) react to new state and propose `ProposedTask` nodes with explicit owners, priorities, and intents.
+3. **Crew engine** – Runs an event loop that checks budgets, schedules tasks, and persists a structured log to `/CrewRuns/<runID>/` using `CrewStore`.
+4. **Agent + task runtimes** – A compact ReAct-style loop calls the local LLM and bundled tools (`python.execute`, `retriever.search`, `notebook.write`) to create plans, infer schemas, execute code, critique outputs, and synthesize deliverables.
+5. **Crew UI** – SwiftUI Composer and Run views let you author contracts, select datasets, monitor role lanes, and trigger manual stop/force-synthesis actions.
+6. **Tool integration** – The `crew.run` tool wires Crew Mode into the existing tool registry so chats and notebooks can launch autonomous runs.
+
+### Contract example
+
+```json
+{
+  "goal": "Explore sample.csv and draft a short forecast report",
+  "allowedTools": ["python.execute", "retriever.search", "notebook.write"],
+  "requiredDeliverables": [
+    {"name": "plan.md", "type": "markdown"},
+    {"name": "report.md", "type": "markdown"}
+  ],
+  "budgets": {"wallClockSec": 300, "maxToolCalls": 16, "maxTokensTotal": 40000},
+  "qualityGates": [
+    {"name": "At least one image", "rule": {"minImages": 1}}
+  ]
+}
+```
+
+### Policies
+
+| Policy | Trigger | Proposed tasks |
+| --- | --- | --- |
+| BootPolicy | Goal fact seeded | `plan` task owned by Planner |
+| EDAPolicy | Dataset facts present without schema | `schemaInfer` task for Analyst |
+| PlotPolicy | Numeric schema without existing plots | `pythonRun` task for Coder |
+| CritiquePolicy | New artifacts or issues | `critique` and corrective `pythonRun` tasks |
+| SynthesisPolicy | All quality gates pass | `synthesis` task that publishes `done` |
+
+### End-to-end demo
+
+1. Open the Crew Composer, describe the goal, and select local datasets.
+2. Inspect the automatically generated contract, tweak budgets if needed, and tap **Run Crew**.
+3. Watch Crew Run view lanes fill with planner, analyst, coder, critic, and editor activity. Budget counters update live.
+4. As tasks complete, artifacts appear in the Notebook and artifacts directory. Event logs stream to `events.jsonl`.
+5. When quality gates pass, the synthesis task emits `report.md` and a `done` fact, closing the run.
+
 ## Getting Started
 
 ### Requirements

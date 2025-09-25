@@ -1,4 +1,5 @@
 // RollingThought.swift
+#if canImport(SwiftUI)
 import SwiftUI
 
 // MARK: - Token Stream Protocol
@@ -490,3 +491,4 @@ public struct RollingThoughtBox: View {
         )
     }
 }
+#endif
