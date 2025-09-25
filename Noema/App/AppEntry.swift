@@ -20,6 +20,7 @@ struct NoemaApp: App {
             KeyboardShortcutCommands(experience: appEnvironment.experience)
 #if DEBUG
             DebugCommands()
+            DebugChatCommand()
 #endif
         }
     }
