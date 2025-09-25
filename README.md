@@ -59,6 +59,12 @@ When tool calling is enabled, the model can issue JSON tool calls and receive st
 
 The entire workflow functions in airplane mode and satisfies App Store rule 2.5.2 because all executable code is user-authored and shipped inside the binary.
 
+### Repro Export
+- **One-tap export** – Bundle the current notebook by tapping *Export Notebook* in the notebook toolbar or *Export Last Run* from the Figures inspector. The exporter writes `noema-repro-<timestamp>.zip` into your Documents folder so you can immediately share it.
+- **Portable manifest** – Every bundle includes `MANIFEST.json` with SHA-256 hashes for notebook artifacts, referenced cache directories, python runner version, app version, and mounted datasets. Datasets are not copied; only their paths and hashes are recorded so collaborators can mount the same inputs.
+- **Artifacts preserved** – Cached stdout/stderr, tables, and generated figures are copied into `/artifacts/<cacheKey>/` inside the zip. If crew logs were produced they are included automatically.
+- **Replay guidance** – Unzip the bundle, open `notebook/notebook.md` alongside `MANIFEST.json`, remount the datasets listed in the manifest, and rerun cells if caches are missing.
+
 ### Result caching for Pyodide runs
 
 - **Deterministic cache keys** – Each `python.execute` call now computes a key derived from the SHA-256 hashes of the code string, mounted file contents, and the embedded runner version. Cached outputs live under `Library/Caches/python/<key>/`.
