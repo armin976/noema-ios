@@ -59,11 +59,18 @@ When tool calling is enabled, the model can issue JSON tool calls and receive st
 
 The entire workflow functions in airplane mode and satisfies App Store rule 2.5.2 because all executable code is user-authored and shipped inside the binary.
 
+### Live Console
+
+- Tap the **Console** button in any Python notebook cell to reveal a per-cell log pane. Stdout, stderr, and status updates stream line-by-line while Pyodide executes your code.
+- The console autoscrolls while open and retains the last 300 lines per cell so you can revisit logs even after closing the notebook or rerunning a cell.
+- Cached executions skip the interpreter and surface a concise status trace (for example, `starting → caching → finished`) so it is clear the output came from disk.
+
 ### Repro Export
 - **One-tap export** – Bundle the current notebook by tapping *Export Notebook* in the notebook toolbar or *Export Last Run* from the Figures inspector. The exporter writes `noema-repro-<timestamp>.zip` into your Documents folder so you can immediately share it.
 - **Portable manifest** – Every bundle includes `MANIFEST.json` with SHA-256 hashes for notebook artifacts, referenced cache directories, python runner version, app version, and mounted datasets. Datasets are not copied; only their paths and hashes are recorded so collaborators can mount the same inputs.
 - **Artifacts preserved** – Cached stdout/stderr, tables, and generated figures are copied into `/artifacts/<cacheKey>/` inside the zip. If crew logs were produced they are included automatically.
 - **Replay guidance** – Unzip the bundle, open `notebook/notebook.md` alongside `MANIFEST.json`, remount the datasets listed in the manifest, and rerun cells if caches are missing.
+
 
 ### Result caching for Pyodide runs
 

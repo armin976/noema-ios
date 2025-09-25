@@ -9,6 +9,24 @@ struct PythonResult: Codable {
     var artifacts: [String: Data]
 }
 
+public enum PythonLogKind: String, Codable {
+    case stdout
+    case stderr
+    case status
+}
+
+public struct PythonLogEvent: Sendable {
+    public let kind: PythonLogKind
+    public let line: String
+    public let ts: Date
+
+    public init(kind: PythonLogKind, line: String, ts: Date) {
+        self.kind = kind
+        self.line = line
+        self.ts = ts
+    }
+}
+
 @MainActor
 final class PythonRunner: NSObject {
     enum RunnerError: Error {
@@ -26,6 +44,10 @@ final class PythonRunner: NSObject {
     private var currentStdout = ""
     private var currentStderr = ""
     private var navigationHandler: NavigationHandler?
+    private var continuations: [UUID: AsyncStream<PythonLogEvent>.Continuation] = [:]
+    private var runTasks: [UUID: Task<PythonResult, Error>] = [:]
+    private var activeStreamRunID: UUID?
+    private let contLock = NSLock()
 
     func start() async throws {
         guard webView == nil else { return }
@@ -73,6 +95,56 @@ final class PythonRunner: NSObject {
         }
     }
 
+    func runWithStreaming(code: String, files: [PythonMountFile] = [], timeoutMs: Int = 15000) -> (runID: UUID, stream: AsyncStream<PythonLogEvent>) {
+        let id = UUID()
+        let stream = AsyncStream<PythonLogEvent> { continuation in
+            registerStream(runID: id, continuation: continuation)
+        }
+
+        activeStreamRunID = id
+
+        let task = Task<PythonResult, Error> { @MainActor [weak self] in
+            guard let self else { throw RunnerError.runtimeUnavailable }
+            do {
+                let result = try await run(code: code, files: files, timeoutMs: timeoutMs)
+                return result
+            } catch {
+                finishStreams(for: id)
+                if activeStreamRunID == id {
+                    activeStreamRunID = nil
+                }
+                throw error
+            }
+        }
+
+        contLock.lock()
+        runTasks[id] = task
+        contLock.unlock()
+
+        return (id, stream)
+    }
+
+    func awaitResult(for runID: UUID) async throws -> PythonResult {
+        contLock.lock()
+        guard let task = runTasks[runID] else {
+            contLock.unlock()
+            throw RunnerError.notStarted
+        }
+        contLock.unlock()
+        do {
+            let value = try await task.value
+            contLock.lock()
+            runTasks.removeValue(forKey: runID)
+            contLock.unlock()
+            return value
+        } catch {
+            contLock.lock()
+            runTasks.removeValue(forKey: runID)
+            contLock.unlock()
+            throw error
+        }
+    }
+
     func interrupt() {
         guard let webView else { return }
         webView.evaluateJavaScript("interruptPython()", completionHandler: nil)
@@ -84,6 +156,7 @@ final class PythonRunner: NSObject {
         ready = false
         continuation = nil
         navigationHandler = nil
+        finishStreams()
     }
 
     private func finish(with result: Result<PythonResult, Error>) {
@@ -113,19 +186,79 @@ final class PythonRunner: NSObject {
             webView.loadFileURL(url, allowingReadAccessTo: base)
         }
     }
-}
 
-extension PythonRunner: WKScriptMessageHandler {
-    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.name == "pyOut" else { return }
-        guard let dict = message.body as? [String: Any], let type = dict["type"] as? String else { return }
+    private func registerStream(runID: UUID, continuation: AsyncStream<PythonLogEvent>.Continuation) {
+        contLock.lock()
+        continuations[runID] = continuation
+        contLock.unlock()
+    }
+
+    private func broadcast(kind: PythonLogKind, line: String, ts: Date) {
+        contLock.lock()
+        let continuations = self.continuations
+        contLock.unlock()
+        guard !continuations.isEmpty else { return }
+        let event = PythonLogEvent(kind: kind, line: line, ts: ts)
+        for (_, continuation) in continuations {
+            continuation.yield(event)
+        }
+    }
+
+    func registerStreamForTesting(runID: UUID, continuation: AsyncStream<PythonLogEvent>.Continuation) {
+        registerStream(runID: runID, continuation: continuation)
+    }
+
+    private func finishStreams(for runID: UUID? = nil) {
+        contLock.lock()
+        if let runID, let continuation = continuations.removeValue(forKey: runID) {
+            contLock.unlock()
+            continuation.finish()
+            if activeStreamRunID == runID {
+                activeStreamRunID = nil
+            }
+            return
+        }
+        let values = Array(continuations.values)
+        continuations.removeAll()
+        contLock.unlock()
+        for continuation in values {
+            continuation.finish()
+        }
+        if runID == nil {
+            activeStreamRunID = nil
+        }
+    }
+
+    func processScriptMessage(_ dict: [String: Any]) {
+        guard let type = dict["type"] as? String else { return }
+        let timestamp: Date
+        if let tsMs = dict["ts"] as? Double {
+            timestamp = Date(timeIntervalSince1970: tsMs / 1000.0)
+        } else {
+            timestamp = Date()
+        }
         switch type {
         case "stdout":
-            if let data = dict["data"] as? String { currentStdout += data }
+            if let data = dict["data"] as? String {
+                currentStdout += data + "\n"
+                broadcast(kind: .stdout, line: data, ts: timestamp)
+            }
         case "stderr":
-            if let data = dict["data"] as? String { currentStderr += data }
+            if let data = dict["data"] as? String {
+                currentStderr += data + "\n"
+                broadcast(kind: .stderr, line: data, ts: timestamp)
+            }
+        case "status":
+            if let status = dict["data"] as? String {
+                broadcast(kind: .status, line: status, ts: timestamp)
+                if status == "finished" || status == "error" {
+                    finishStreams()
+                    activeStreamRunID = nil
+                }
+            }
         case "error":
             let err = (dict["data"] as? String).map { RunnerError.javascriptError($0) } ?? RunnerError.javascriptError("Unknown error")
+            finishStreams()
             finish(with: .failure(err))
         case "result":
             guard let data = dict["data"] as? [String: Any] else { return }
@@ -148,6 +281,14 @@ extension PythonRunner: WKScriptMessageHandler {
         default:
             break
         }
+    }
+}
+
+extension PythonRunner: WKScriptMessageHandler {
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "pyOut" else { return }
+        guard let dict = message.body as? [String: Any] else { return }
+        processScriptMessage(dict)
     }
 }
 

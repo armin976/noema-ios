@@ -9,10 +9,14 @@ struct NotebookView: View {
     @State private var showingImporter = false
     @State private var exportedMarkdown: String = ""
     @State private var exportedMetadata: Data = Data()
+    @State private var consoleLines: [UUID: [ConsoleLine]] = [:]
+    @State private var consoleTasks: [UUID: Task<Void, Never>] = [:]
+    @State private var consoleOpen: Set<UUID> = []
     @State private var showingInspectorSheet = false
     @State private var navigatingToInspector = false
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     private let pythonExecutor = PythonExecuteTool()
+main
 
     var body: some View {
         VStack(alignment: .leading) {
@@ -134,21 +138,33 @@ struct NotebookView: View {
                 ))
                 .font(.system(.body, design: .monospaced))
                 .frame(minHeight: 120)
-                Button {
-                    if let code = cell.text {
-                        onRunCode?(code)
+                HStack(spacing: 12) {
+                    Button {
+                        runCell(cell)
+                    } label: {
+                        Label("Run", systemImage: "play.circle")
                     }
-                } label: {
-                    Label("Run", systemImage: "play.circle")
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!store.isPythonEnabled)
+
+                    Button {
+                        toggleConsole(for: cell)
+                    } label: {
+                        Label("Console", systemImage: "terminal")
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(!store.isPythonEnabled)
                 if !store.isPythonEnabled {
                     Text("Enable offline Python in Settings to run code.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                if consoleOpen.contains(cell.id) {
+                    ConsoleView(lines: consoleLines[cell.id] ?? [])
+                        .frame(minHeight: 120)
+                }
             }
+            .onAppear { ensureConsoleState(for: cell) }
         case .output:
             OutputCellView(cell: cell)
         }
@@ -266,6 +282,91 @@ private struct TableView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
             Text("No data")
+        }
+    }
+}
+
+extension NotebookView {
+    private func toggleConsole(for cell: Cell) {
+        ensureConsoleState(for: cell)
+        if consoleOpen.contains(cell.id) {
+            consoleOpen.remove(cell.id)
+        } else {
+            consoleOpen.insert(cell.id)
+        }
+    }
+
+    private func ensureConsoleState(for cell: Cell) {
+        if consoleLines[cell.id] == nil {
+            let persisted = cell.metadata?.lastConsole.map { ConsoleLine(persisted: $0) } ?? []
+            consoleLines[cell.id] = persisted
+        }
+    }
+
+    private func appendConsoleLine(_ text: String, kind: PythonLogKind, timestamp: Date, cellID: UUID) {
+        var lines = consoleLines[cellID] ?? []
+        if kind == .status, let last = lines.last, last.kind == .status, last.text == text {
+            return
+        }
+        lines.append(ConsoleLine(kind: kind, text: text, timestamp: timestamp))
+        if lines.count > 600 {
+            lines.removeFirst(lines.count - 600)
+        }
+        consoleLines[cellID] = lines
+    }
+
+    private func persistConsoleHistory(for cell: Cell, maxHistory: Int) {
+        guard let current = store.notebook.cells.first(where: { $0.id == cell.id }) else { return }
+        let lines = consoleLines[cell.id] ?? []
+        let trimmed = lines.count > maxHistory ? Array(lines.suffix(maxHistory)) : lines
+        consoleLines[cell.id] = trimmed
+        store.updateConsoleHistory(for: current, history: trimmed.map { $0.toPersisted() }, maxHistory: maxHistory)
+    }
+
+    private func runCell(_ cell: Cell) {
+        guard store.isPythonEnabled else { return }
+        guard let code = cell.text?.trimmingCharacters(in: .whitespacesAndNewlines), !code.isEmpty else { return }
+        let defaults = UserDefaults.standard
+        let autoOpen = defaults.object(forKey: "console.autoOpenOnRun") as? Bool ?? true
+        let maxHistory = defaults.object(forKey: "console.maxHistoryLines") as? Int ?? 300
+        if autoOpen {
+            consoleOpen.insert(cell.id)
+        }
+        consoleTasks[cell.id]?.cancel()
+        consoleLines[cell.id] = []
+        consoleTasks[cell.id] = Task { @MainActor in
+            defer {
+                persistConsoleHistory(for: cell, maxHistory: maxHistory)
+                consoleTasks[cell.id] = nil
+            }
+
+            appendConsoleLine("starting", kind: .status, timestamp: Date(), cellID: cell.id)
+            let mountFiles: [PythonMountFile] = []
+            let key = PyRunKey(code: code, files: mountFiles, runnerVersion: PythonExecuteTool.toolVersion)
+
+            do {
+                if let entry = PythonResultCache.shared.lookup(key) {
+                    appendConsoleLine("caching", kind: .status, timestamp: Date(), cellID: cell.id)
+                    appendConsoleLine("finished", kind: .status, timestamp: Date(), cellID: cell.id)
+                    let result = try entry.loadResult()
+                    NotificationCenter.default.post(name: .pythonExecutionDidComplete, object: result.toExecuteResult())
+                    return
+                }
+
+                let (runID, stream) = try await PythonRuntimeManager.shared.runWithStreaming(code: code, files: mountFiles, timeout: 15_000)
+                do {
+                    for await event in stream {
+                        guard !Task.isCancelled else { break }
+                        appendConsoleLine(event.line, kind: event.kind, timestamp: event.ts, cellID: cell.id)
+                    }
+                }
+                let result = try await PythonRuntimeManager.shared.awaitResult(for: runID)
+                try PythonResultCache.shared.write(key, from: result)
+                NotificationCenter.default.post(name: .pythonExecutionDidComplete, object: result.toExecuteResult())
+            } catch {
+                if Task.isCancelled { return }
+                appendConsoleLine(error.localizedDescription, kind: .stderr, timestamp: Date(), cellID: cell.id)
+            }
         }
     }
 }

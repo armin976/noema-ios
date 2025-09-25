@@ -16,7 +16,7 @@ struct PythonExecuteResult: Codable {
 }
 
 @MainActor
-private final class PythonRuntimeManager {
+final class PythonRuntimeManager {
     static let shared = PythonRuntimeManager()
     private let runner = PythonRunner()
     private var isStarted = false
@@ -27,6 +27,18 @@ private final class PythonRuntimeManager {
             isStarted = true
         }
         return try await runner.run(code: code, files: files, timeoutMs: timeout)
+    }
+
+    func runWithStreaming(code: String, files: [PythonMountFile], timeout: Int) async throws -> (UUID, AsyncStream<PythonLogEvent>) {
+        if !isStarted {
+            try await runner.start()
+            isStarted = true
+        }
+        return runner.runWithStreaming(code: code, files: files, timeoutMs: timeout)
+    }
+
+    func awaitResult(for runID: UUID) async throws -> PythonResult {
+        return try await runner.awaitResult(for: runID)
     }
 
     func interrupt() {
@@ -112,12 +124,7 @@ final class PythonExecuteTool: Tool {
     }
 
     private func buildPayload(from result: PythonResult) -> PythonExecuteResult {
-        PythonExecuteResult(
-            stdout: result.stdout,
-            stderr: result.stderr,
-            tables: result.tables.map { $0.base64EncodedString() },
-            images: result.images.map { $0.base64EncodedString() }
-        )
+        result.toExecuteResult()
     }
 
     private func resolveFiles(for ids: [String]) -> [PythonMountFile] {
@@ -135,6 +142,16 @@ final class PythonExecuteTool: Tool {
     }
 }
 
+
+extension PythonResult {
+    func toExecuteResult() -> PythonExecuteResult {
+        PythonExecuteResult(
+            stdout: stdout,
+            stderr: stderr,
+            tables: tables.map { $0.base64EncodedString() },
+            images: images.map { $0.base64EncodedString() }
+        )
+
 extension PythonExecuteTool: InspectorPythonExecutionHandling {
     func runPython(code: String, fileIDs: [String], timeoutMs: Int, force: Bool) async throws -> InspectorPythonExecutionResult {
         var payload: [String: Any] = [
@@ -149,6 +166,7 @@ extension PythonExecuteTool: InspectorPythonExecutionHandling {
         let resultData = try await call(args: data)
         let result = try JSONDecoder().decode(PythonExecuteResult.self, from: resultData)
         return InspectorPythonExecutionResult(stdout: result.stdout)
+main
     }
 }
 
