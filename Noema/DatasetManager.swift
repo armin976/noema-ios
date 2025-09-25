@@ -21,6 +21,7 @@ final class DatasetManager: ObservableObject {
     // Throttle and coalesce frequent status updates to avoid UI flicker
     private var lastStatusByID: [String: DatasetProcessingStatus] = [:]
     private var lastStatusUpdateAt: [String: Date] = [:]
+    private let bookmarkStore = DatasetBookmarkStore()
 
     /// Updates the processing status for a dataset with coalescing to minimize UI re-renders.
     /// - Uses a minimum interval between updates and only publishes when values meaningfully change.
@@ -176,12 +177,91 @@ final class DatasetManager: ObservableObject {
         try FileManager.default.removeItem(at: ds.url)
         // Purge embeddings cache and vectors file for this dataset
         Task { await DatasetRetriever.shared.purge(datasetID: ds.datasetID) }
+        bookmarkStore.remove(datasetID: ds.datasetID)
         if selectedDatasetID == ds.datasetID { selectedDatasetID = "" }
         var set = Set(embeddedDatasetIDsRaw.split(separator: ",").map(String.init))
         set.remove(ds.datasetID)
         embeddedDatasetIDsRaw = set.joined(separator: ",")
         processingStatus[ds.datasetID] = nil
         reloadFromDisk()
+    }
+
+    /// Rebuilds dataset embeddings, refreshing original security-scoped inputs when available.
+    func reindex(dataset: LocalDataset) {
+        Task { await logger.log("[DatasetManager] Reindex requested for: \(dataset.datasetID)") }
+        if indexingTasks[dataset.datasetID] != nil { return }
+
+        indexingDatasetID = dataset.datasetID
+        persistedIndexingDatasetID = dataset.datasetID
+        updateProcessingStatus(
+            DatasetProcessingStatus(
+                stage: .extracting,
+                progress: 0.0,
+                message: "Preparing for reindex…",
+                etaSeconds: nil
+            ),
+            for: dataset.datasetID
+        )
+
+        var embedded = Set(embeddedDatasetIDsRaw.split(separator: ",").map(String.init))
+        embedded.remove(dataset.datasetID)
+        embeddedDatasetIDsRaw = embedded.joined(separator: ",")
+
+        let task = Task(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            await logger.log("[DatasetManager] Starting reindex pipeline for \(dataset.datasetID)")
+            let resources = await MainActor.run { self.bookmarkStore.accessResources(for: dataset.datasetID) }
+            defer { resources.forEach { $0.stop() } }
+
+            if !resources.isEmpty {
+                do {
+                    try DatasetManager.clearDatasetSources(at: dataset.url)
+                    let fm = FileManager.default
+                    for resource in resources {
+                        try DatasetManager.copy(resource: resource, into: dataset.url, using: fm)
+                    }
+                } catch {
+                    await logger.log("[DatasetManager] ❌ Failed to refresh dataset sources: \(error.localizedDescription)")
+                    await MainActor.run {
+                        self.processingStatus[dataset.datasetID] = DatasetProcessingStatus(
+                            stage: .failed,
+                            progress: 0.0,
+                            message: "Reindex failed: unable to access original files.",
+                            etaSeconds: nil
+                        )
+                        self.indexingDatasetID = nil
+                        self.persistedIndexingDatasetID = ""
+                        self.indexingTasks[dataset.datasetID] = nil
+                    }
+                    return
+                }
+            }
+
+            let fm = FileManager.default
+            for name in ["vectors.json", "extracted.txt", "extracted.compact.txt"] {
+                try? fm.removeItem(at: dataset.url.appendingPathComponent(name))
+            }
+            Task { await DatasetRetriever.shared.purge(datasetID: dataset.datasetID) }
+
+            await DatasetRetriever.shared.prepare(dataset: dataset, pauseBeforeEmbedding: false) { status in
+                await MainActor.run {
+                    self.updateProcessingStatus(status, for: dataset.datasetID)
+                }
+            }
+
+            await MainActor.run {
+                self.indexingTasks[dataset.datasetID] = nil
+                self.indexingDatasetID = nil
+                self.persistedIndexingDatasetID = ""
+                self.reloadFromDisk()
+            }
+        }
+
+        indexingTasks[dataset.datasetID] = task
+    }
+
+    func hasBookmarks(for datasetID: String) -> Bool {
+        bookmarkStore.hasBookmarks(for: datasetID)
     }
 
     func cancelProcessingForID(_ id: String) {
@@ -434,9 +514,16 @@ final class DatasetManager: ObservableObject {
     /// - Returns: The created `LocalDataset` if successful, otherwise nil.
     @discardableResult
     func importDocuments(from urls: [URL], suggestedName: String?) async -> LocalDataset? {
-        // Filter allowed extensions
+        // Filter allowed extensions, but keep any picked directories so we can import folders.
         let allowedExts: Set<String> = ["pdf", "epub", "txt"]
-        let picked = urls.filter { allowedExts.contains($0.pathExtension.lowercased()) }
+        let fm = FileManager.default
+        let picked = urls.filter { url in
+            var isDir: ObjCBool = false
+            if fm.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+                return true
+            }
+            return allowedExts.contains(url.pathExtension.lowercased())
+        }
         guard !picked.isEmpty else { return nil }
 
         // Pick a dataset name
@@ -460,20 +547,20 @@ final class DatasetManager: ObservableObject {
             return nil
         }
 
-        // Copy picked files
+        var bookmarkEntries: [DatasetBookmarkStore.Entry] = []
         for url in picked {
-            _ = url.startAccessingSecurityScopedResource()
-            defer { url.stopAccessingSecurityScopedResource() }
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            if let entry = bookmarkStore.makeEntry(for: url) {
+                bookmarkEntries.append(entry)
+            }
             do {
-                let dest = destDir.appendingPathComponent(url.lastPathComponent)
-                if FileManager.default.fileExists(atPath: dest.path) {
-                    try FileManager.default.removeItem(at: dest)
-                }
-                try FileManager.default.copyItem(at: url, to: dest)
+                try DatasetManager.copy(source: url, into: destDir, using: fm)
             } catch {
-                // Best-effort: continue copying other files
+                // Best-effort: continue copying other files/directories
             }
         }
+        bookmarkStore.store(entries: bookmarkEntries, for: datasetID)
 
         // Persist human-readable title for display
         let titleURL = destDir.appendingPathComponent("title.txt")
@@ -523,6 +610,154 @@ final class DatasetManager: ObservableObject {
             .split(separator: " ")
             .map { $0.prefix(1).uppercased() + $0.dropFirst() }
             .joined(separator: " ")
+    }
+
+    @nonisolated(unsafe) private static func copy(source: URL, into destination: URL, using fm: FileManager) throws {
+        var isDir: ObjCBool = false
+        _ = fm.fileExists(atPath: source.path, isDirectory: &isDir)
+        let dest = destination.appendingPathComponent(source.lastPathComponent, isDirectory: isDir.boolValue)
+        if fm.fileExists(atPath: dest.path) {
+            try fm.removeItem(at: dest)
+        }
+        try fm.copyItem(at: source, to: dest)
+    }
+
+    @nonisolated(unsafe) private static func copy(resource: DatasetBookmarkStore.SecurityScopedResource, into destination: URL, using fm: FileManager) throws {
+        try copy(source: resource.url, into: destination, using: fm)
+    }
+
+    @nonisolated(unsafe) private static func clearDatasetSources(at directory: URL) throws {
+        let fm = FileManager.default
+        let contents = try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+        for item in contents {
+            if item.lastPathComponent == "title.txt" { continue }
+            try fm.removeItem(at: item)
+        }
+    }
+}
+
+// MARK: - Persistent security-scoped bookmarks
+
+@MainActor
+private final class DatasetBookmarkStore {
+    struct Entry: Codable {
+        var bookmarkData: Data
+        var lastPathComponent: String
+        var isDirectory: Bool
+
+        init?(url: URL) {
+            do {
+                let data = try url.bookmarkData(
+                    options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess],
+                    includingResourceValuesForKeys: nil,
+                    relativeTo: nil
+                )
+                let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
+                self.bookmarkData = data
+                self.lastPathComponent = url.lastPathComponent
+                self.isDirectory = values?.isDirectory ?? url.hasDirectoryPath
+            } catch {
+                return nil
+            }
+        }
+    }
+
+    struct SecurityScopedResource {
+        let url: URL
+        let isDirectory: Bool
+        private let cleanup: () -> Void
+
+        func stop() {
+            cleanup()
+        }
+    }
+
+    private let defaultsKey = "datasetSourceBookmarks"
+    private var storage: [String: [Entry]] = [:]
+
+    init() {
+        if let data = UserDefaults.standard.data(forKey: defaultsKey),
+           let decoded = try? JSONDecoder().decode([String: [Entry]].self, from: data) {
+            storage = decoded
+        }
+    }
+
+    func makeEntry(for url: URL) -> Entry? {
+        Entry(url: url)
+    }
+
+    func store(entries: [Entry], for datasetID: String) {
+        if entries.isEmpty {
+            storage.removeValue(forKey: datasetID)
+        } else {
+            storage[datasetID] = entries
+        }
+        persist()
+    }
+
+    func remove(datasetID: String) {
+        storage.removeValue(forKey: datasetID)
+        persist()
+    }
+
+    func hasBookmarks(for datasetID: String) -> Bool {
+        guard let entries = storage[datasetID] else { return false }
+        return !entries.isEmpty
+    }
+
+    func accessResources(for datasetID: String) -> [SecurityScopedResource] {
+        guard let entries = storage[datasetID] else { return [] }
+        var refreshed: [Entry] = []
+        var resources: [SecurityScopedResource] = []
+        var changed = false
+
+        for entry in entries {
+            do {
+                var stale = false
+                let url = try URL(
+                    resolvingBookmarkData: entry.bookmarkData,
+                    options: [.withSecurityScope],
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &stale
+                )
+                var updated = entry
+                if stale {
+                    let newData = try url.bookmarkData(
+                        options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess],
+                        includingResourceValuesForKeys: nil,
+                        relativeTo: nil
+                    )
+                    updated.bookmarkData = newData
+                    changed = true
+                }
+                let isDirectory = updated.isDirectory || url.hasDirectoryPath
+                guard url.startAccessingSecurityScopedResource() else {
+                    changed = true
+                    continue
+                }
+                refreshed.append(updated)
+                resources.append(SecurityScopedResource(url: url, isDirectory: isDirectory) {
+                    url.stopAccessingSecurityScopedResource()
+                })
+            } catch {
+                changed = true
+            }
+        }
+
+        if changed {
+            storage[datasetID] = refreshed
+            persist()
+        } else {
+            storage[datasetID] = refreshed
+        }
+
+        return resources
+    }
+
+    private func persist() {
+        if let data = try? JSONEncoder().encode(storage) {
+            UserDefaults.standard.set(data, forKey: defaultsKey)
+        }
     }
 }
 
