@@ -161,7 +161,11 @@ public actor ReproExporter {
         try manifestData.write(to: manifestURL)
         filesForZip.append(("MANIFEST.json", manifestURL))
 
-        try ZipWriter.writeZip(at: archiveURL, files: filesForZip)
+        do {
+            try ZipWriter.writeZip(at: archiveURL, files: filesForZip)
+        } catch {
+            throw AppError(code: .exportFailed, message: "Zip archive creation failed: \(error.localizedDescription)")
+        }
         try? fileManager.removeItem(at: stagingURL)
         return archiveURL
     }

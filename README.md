@@ -79,6 +79,12 @@ The entire workflow functions in airplane mode and satisfies App Store rule 2.5.
 - **Force reruns when needed** – Pass `"force": true` in the tool arguments (or tap *Force Rerun* in the notebook UI) to bypass the cache. This is handy after modifying a dataset in Files.app.
 - **Clear cache programmatically** – `PythonResultCache.shared.clear()` removes all cached runs, which is useful while testing or to reclaim disk space.
 
+### Integration Hardening (Debug)
+
+- **Run the Self-Test** – In Debug builds, open the macOS app menu and choose **Debug ▸ Run Self-Test**. The diagnostics harness spins up the embedded Pyodide runtime, exercises the cache, and verifies that the path-safety guard rails reject traversal attempts.
+- **Review the report** – Results are written to `On My iPhone/iPad ▸ Noema ▸ Documents ▸ Diagnostics ▸ last_report.md` and automatically previewed after each run.
+- **Error codes at a glance** – User-facing alerts now surface short messages such as `pyTimeout`, `pyMemory`, `cacheCorrupt`, and `crewBudget` through the shared `ErrorPresenter` so you can quickly diagnose integration issues.
+
 ### Inspector (MVP)
 
 - **Datasets tab** – Browse mounted CSVs under *On My iPhone/iPad ▸ Noema ▸ Datasets*. Each row surfaces name, size, modified time and on-demand SHA-256 hashes. Tap **Quick sample** to attempt a fast shape sampler (200-row pandas read) for approximate rows × columns.

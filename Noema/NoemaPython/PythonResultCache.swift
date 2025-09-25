@@ -1,36 +1,6 @@
 import Foundation
 import CryptoKit
-
-struct PyRunKey: Hashable {
-    let codeHash: String
-    let filesHash: String
-    let runnerVersion: String
-
-    init(code: String, files: [PythonMountFile], runnerVersion: String) {
-        self.codeHash = PyRunKey.hashString(for: Data(code.utf8))
-        self.filesHash = PyRunKey.hashFiles(files)
-        self.runnerVersion = runnerVersion
-    }
-
-    private static func hashFiles(_ files: [PythonMountFile]) -> String {
-        guard !files.isEmpty else { return hashString(for: Data()) }
-        var hasher = SHA256()
-        for file in files.sorted(by: { $0.name < $1.name }) {
-            hasher.update(data: file.data)
-        }
-        let digest = hasher.finalize()
-        return digest.map { String(format: "%02x", $0) }.joined()
-    }
-
-    private static func hashString(for data: Data) -> String {
-        let digest = SHA256.hash(data: data)
-        return digest.map { String(format: "%02x", $0) }.joined()
-    }
-
-    var identifier: String {
-        [codeHash, filesHash, runnerVersion].joined(separator: "-")
-    }
-}
+import NoemaCore
 
 struct PyRunCacheEntry {
     let key: PyRunKey
@@ -44,36 +14,39 @@ struct PyRunCacheEntry {
     var metaURL: URL { path.appendingPathComponent("meta.json") }
 
     func loadResult(fileManager: FileManager = .default) throws -> PythonResult {
-        let stdoutString = try String(contentsOf: stdout, encoding: .utf8)
-        let stderrString = try String(contentsOf: stderr, encoding: .utf8)
+        do {
+            let stdoutString = try String(contentsOf: stdout, encoding: .utf8)
+            let stderrString = try String(contentsOf: stderr, encoding: .utf8)
 
-        var tablePayloads: [Data] = []
-        if fileManager.fileExists(atPath: tables.path) {
-            let tableData = try Data(contentsOf: tables)
-            let encoded = try JSONDecoder().decode([String].self, from: tableData)
-            tablePayloads = encoded.compactMap { Data(base64Encoded: $0) }
-        }
-
-        var imagePayloads: [Data] = []
-        if !meta.imageFiles.isEmpty {
-            imagePayloads = meta.imageFiles.compactMap { name in
-                let url = imagesDir.appendingPathComponent(name)
-                return try? Data(contentsOf: url)
+            var tablePayloads: [Data] = []
+            if fileManager.fileExists(atPath: tables.path) {
+                let tableData = try Data(contentsOf: tables)
+                let encoded = try JSONDecoder().decode([String].self, from: tableData)
+                tablePayloads = encoded.compactMap { Data(base64Encoded: $0) }
             }
-        }
 
-        var artifacts: [String: Data] = [:]
-        for (name, base64) in meta.artifacts {
-            if let data = Data(base64Encoded: base64) {
-                artifacts[name] = data
+            var imagePayloads: [Data] = []
+            if !meta.imageFiles.isEmpty {
+                imagePayloads = meta.imageFiles.compactMap { name in
+                    let url = imagesDir.appendingPathComponent(name)
+                    return try? Data(contentsOf: url)
+                }
             }
-        }
 
-        return PythonResult(stdout: stdoutString,
-                             stderr: stderrString,
-                             tables: tablePayloads,
-                             images: imagePayloads,
-                             artifacts: artifacts)
+            var artifacts: [String: Data] = [:]
+            for (name, base64) in meta.artifacts {
+                if let data = Data(base64Encoded: base64) {
+                    artifacts[name] = data
+                }
+            }
+            return PythonResult(stdout: stdoutString,
+                                 stderr: stderrString,
+                                 tables: tablePayloads,
+                                 images: imagePayloads,
+                                 artifacts: artifacts)
+        } catch {
+            throw AppError(code: .cacheCorrupt, message: "Failed to load cached result for \(key.identifier): \(error.localizedDescription)")
+        }
     }
 }
 
@@ -122,6 +95,13 @@ final class PythonResultCache: ResultCache {
         return PyRunCacheEntry(key: key, path: entryURL, meta: meta)
     }
 
+    func loadCachedResult(for key: PyRunKey) throws -> PythonResult {
+        guard let entry = lookup(key) else {
+            throw AppError(code: .cacheMiss, message: "No cached result for \(key.identifier)")
+        }
+        return try entry.loadResult(fileManager: fileManager)
+    }
+
     func write(_ key: PyRunKey, from result: PythonResult) throws {
         let entryURL = directory(for: key)
         if fileManager.fileExists(atPath: entryURL.path) {
@@ -131,13 +111,13 @@ final class PythonResultCache: ResultCache {
 
         let stdoutURL = entryURL.appendingPathComponent("stdout.txt")
         guard let stdoutData = result.stdout.data(using: .utf8) else {
-            throw NSError(domain: "PythonResultCache", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unable to encode stdout as UTF-8"])
+            throw AppError(code: .cacheCorrupt, message: "Unable to encode stdout as UTF-8")
         }
         try stdoutData.write(to: stdoutURL, options: .atomic)
 
         let stderrURL = entryURL.appendingPathComponent("stderr.txt")
         guard let stderrData = result.stderr.data(using: .utf8) else {
-            throw NSError(domain: "PythonResultCache", code: -2, userInfo: [NSLocalizedDescriptionKey: "Unable to encode stderr as UTF-8"])
+            throw AppError(code: .cacheCorrupt, message: "Unable to encode stderr as UTF-8")
         }
         try stderrData.write(to: stderrURL, options: .atomic)
 
@@ -179,7 +159,7 @@ final class PythonResultCache: ResultCache {
         try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true)
     }
 
-    private var rootURL: URL { root }
+    var rootURL: URL { root }
 
     private func directory(for key: PyRunKey) -> URL {
         rootURL.appendingPathComponent(key.identifier, isDirectory: true)

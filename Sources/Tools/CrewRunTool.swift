@@ -1,5 +1,6 @@
 import Foundation
 import Crew
+import NoemaCore
 
 #if canImport(Noema)
 import Noema
@@ -54,7 +55,11 @@ public struct CrewRunTool: Tool {
         let taskRuntime = TaskRuntime(agentRuntime: agent, store: store)
         let engine = CrewEngine(bb: bb, policies: defaultPolicies(), taskRuntime: taskRuntime, budgets: contract.budgets)
         let datasetURLs = (input.dataset_ids ?? []).map { URL(fileURLWithPath: $0) }
-        _ = try await engine.run(contract: contract, datasetURLs: datasetURLs)
+        do {
+            _ = try await engine.run(contract: contract, datasetURLs: datasetURLs)
+        } catch CrewEngineError.budgetExceeded {
+            throw AppError(code: .crewBudget, message: "Crew run stopped at the configured budget limit.")
+        }
 
         let facts = await bb.facts { _ in true }
         let artifacts = await bb.artifacts { _ in true }

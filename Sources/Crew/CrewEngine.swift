@@ -19,6 +19,10 @@ public struct Counters: Sendable {
     }
 }
 
+public enum CrewEngineError: Error, Sendable {
+    case budgetExceeded
+}
+
 public actor CrewEngine {
     public let bb: Blackboard
     private let policies: [CrewPolicy]
@@ -52,7 +56,7 @@ public actor CrewEngine {
             for task in sorted {
                 guard counters.within(budgets) else {
                     await bb.emitWarning("Budget exceeded before scheduling task \(task.id)")
-                    break
+                    throw CrewEngineError.budgetExceeded
                 }
                 let outcome = try await taskRuntime.execute(task: task, contract: contract, bb: bb)
                 counters.register(toolCalls: outcome.toolCalls, tokens: outcome.tokens)

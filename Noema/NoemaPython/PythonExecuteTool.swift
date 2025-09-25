@@ -1,5 +1,6 @@
 import Foundation
 import Inspector
+import NoemaCore
 
 struct PythonExecuteParams: Codable {
     let code: String
@@ -100,11 +101,18 @@ final class PythonExecuteTool: Tool {
         let mountFiles = resolveFiles(for: params.file_ids ?? [])
         let key = PyRunKey(code: params.code, files: mountFiles, runnerVersion: Self.toolVersion)
 
-        if params.force != true, let entry = cache.lookup(key), let cached = try? entry.loadResult() {
-            let payload = buildPayload(from: cached)
-            let data = try JSONEncoder().encode(payload)
-            NotificationCenter.default.post(name: .pythonExecutionDidComplete, object: payload)
-            return data
+        if params.force != true {
+            do {
+                let cached = try cache.loadCachedResult(for: key)
+                let payload = buildPayload(from: cached)
+                let data = try JSONEncoder().encode(payload)
+                NotificationCenter.default.post(name: .pythonExecutionDidComplete, object: payload)
+                return data
+            } catch let error as AppError {
+                if error.code != .cacheMiss {
+                    Task { await logger.log("[PythonExecuteTool] Cache read failed: \(error.message)") }
+                }
+            }
         }
 
         let result = try await MainActor.run {
@@ -113,6 +121,8 @@ final class PythonExecuteTool: Tool {
 
         do {
             try cache.write(key, from: result)
+        } catch let error as AppError {
+            Task { await logger.log("[PythonExecuteTool] Failed to persist cache: \(error.message)") }
         } catch {
             Task { await logger.log("[PythonExecuteTool] Failed to persist cache: \(error.localizedDescription)") }
         }
