@@ -13,6 +13,21 @@ products.append(.library(name: "NoemaPackages", targets: ["NoemaPackages"]))
 
 var targets: [Target] = [
     .target(
+        name: "NoemaCore",
+        dependencies: [],
+        path: "Sources/Core"
+    ),
+    .target(
+        name: "NotebookExports",
+        dependencies: ["NoemaCore"],
+        path: "Sources/Notebook"
+    ),
+    .target(
+        name: "InspectorExports",
+        dependencies: ["NoemaCore"],
+        path: "Sources/Inspector"
+    ),
+    .target(
         name: "Crew",
         dependencies: [],
         path: "Sources/Crew"
@@ -44,6 +59,12 @@ var targets: [Target] = [
             "CrewValidatorTests.swift",
             "CrewToolTests.swift"
         ]
+    ),
+    .testTarget(
+        name: "ReproExportTests",
+        dependencies: ["NoemaCore"],
+        path: "NoemaTests",
+        sources: ["ReproExportTests.swift"]
     )
 ]
 
