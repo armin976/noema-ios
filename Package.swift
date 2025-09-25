@@ -19,6 +19,12 @@ var targets: [Target] = [
         path: "Sources/Core"
     ),
     .target(
+        name: "AutoFlow",
+        dependencies: ["NoemaCore"],
+        path: "Sources",
+        sources: ["AutoFlow", "Settings"]
+    ),
+    .target(
         name: "NotebookExports",
         dependencies: ["NoemaCore"],
         path: "Sources/Notebook"
@@ -62,6 +68,12 @@ var targets: [Target] = [
         dependencies: ["NoemaCore"],
         path: "NoemaTests",
         sources: ["ReproExportTests.swift"]
+    ),
+    .testTarget(
+        name: "AutoFlowTests",
+        dependencies: ["AutoFlow", "NoemaCore"],
+        path: "NoemaTests",
+        sources: ["AutoFlowTests.swift"]
     ),
     .testTarget(
         name: "NoemaCoreTests",

@@ -59,6 +59,25 @@ When tool calling is enabled, the model can issue JSON tool calls and receive st
 
 The entire workflow functions in airplane mode and satisfies App Store rule 2.5.2 because all executable code is user-authored and shipped inside the binary.
 
+## AutoFlow
+
+AutoFlow is a foreground-only automation engine that turns application events into proactive playbook runs. It is disabled by default and can be enabled from **Settings → AutoFlow** by choosing one of three profiles:
+
+- **Off** – AutoFlow never evaluates rules.
+- **Balanced** – Enables dataset Quick EDA and the high-null clean-up rule.
+- **Aggressive** – Adds the "missing plots" rule on top of the Balanced profile.
+
+Each trigger can also be toggled individually. AutoFlow listens for dataset mounts, finished notebook runs, app foreground transitions, and reported errors. The rules engine evaluates those events and proposes playbook executions such as the bundled `eda-basic` and `clean-profile` recipes.
+
+Guardrails keep automation safe:
+
+- **Rate limit** – At most one AutoFlow run every 45 seconds.
+- **Circuit breaker** – Two errors within three minutes suspend AutoFlow for ten minutes.
+- **Kill switch & pause** – A global kill switch lives in Settings, and the AutoFlow pill exposes a "Stop" button along with a "Pause for 10 minutes" option in Settings.
+- **Cache awareness** – When a cached result exists for an identical code/files combination newer than 24 hours, AutoFlow skips the run.
+
+Activity is recorded to `Documents/AutoFlow/elog.jsonl` with structured JSON lines so advanced users can audit automated runs. AutoFlow only operates while the app remains in the foreground.
+
 ### Live Console
 
 - Tap the **Console** button in any Python notebook cell to reveal a per-cell log pane. Stdout, stderr, and status updates stream line-by-line while Pyodide executes your code.
