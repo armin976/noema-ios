@@ -61,9 +61,9 @@ The entire workflow functions in airplane mode and satisfies App Store rule 2.5.
 
 ### Live Console
 
-- Every code cell now has a **Console** toggle that reveals a per-cell log pane. The pane streams stdout, stderr, and status updates line-by-line while Pyodide runs your code.
-- The console keeps the last 300 lines per cell so you can revisit logs even after closing the notebook or rerunning a cell.
-- When a cached result is served the console shows a short status trace (`starting → caching → finished`) without re-executing Python, making it clear that the output came from disk.
+- Tap the **Console** button in any Python notebook cell to reveal a per-cell log pane. Stdout, stderr, and status updates stream line-by-line while Pyodide executes your code.
+- The console autoscrolls while open and retains the last 300 lines per cell so you can revisit logs even after closing the notebook or rerunning a cell.
+- Cached executions skip the interpreter and surface a concise status trace (for example, `starting → caching → finished`) so it is clear the output came from disk.
 
 ### Result caching for Pyodide runs
 
