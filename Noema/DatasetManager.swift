@@ -1,6 +1,7 @@
 // DatasetManager.swift
 import Foundation
 import SwiftUI
+import AutoFlow
 // Live Activities removed
 
 @MainActor
@@ -283,6 +284,12 @@ final class DatasetManager: ObservableObject {
             d.set(id, forKey: "selectedDatasetID")
         } else {
             d.set("", forKey: "selectedDatasetID")
+        }
+        if let ds {
+            Task {
+                let bytes = Int64(ds.sizeMB * 1_048_576.0)
+                await AutoFlowOrchestrator.shared.post(.datasetMounted(url: ds.url, sizeBytes: bytes))
+            }
         }
         reloadFromDisk()
         // Do not auto-download/embedder or auto-index here; user must trigger manually in UI.

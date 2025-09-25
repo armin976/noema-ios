@@ -41,62 +41,32 @@ public struct AutoFlowHUD: View {
     }
 
     public var body: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(statusColor)
-                .frame(width: 10, height: 10)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("AutoFlow")
-                    .font(.caption)
-                    .bold()
-                Text(statusText)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+        Group {
+            if case let .running(description) = model.status.phase {
+                HStack(spacing: 8) {
+                    Text("AutoFlow:")
+                        .font(.caption)
+                        .bold()
+                        .accessibilityHidden(true)
+                    Text("Running \(description)")
+                        .font(.caption2)
+                        .lineLimit(1)
+                        .accessibilityLabel("AutoFlow running \(description)")
+                    Button(action: { model.stop() }) {
+                        Text("Stop")
+                            .font(.caption)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Capsule().stroke(Color.secondary, lineWidth: 1))
+                    }
+                    .accessibilityLabel("Stop AutoFlow")
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.thinMaterial)
+                .clipShape(Capsule())
+                .accessibilityElement(children: .combine)
             }
-            Spacer(minLength: 4)
-            Button(action: { model.stop() }) {
-                Text("Stop")
-                    .font(.caption)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Capsule().stroke(Color.secondary, lineWidth: 1))
-            }
-            .accessibilityLabel("Stop AutoFlow")
-        }
-        .padding(12)
-        .background(.thinMaterial)
-        .clipShape(Capsule())
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("AutoFlow status: \(statusText)")
-    }
-
-    private var statusText: String {
-        switch model.status.phase {
-        case .idle:
-            return "Idle"
-        case .evaluating:
-            return "Evaluating"
-        case let .running(description):
-            return description
-        case let .paused(reason):
-            return reason
-        case .blocked:
-            return "Blocked"
-        }
-    }
-
-    private var statusColor: Color {
-        switch model.status.phase {
-        case .running:
-            return .green
-        case .paused:
-            return .orange
-        case .blocked:
-            return .red
-        case .idle, .evaluating:
-            return .blue
         }
     }
 }

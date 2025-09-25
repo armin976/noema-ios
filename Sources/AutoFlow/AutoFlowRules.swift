@@ -9,10 +9,12 @@ public enum AutoFlowRule: Sendable {
 public struct AutoFlowRuleContext: Sendable {
     public let preferences: AutoFlowPreferences
     public let now: Date
+    public let guardNullThreshold: Double
 
-    public init(preferences: AutoFlowPreferences, now: Date = Date()) {
+    public init(preferences: AutoFlowPreferences, now: Date = Date(), guardNullThreshold: Double = 0.3) {
         self.preferences = preferences
         self.now = now
+        self.guardNullThreshold = guardNullThreshold
     }
 }
 
@@ -45,7 +47,7 @@ public enum AutoFlowRuleEngine {
         guard profile != .off else { return nil }
 
         if toggles.cleanOnHighNulls,
-           run.stats.nullPercentage >= 0.30,
+           run.stats.nullPercentage >= context.guardNullThreshold,
            profile == .balanced || profile == .aggressive {
             let description = "Cleaning high nulls"
             let play = AutoFlowAction.Playbook(identifier: "clean-profile",

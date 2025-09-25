@@ -28,11 +28,12 @@ public actor AutoFlowEngine {
         static let runnerTimeout: TimeInterval = 120
     }
 
-    public static let shared = AutoFlowEngine()
+    public static let shared = AutoFlowEngine(spaceStore: .shared)
 
     private let eventBus: AutoFlowEventBus
     private let state: AutoFlowState
     private let runner: AutoFlowPlaybookRunning
+    private let spaceStore: SpaceStore?
     private var status: AutoFlowStatus = AutoFlowStatus()
     private var statusContinuations: [UUID: AsyncStream<AutoFlowStatus>.Continuation] = [:]
     private var subscriptionTask: Task<Void, Never>?
@@ -42,10 +43,12 @@ public actor AutoFlowEngine {
     public init(eventBus: AutoFlowEventBus = .shared,
                 state: AutoFlowState = AutoFlowState(),
                 runner: AutoFlowPlaybookRunning = AutoFlowNoopRunner(),
+                spaceStore: SpaceStore? = nil,
                 dateProvider: @escaping () -> Date = Date.init) {
         self.eventBus = eventBus
         self.state = state
         self.runner = runner
+        self.spaceStore = spaceStore
         self.dateProvider = dateProvider
         isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         Task { await bootstrap() }
@@ -118,6 +121,13 @@ public actor AutoFlowEngine {
             return
         }
 
+        var guardThreshold: Double = 0.3
+        if let spaceStore {
+            let setting = await spaceStore.activeProfileSetting()
+            await state.updateProfile(setting.asEngineProfile)
+            guardThreshold = await spaceStore.activeGuardThreshold()
+        }
+
         let guardrail = await state.guardrailState(now: now)
         if let phase = phase(for: guardrail, now: now) {
             await broadcastStatus(with: phase)
@@ -125,7 +135,7 @@ public actor AutoFlowEngine {
         }
 
         let preferences = await state.preferences(now: now)
-        let context = AutoFlowRuleContext(preferences: preferences, now: now)
+        let context = AutoFlowRuleContext(preferences: preferences, now: now, guardNullThreshold: guardThreshold)
         guard let action = AutoFlowRuleEngine.action(for: event, context: context) else {
             await broadcastStatus(with: .idle)
             return

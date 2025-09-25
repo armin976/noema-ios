@@ -1,6 +1,7 @@
 import Foundation
 import Inspector
 import NoemaCore
+import Guards
 
 struct PythonExecuteParams: Codable {
     let code: String
@@ -130,6 +131,9 @@ final class PythonExecuteTool: Tool {
         let payload = buildPayload(from: result)
         let data = try JSONEncoder().encode(payload)
         NotificationCenter.default.post(name: .pythonExecutionDidComplete, object: payload)
+        Task {
+            await DataGuardEngine.shared.process(datasetIDs: params.file_ids ?? [], madeImages: !payload.images.isEmpty)
+        }
         return data
     }
 

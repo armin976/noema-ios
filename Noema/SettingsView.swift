@@ -1,6 +1,7 @@
 // SettingsView.swift
 import SwiftUI
 import UIKit
+import AutoFlow
 
 final class SettingsModel: ObservableObject {
     @AppStorage("isAdvancedMode") var isAdvancedMode = false {
@@ -75,6 +76,7 @@ struct SettingsView: View {
                     .listRowBackground(Color.yellow.opacity(0.1))
                 }
                 quickActionsSection
+                SpaceSettingsView()
                 modeSection
                 ramSection
                 Section {
