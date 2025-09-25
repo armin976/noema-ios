@@ -1,0 +1,7 @@
+{
+  "packages": [
+    {"name": "numpy", "version": "1.26.4", "filename": "numpy.whl"},
+    {"name": "pandas", "version": "2.2.2", "filename": "pandas.whl"},
+    {"name": "matplotlib", "version": "3.8.3", "filename": "matplotlib.whl"}
+  ]
+}

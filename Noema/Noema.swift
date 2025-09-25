@@ -4188,6 +4188,9 @@ struct ChatView: View {
     @EnvironmentObject var datasetManager: DatasetManager
     @EnvironmentObject var tabRouter: TabRouter
     @FocusState private var inputFocused: Bool
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @StateObject private var notebookStore = NotebookStore()
+    @State private var showNotebookSheet = false
     @State private var showSidebar = false
     @State private var showPercent = false
     @AppStorage("defaultModelPath") private var defaultModelPath = ""
@@ -4348,6 +4351,37 @@ struct ChatView: View {
     }
 
     var body: some View {
+        Group {
+            if horizontalSizeClass == .regular {
+                HStack(spacing: 0) {
+                    chatNavigation
+                    Divider()
+                    NavigationStack {
+                        NotebookView(store: notebookStore, onRunCode: runNotebookCell)
+                            .navigationTitle("Notebook")
+                    }
+                    .frame(minWidth: 320, idealWidth: 380, maxWidth: 460)
+                }
+            } else {
+                chatNavigation
+                    .sheet(isPresented: $showNotebookSheet) {
+                        NavigationStack {
+                            NotebookView(store: notebookStore, onRunCode: runNotebookCell)
+                                .navigationTitle("Notebook")
+                                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { showNotebookSheet = false } } }
+                        }
+                    }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .pythonExecutionDidComplete)) { note in
+            guard let result = note.object as? PythonExecuteResult else { return }
+            Task { @MainActor in
+                notebookStore.apply(pythonResult: result)
+            }
+        }
+    }
+
+    private var chatNavigation: some View {
         NavigationStack {
             ZStack(alignment: .leading) {
                 chatContent
@@ -4371,7 +4405,10 @@ struct ChatView: View {
                 ToolbarItem(placement: .principal) {
                     modelHeader
                 }
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItemGroup(placement: .navigationBarTrailing) {
+                    if horizontalSizeClass == .compact {
+                        Button { showNotebookSheet = true } label: { Image(systemName: "square.and.pencil") }
+                    }
                     Button { vm.startNewSession() } label: { Image(systemName: "plus") }
                 }
             }
@@ -4402,6 +4439,10 @@ struct ChatView: View {
                 .padding()
             }
         }
+    }
+
+    private func runNotebookCell(code: String) {
+        Task { await vm.sendMessage(code) }
     }
 
     private var chatContent: some View {
