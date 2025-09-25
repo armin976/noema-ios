@@ -9,6 +9,7 @@ var products: [Product] = [
 #if !os(Linux)
 products.append(.library(name: "CrewUI", targets: ["CrewUI"]))
 products.append(.library(name: "NoemaPackages", targets: ["NoemaPackages"]))
+products.append(.library(name: "Inspector", targets: ["Inspector"]))
 #endif
 
 var targets: [Target] = [
@@ -52,7 +53,8 @@ var targets: [Target] = [
             "PreScanTests.swift",
             "PromptBuilderFamilyTests.swift",
             "SettingsPropagationTests.swift",
-            "UsageLimiterTests.swift"
+            "UsageLimiterTests.swift",
+            "InspectorTests.swift"
         ],
         sources: [
             "CrewEngineTests.swift",
@@ -88,6 +90,13 @@ targets.append(
         name: "NoemaPackages",
         dependencies: ["LlamaFramework", "RollingThought"],
         path: "Sources/NoemaPackages"
+    )
+)
+targets.append(
+    .target(
+        name: "Inspector",
+        dependencies: [],
+        path: "Sources/Inspector"
     )
 )
 targets.append(

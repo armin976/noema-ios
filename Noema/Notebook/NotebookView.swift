@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import Inspector
 
 struct NotebookView: View {
     @ObservedObject var store: NotebookStore
@@ -8,9 +9,17 @@ struct NotebookView: View {
     @State private var showingImporter = false
     @State private var exportedMarkdown: String = ""
     @State private var exportedMetadata: Data = Data()
+    @State private var showingInspectorSheet = false
+    @State private var navigatingToInspector = false
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    private let pythonExecutor = PythonExecuteTool()
 
     var body: some View {
         VStack(alignment: .leading) {
+            NavigationLink(destination: InspectorView(pythonExecutor: pythonExecutor).navigationTitle("Inspector"), isActive: $navigatingToInspector) {
+                EmptyView()
+            }
+            .hidden()
             header
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
@@ -31,6 +40,13 @@ struct NotebookView: View {
                 }
                 Button { showingImporter = true } label: {
                     Label("Import", systemImage: "square.and.arrow.down")
+                }
+                Menu {
+                    Button("Inspector", systemImage: "magnifyingglass") {
+                        openInspector()
+                    }
+                } label: {
+                    Label("More", systemImage: "ellipsis.circle")
                 }
             }
         }
@@ -70,6 +86,13 @@ struct NotebookView: View {
                         // noop placeholder
                     }
                 }
+            }
+        }
+        .sheet(isPresented: $showingInspectorSheet) {
+            NavigationStack {
+                InspectorView(pythonExecutor: pythonExecutor)
+                    .navigationTitle("Inspector")
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { showingInspectorSheet = false } } }
             }
         }
     }
@@ -128,6 +151,16 @@ struct NotebookView: View {
             }
         case .output:
             OutputCellView(cell: cell)
+        }
+    }
+}
+
+private extension NotebookView {
+    func openInspector() {
+        if horizontalSizeClass == .regular {
+            showingInspectorSheet = true
+        } else {
+            navigatingToInspector = true
         }
     }
 }

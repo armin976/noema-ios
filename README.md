@@ -72,6 +72,12 @@ The entire workflow functions in airplane mode and satisfies App Store rule 2.5.
 - **Force reruns when needed** – Pass `"force": true` in the tool arguments (or tap *Force Rerun* in the notebook UI) to bypass the cache. This is handy after modifying a dataset in Files.app.
 - **Clear cache programmatically** – `PythonResultCache.shared.clear()` removes all cached runs, which is useful while testing or to reclaim disk space.
 
+### Inspector (MVP)
+
+- **Datasets tab** – Browse mounted CSVs under *On My iPhone/iPad ▸ Noema ▸ Datasets*. Each row surfaces name, size, modified time and on-demand SHA-256 hashes. Tap **Quick sample** to attempt a fast shape sampler (200-row pandas read) for approximate rows × columns.
+- **Figures tab** – Renders thumbnails from recent `python.execute` cache entries (`Library/Caches/python/<key>/images/*.png`). Tap any tile to open a full-resolution preview with sharing and “Reveal in Files”.
+- **Notes** – Hashes are computed lazily so large files avoid blocking the UI. Shape sampling falls back gracefully if pandas cannot ingest the file or times out inside the 2 s budget.
+
 ### Low-RAM, high-knowledge design
 Instead of embedding all knowledge inside huge model weights, Noema emphasises external knowledge sources. By pairing compact models with large local datasets (textbooks, PDFs, etc.), you can store far more information on-device than would be possible if the weights contained all of it. Retrieval-augmented generation ensures that the assistant cites relevant passages from your data rather than hallucinating answers.
 
