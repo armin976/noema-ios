@@ -1,22 +1,22 @@
 import Foundation
 import NoemaCore
 
-public struct SelfTestItem: Sendable {
+public struct SelfCheckItem: Sendable {
     public let name: String
     public let passed: Bool
     public let ms: Int
     public let note: String?
 }
 
-public struct SelfTestResult: Sendable {
-    public let items: [SelfTestItem]
+public struct SelfCheckResult: Sendable {
+    public let items: [SelfCheckItem]
     public let startedAt: Date
     public let endedAt: Date
     public let markdown: String
     public let reportURL: URL
 }
 
-public actor SelfTestRunner {
+public actor SelfCheckRunner {
     private let cache: PythonResultCache
     private let fileManager: FileManager
     private let diagnosticsDirectoryName = "Diagnostics"
@@ -28,9 +28,9 @@ public actor SelfTestRunner {
     }
 
     @discardableResult
-    public func runAll() async -> SelfTestResult {
+    public func runAll() async -> SelfCheckResult {
         let started = Date()
-        var items: [SelfTestItem] = []
+        var items: [SelfCheckItem] = []
 
         let runtimeItem = await runRuntimeCheck()
         items.append(runtimeItem)
@@ -44,10 +44,10 @@ public actor SelfTestRunner {
         let ended = Date()
         let markdown = buildMarkdown(items: items, started: started, ended: ended)
         let reportURL = await writeReport(markdown: markdown)
-        return SelfTestResult(items: items, startedAt: started, endedAt: ended, markdown: markdown, reportURL: reportURL)
+        return SelfCheckResult(items: items, startedAt: started, endedAt: ended, markdown: markdown, reportURL: reportURL)
     }
 
-    private func runRuntimeCheck() async -> SelfTestItem {
+    private func runRuntimeCheck() async -> SelfCheckItem {
         let start = Date()
         let name = "Runtime"
         do {
@@ -69,15 +69,15 @@ print(json.dumps(info))
             }
             let trimmed = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
             let ms = durationMilliseconds(since: start)
-            return SelfTestItem(name: name, passed: true, ms: ms, note: trimmed.isEmpty ? "stdout empty" : trimmed)
+            return SelfCheckItem(name: name, passed: true, ms: ms, note: trimmed.isEmpty ? "stdout empty" : trimmed)
         } catch {
             let ms = durationMilliseconds(since: start)
             let note = errorNote(from: error)
-            return SelfTestItem(name: name, passed: false, ms: ms, note: note)
+            return SelfCheckItem(name: name, passed: false, ms: ms, note: note)
         }
     }
 
-    private func runCacheCheck() async -> SelfTestItem {
+    private func runCacheCheck() async -> SelfCheckItem {
         let start = Date()
         let name = "Cache"
         let code = """
@@ -103,27 +103,27 @@ __noema_emit_image(str(output))
             let ms = durationMilliseconds(since: start)
             let note = "tables: \(cached.tables.count), images: \(cached.images.count)"
             let passed = cached.tables.count == 1 && cached.images.count == 1
-            return SelfTestItem(name: name, passed: passed, ms: ms, note: note)
+            return SelfCheckItem(name: name, passed: passed, ms: ms, note: note)
         } catch {
             let ms = durationMilliseconds(since: start)
-            return SelfTestItem(name: name, passed: false, ms: ms, note: errorNote(from: error))
+            return SelfCheckItem(name: name, passed: false, ms: ms, note: errorNote(from: error))
         }
     }
 
-    private func runPathSafetyCheck() async -> SelfTestItem {
+    private func runPathSafetyCheck() async -> SelfCheckItem {
         let start = Date()
         let name = "Path safety"
         do {
             let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
             let datasetRoot = docs.appendingPathComponent("Datasets", isDirectory: true)
             _ = try AppDataPathResolver.resolve(path: "../illegal", allowedRoots: [datasetRoot], fileManager: fileManager)
-            return SelfTestItem(name: name, passed: false, ms: durationMilliseconds(since: start), note: "Traversal unexpectedly allowed")
+            return SelfCheckItem(name: name, passed: false, ms: durationMilliseconds(since: start), note: "Traversal unexpectedly allowed")
         } catch let error as AppError {
             let ms = durationMilliseconds(since: start)
-            return SelfTestItem(name: name, passed: error.code == .pathDenied, ms: ms, note: ErrorPresenter.present(error))
+            return SelfCheckItem(name: name, passed: error.code == .pathDenied, ms: ms, note: ErrorPresenter.present(error))
         } catch {
             let ms = durationMilliseconds(since: start)
-            return SelfTestItem(name: name, passed: false, ms: ms, note: error.localizedDescription)
+            return SelfCheckItem(name: name, passed: false, ms: ms, note: error.localizedDescription)
         }
     }
 
@@ -132,10 +132,10 @@ __noema_emit_image(str(output))
         return max(0, Int((elapsed * 1000.0).rounded()))
     }
 
-    private func buildMarkdown(items: [SelfTestItem], started: Date, ended: Date) -> String {
+    private func buildMarkdown(items: [SelfCheckItem], started: Date, ended: Date) -> String {
         var lines: [String] = []
         let formatter = ISO8601DateFormatter()
-        lines.append("# Self-Test Report")
+        lines.append("# Self-Check Report")
         lines.append("")
         lines.append("- Started: \(formatter.string(from: started))")
         lines.append("- Ended: \(formatter.string(from: ended))")

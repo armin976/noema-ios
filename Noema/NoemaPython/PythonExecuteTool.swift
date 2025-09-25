@@ -161,6 +161,8 @@ extension PythonResult {
             tables: tables.map { $0.base64EncodedString() },
             images: images.map { $0.base64EncodedString() }
         )
+    }
+}
 
 extension PythonExecuteTool: InspectorPythonExecutionHandling {
     func runPython(code: String, fileIDs: [String], timeoutMs: Int, force: Bool) async throws -> InspectorPythonExecutionResult {
@@ -176,7 +178,6 @@ extension PythonExecuteTool: InspectorPythonExecutionHandling {
         let resultData = try await call(args: data)
         let result = try JSONDecoder().decode(PythonExecuteResult.self, from: resultData)
         return InspectorPythonExecutionResult(stdout: result.stdout)
-main
     }
 }
 

@@ -23,14 +23,22 @@ final class AppDataSchemeHandler: NSObject, WKURLSchemeHandler {
 
     private let fileManager: FileManager = .default
     private lazy var datasetsDirectory: URL = {
-        var url = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return url.appendingPathComponent("Datasets", isDirectory: true)
+        let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let datasets = docs.appendingPathComponent("Datasets", isDirectory: true)
+        let canonical = datasets.standardizedFileURL.resolvingSymlinksInPath()
+        if !fileManager.fileExists(atPath: canonical.path) {
+            try? fileManager.createDirectory(at: canonical, withIntermediateDirectories: true)
+        }
+        return canonical
     }()
     private lazy var cacheDirectory: URL = {
-        PythonResultCache.shared.rootURL
+        PythonResultCache.shared.rootURL.standardizedFileURL.resolvingSymlinksInPath()
     }()
     private lazy var bundlePyodideRoot: URL? = {
-        Bundle.main.resourceURL?.appendingPathComponent("pyodide", isDirectory: true)
+        Bundle.main.resourceURL?
+            .appendingPathComponent("pyodide", isDirectory: true)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
     }()
 
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
@@ -52,7 +60,7 @@ final class AppDataSchemeHandler: NSObject, WKURLSchemeHandler {
             urlSchemeTask.didFinish()
         } catch let error as AppError {
             respondForbidden(for: urlSchemeTask)
-            Task { await logger.log("[AppDataScheme] \(error.message)") }
+            Task { await logger.log("[AppDataScheme] \(ErrorPresenter.present(error)) :: \(error.message)") }
         } catch {
             respondNotFound(for: urlSchemeTask)
         }
@@ -92,29 +100,45 @@ final class AppDataSchemeHandler: NSObject, WKURLSchemeHandler {
         guard let decodedPath = url.path.removingPercentEncoding else {
             throw AppError(code: .pathDenied, message: "Invalid path encoding for \(url.absoluteString)")
         }
+        let sanitizedPath = normalize(decodedPath)
         let allowedRoots: [URL]
-        let normalizedPath: String
+        let relativePath: String
         switch source {
         case .bundle:
             guard let bundlePyodideRoot else {
                 throw AppError(code: .pathDenied, message: "Bundle resources unavailable")
             }
             allowedRoots = [bundlePyodideRoot]
-            let trimmed = decodedPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            if trimmed.hasPrefix("pyodide/") {
-                normalizedPath = String(trimmed.dropFirst("pyodide/".count))
-            } else if trimmed == "pyodide" {
-                normalizedPath = ""
-            } else {
-                normalizedPath = trimmed
+            guard !sanitizedPath.isEmpty else {
+                return bundlePyodideRoot
             }
+            let components = sanitizedPath.split(separator: "/")
+            guard components.first == "pyodide" else {
+                throw AppError(code: .pathDenied, message: "Bundle path must start with pyodide/: \(decodedPath)")
+            }
+            relativePath = components.dropFirst().joined(separator: "/")
         case .datasets:
             allowedRoots = [datasetsDirectory]
-            normalizedPath = decodedPath
+            if sanitizedPath == "Datasets" {
+                relativePath = ""
+            } else if sanitizedPath.hasPrefix("Datasets/") {
+                relativePath = String(sanitizedPath.dropFirst("Datasets/".count))
+            } else {
+                relativePath = sanitizedPath
+            }
         case .cache:
             allowedRoots = [cacheDirectory]
-            normalizedPath = decodedPath
+            relativePath = sanitizedPath
         }
-        return try AppDataPathResolver.resolve(path: normalizedPath, allowedRoots: allowedRoots, fileManager: fileManager)
+        let resolved = try AppDataPathResolver.resolve(path: relativePath, allowedRoots: allowedRoots, fileManager: fileManager)
+        return resolved.standardizedFileURL.resolvingSymlinksInPath()
+    }
+
+    private func normalize(_ path: String) -> String {
+        guard !path.isEmpty else { return "" }
+        let trimmed = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !trimmed.isEmpty else { return "" }
+        let parts = trimmed.split(separator: "/").filter { $0 != "." }
+        return parts.joined(separator: "/")
     }
 }

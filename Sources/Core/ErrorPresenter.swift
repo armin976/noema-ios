@@ -32,17 +32,17 @@ public enum ErrorPresenter {
     public static func present(_ error: AppError) -> String {
         switch error.code {
         case .pyTimeout:
-            return "Python timed out. Try smaller samples or increase timeout."
+            return "Python timed out. Try a smaller sample or raise timeout."
         case .pyMemory:
-            return "Python ran out of memory. Sample with nrows=… or drop columns."
+            return "Python memory limit. Sample with nrows=… or drop columns."
         case .cacheCorrupt:
-            return "Cached artifacts are invalid. Clear cache and rerun."
+            return "Cached artifacts invalid. Clear cache and rerun."
         case .pathDenied:
-            return "Access to that path is not allowed."
+            return "Path access denied."
         case .exportFailed:
-            return "Could not create export archive."
+            return "Export failed."
         case .crewBudget:
-            return "Crew stopped at budget limit."
+            return "Crew hit budget limit."
         default:
             return error.message
         }

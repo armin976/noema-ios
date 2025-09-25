@@ -81,7 +81,7 @@ The entire workflow functions in airplane mode and satisfies App Store rule 2.5.
 
 ### Integration Hardening (Debug)
 
-- **Run the Self-Test** – In Debug builds, open the macOS app menu and choose **Debug ▸ Run Self-Test**. The diagnostics harness spins up the embedded Pyodide runtime, exercises the cache, and verifies that the path-safety guard rails reject traversal attempts.
+- **Run the Self-Check** – In Debug builds, open the macOS app menu and choose **Debug ▸ Run Self-Check**. The diagnostics harness spins up the embedded Pyodide runtime, exercises the cache, and verifies that the path-safety guard rails reject traversal attempts.
 - **Review the report** – Results are written to `On My iPhone/iPad ▸ Noema ▸ Documents ▸ Diagnostics ▸ last_report.md` and automatically previewed after each run.
 - **Error codes at a glance** – User-facing alerts now surface short messages such as `pyTimeout`, `pyMemory`, `cacheCorrupt`, and `crewBudget` through the shared `ErrorPresenter` so you can quickly diagnose integration issues.
 
@@ -151,6 +151,22 @@ Crew Mode introduces a local, policy-driven multi-agent system that plans and re
 3. Watch Crew Run view lanes fill with planner, analyst, coder, critic, and editor activity. Budget counters update live.
 4. As tasks complete, artifacts appear in the Notebook and artifacts directory. Event logs stream to `events.jsonl`.
 5. When quality gates pass, the synthesis task emits `report.md` and a `done` fact, closing the run.
+
+## Quality & CI
+
+All targets now treat warnings as errors, enforce complete strict concurrency checking, and enable the Undefined Behavior Sanitizer in Debug. The GitHub Actions workflow in `.github/workflows/ci.yml` rebuilds the `Noema` scheme (Debug and Release), runs the XCTest suite, executes static analysis, and archives the app to ensure codesigning stays valid. If a `.swiftformat` file is present, CI installs the formatter so future style checks are seamless.
+
+Run the matching commands locally with:
+
+```bash
+make build    # Debug + Release builds
+make test     # iOS Simulator tests
+make analyze  # Static analyzer
+make archive  # Archive validation
+make ci       # Full pipeline wrapper
+```
+
+See [QUALITY_GATES.md](QUALITY_GATES.md) for details on each gate and the Debug Self-Check report.
 
 ## Getting Started
 
