@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install swiftformat
+        if: ${{ hashFiles('.swiftformat') != '' }}
+        run: brew install swiftformat
+
+      - name: Build (Debug + Release)
+        run: make build
+
+      - name: Run unit tests
+        run: make test
+
+      - name: Static analyze
+        run: make analyze
+
+      - name: Archive
+        run: make archive

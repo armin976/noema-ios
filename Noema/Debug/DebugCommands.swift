@@ -5,20 +5,20 @@ import UIKit
 struct DebugCommands: Commands {
     var body: some Commands {
         CommandMenu("Debug") {
-            Button("Run Self-Test") {
-                Task { await DebugSelfTestPresenter.shared.runSelfTest() }
+            Button("Run Self-Check") {
+                Task { await DebugSelfCheckPresenter.shared.runSelfCheck() }
             }
         }
     }
 }
 
 @MainActor
-final class DebugSelfTestPresenter: NSObject, UIDocumentInteractionControllerDelegate {
-    static let shared = DebugSelfTestPresenter()
+final class DebugSelfCheckPresenter: NSObject, UIDocumentInteractionControllerDelegate {
+    static let shared = DebugSelfCheckPresenter()
     private var controller: UIDocumentInteractionController?
 
-    func runSelfTest() async {
-        let runner = SelfTestRunner()
+    func runSelfCheck() async {
+        let runner = SelfCheckRunner()
         let result = await runner.runAll()
         presentReport(at: result.reportURL)
     }

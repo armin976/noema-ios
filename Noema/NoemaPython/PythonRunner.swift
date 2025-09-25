@@ -290,11 +290,15 @@ extension PythonRunner {
     private func mapAppError(from message: String?) -> AppError {
         let rawMessage = message ?? "Execution failed"
         if rawMessage == "timeout" {
-            return AppError(code: .pyTimeout, message: "Python execution exceeded the allotted time.")
+            return AppError(code: .pyTimeout,
+                            message: "Python execution exceeded the allotted time.",
+                            suggestion: "Try a smaller sample or raise timeout.")
         }
         let combined = [rawMessage, currentStderr].joined(separator: currentStderr.isEmpty ? "" : "\n")
         if combined.localizedCaseInsensitiveContains("memoryerror") || combined.localizedCaseInsensitiveContains("out of memory") {
-            return AppError(code: .pyMemory, message: "Python reported an out-of-memory condition.", suggestion: "Sample with nrows=… or drop columns.")
+            return AppError(code: .pyMemory,
+                            message: "Python reported an out-of-memory condition.",
+                            suggestion: "Sample with nrows=… or drop columns.")
         }
         let trimmed = combined.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
