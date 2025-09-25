@@ -14,6 +14,12 @@
     }
   };
 
+  function _post(type, data) {
+    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.pyOut) {
+      window.webkit.messageHandlers.pyOut.postMessage({ type, data, ts: Date.now() });
+    }
+  }
+
   let readyPromise = null;
 
   async function ensureReady() {
@@ -126,6 +132,7 @@ __noema_reset()
       const py = await ensureReady();
       await writeFiles(py, files);
       await py.runPythonAsync('__noema_reset()');
+      _post('status', 'starting');
       const controller = new AbortController();
       const timeout = typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : 15000;
       let timedOut = false;
@@ -134,21 +141,35 @@ __noema_reset()
         controller.abort();
         post({type: 'error', data: 'timeout'});
       }, timeout);
-      py.setStdout({batched: (data) => post({type: 'stdout', data})});
-      py.setStderr({batched: (data) => post({type: 'stderr', data})});
+      py.setStdout({batched: (data) => {
+        data.split('\n').forEach(line => {
+          if (line) { _post('stdout', line); }
+        });
+      }});
+      py.setStderr({batched: (data) => {
+        data.split('\n').forEach(line => {
+          if (line) { _post('stderr', line); }
+        });
+      }});
+      _post('status', 'running');
       try {
         const wrapped = `\nimport asyncio\nasync def __noema_entry():\n    try:\n        ${code}\n    finally:\n        pass\nasyncio.run(__noema_entry())\n`;
         await py.runPythonAsync(wrapped, {signal: controller.signal});
         if (!timedOut) {
           const collected = await collectOutputs(py);
           post({type: 'result', data: collected});
+          _post('status', 'finished');
         }
       } catch (err) {
+        _post('status', 'error');
+        _post('stderr', String(err));
         post({type: 'error', data: String(err) });
       } finally {
         clearTimeout(t);
       }
     } catch (err) {
+      _post('status', 'error');
+      _post('stderr', String(err));
       post({type: 'error', data: String(err)});
     }
   };

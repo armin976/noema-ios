@@ -14,12 +14,28 @@ struct Cell: Identifiable, Codable, Equatable {
     var kind: CellKind
     var text: String?
     var payload: Data?
+    var metadata: CellMetadata?
 
-    init(id: UUID = UUID(), kind: CellKind, text: String? = nil, payload: Data? = nil) {
+    init(id: UUID = UUID(), kind: CellKind, text: String? = nil, payload: Data? = nil, metadata: CellMetadata? = nil) {
         self.id = id
         self.kind = kind
         self.text = text
         self.payload = payload
+        self.metadata = metadata
+    }
+}
+
+struct ConsolePersistedLine: Codable, Equatable {
+    var kind: PythonLogKind
+    var text: String
+    var timestamp: Date
+}
+
+struct CellMetadata: Codable, Equatable {
+    var lastConsole: [ConsolePersistedLine]
+
+    init(lastConsole: [ConsolePersistedLine] = []) {
+        self.lastConsole = lastConsole
     }
 }
 
@@ -136,6 +152,17 @@ final class NotebookStore: ObservableObject {
         let decoder = JSONDecoder()
         let imported = try decoder.decode(Notebook.self, from: metadata)
         notebook = imported
+    }
+
+    func updateConsoleHistory(for cell: Cell, history: [ConsolePersistedLine], maxHistory: Int) {
+        guard let idx = notebook.cells.firstIndex(of: cell) else { return }
+        var trimmed = history
+        if trimmed.count > maxHistory {
+            trimmed = Array(trimmed.suffix(maxHistory))
+        }
+        var meta = notebook.cells[idx].metadata ?? CellMetadata()
+        meta.lastConsole = trimmed
+        notebook.cells[idx].metadata = meta
     }
 
     deinit {
