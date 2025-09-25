@@ -14,6 +14,7 @@ import Combine
 import UIKit
 import PhotosUI
 @_exported import Foundation
+import AutoFlow
 
 // Import RollingThought functionality through NoemaPackages
 import NoemaPackages
@@ -4938,6 +4939,8 @@ private struct MainView: View {
 
             DownloadOverlay()
                 .environmentObject(downloadController)
+            AutoFlowHUD()
+                .padding()
         }
         // Global indexing banner across all tabs
         .overlay(alignment: .top) {
@@ -4983,6 +4986,9 @@ private struct MainView: View {
             NetworkKillSwitch.setEnabled(on)
         }
         .onChange(of: scenePhase) { phase in
+            if phase == .active {
+                Task { await AutoFlowOrchestrator.shared.post(.appBecameActive) }
+            }
             if phase == .background {
                 // Persist all rolling thought boxes for restoration on next launch
                 let keys = Array(chatVM.rollingThoughtViewModels.keys)
@@ -5037,8 +5043,10 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            MainView()
-                .environmentObject(experience)
+            SpacesSidebar {
+                MainView()
+                    .environmentObject(experience)
+            }
 
             if showSplash {
                 SplashView()

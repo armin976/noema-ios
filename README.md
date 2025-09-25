@@ -59,6 +59,14 @@ When tool calling is enabled, the model can issue JSON tool calls and receive st
 
 The entire workflow functions in airplane mode and satisfies App Store rule 2.5.2 because all executable code is user-authored and shipped inside the binary.
 
+## Spaces
+
+Spaces let you separate projects into isolated workspaces that keep notebooks, exports, and AutoFlow preferences scoped to a single context. The sidebar lists every space alongside quick actions to create or rename entries, and switching instantly rehydrates the previous space's datasets and settings without touching files on disk. Each space is backed by `Documents/Spaces/<id>/` with dedicated `notebooks`, `artifacts`, and `exports` folders plus a `space.json` descriptor so everything stays sandboxed and portable.
+
+## AutoFlow Profiles
+
+AutoFlow is still a foreground-only automation engine, but profiles now live per space. The **Space AutoFlow** card in Settings exposes a profile picker (Off, Balanced, Aggressive) and a guard slider to decide when high-null cleanups should trigger. The HUD only appears while a recipe is running and includes an accessible Stop button that pauses automation for ten minutes.
+
 ## AutoFlow
 
 AutoFlow is a foreground-only automation engine that turns application events into proactive playbook runs. It is disabled by default and can be enabled from **Settings → AutoFlow** by choosing one of three profiles:
@@ -77,6 +85,10 @@ Guardrails keep automation safe:
 - **Cache awareness** – When a cached result exists for an identical code/files combination newer than 24 hours, AutoFlow skips the run.
 
 Activity is recorded to `Documents/AutoFlow/elog.jsonl` with structured JSON lines so advanced users can audit automated runs. AutoFlow only operates while the app remains in the foreground.
+
+## Data Guards
+
+Every `python.execute` completion now funnels through the Data Guards engine. It samples up to 500 rows in under two seconds to estimate null percentages, duplicate ratios, and constant columns, then writes a `GuardReport.md` notebook cell alongside the dataset. The metrics feed directly into AutoFlow's run-finished events, so exceeding the configured null threshold automatically proposes the `clean-profile` playbook while staying within the existing rate limit and circuit-breaker guardrails.
 
 ### Live Console
 

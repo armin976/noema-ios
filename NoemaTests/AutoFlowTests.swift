@@ -9,7 +9,9 @@ final class AutoFlowTests: XCTestCase {
         let state = AutoFlowState(profile: .balanced)
         let runner = MockRunner()
         let clock = TestDateProvider()
-        let engine = AutoFlowEngine(eventBus: bus, state: state, runner: runner, dateProvider: { clock.now })
+        let (store, cleanup) = try await makeStore(profile: .balanced)
+        defer { cleanup() }
+        let engine = AutoFlowEngine(eventBus: bus, state: state, runner: runner, spaceStore: store, dateProvider: { clock.now })
         _ = engine
 
         try await Task.sleep(nanoseconds: 50_000_000)
@@ -35,7 +37,9 @@ final class AutoFlowTests: XCTestCase {
         let state = AutoFlowState(profile: .balanced)
         let runner = MockRunner()
         let clock = TestDateProvider()
-        let engine = AutoFlowEngine(eventBus: bus, state: state, runner: runner, dateProvider: { clock.now })
+        let (store, cleanup) = try await makeStore(profile: .balanced)
+        defer { cleanup() }
+        let engine = AutoFlowEngine(eventBus: bus, state: state, runner: runner, spaceStore: store, dateProvider: { clock.now })
         _ = engine
         await runner.setErrorMode(.appError)
 
@@ -72,7 +76,9 @@ final class AutoFlowTests: XCTestCase {
         let state = AutoFlowState(profile: .aggressive)
         let runner = MockRunner()
         let clock = TestDateProvider()
-        let engine = AutoFlowEngine(eventBus: bus, state: state, runner: runner, dateProvider: { clock.now })
+        let (store, cleanup) = try await makeStore(profile: .aggressive)
+        defer { cleanup() }
+        let engine = AutoFlowEngine(eventBus: bus, state: state, runner: runner, spaceStore: store, dateProvider: { clock.now })
         _ = engine
 
         try await Task.sleep(nanoseconds: 50_000_000)
@@ -92,7 +98,9 @@ final class AutoFlowTests: XCTestCase {
         let state = AutoFlowState(profile: .balanced)
         let runner = MockRunner()
         let clock = TestDateProvider()
-        let engine = AutoFlowEngine(eventBus: bus, state: state, runner: runner, dateProvider: { clock.now })
+        let (store, cleanup) = try await makeStore(profile: .balanced)
+        defer { cleanup() }
+        let engine = AutoFlowEngine(eventBus: bus, state: state, runner: runner, spaceStore: store, dateProvider: { clock.now })
         _ = engine
 
         try await Task.sleep(nanoseconds: 50_000_000)
@@ -143,6 +151,32 @@ private actor MockRunner: AutoFlowPlaybookRunning {
     func setErrorMode(_ mode: ErrorMode) {
         errorMode = mode
     }
+}
+
+private func makeStore(profile: SpaceSettings.AutoFlowProfileSetting) async throws -> (SpaceStore, () -> Void) {
+    let fm = FileManager.default
+    let temp = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try fm.createDirectory(at: temp, withIntermediateDirectories: true)
+    let suite = "spaces-\(UUID().uuidString)"
+    guard let defaults = UserDefaults(suiteName: suite) else {
+        throw NSError(domain: "SpaceStore", code: 0, userInfo: nil)
+    }
+    let store = SpaceStore(fileManager: fm, documentsURL: temp, userDefaults: defaults)
+    try await Task.sleep(nanoseconds: 20_000_000)
+    let spaces = await store.loadAll()
+    if let space = spaces.first {
+        try await store.updateSettings(for: space.id, settings: SpaceSettings(autoflowProfile: profile))
+        try await store.switchTo(space.id)
+    } else {
+        let new = try await store.create(name: "Test Space")
+        try await store.updateSettings(for: new.id, settings: SpaceSettings(autoflowProfile: profile))
+        try await store.switchTo(new.id)
+    }
+    let cleanup = {
+        defaults.removePersistentDomain(forName: suite)
+        try? fm.removeItem(at: temp)
+    }
+    return (store, cleanup)
 }
 
 private final class TestDateProvider: @unchecked Sendable {

@@ -22,7 +22,7 @@ var targets: [Target] = [
         name: "AutoFlow",
         dependencies: ["NoemaCore"],
         path: "Sources",
-        sources: ["AutoFlow", "Settings"]
+        sources: ["AutoFlow", "Settings", "Spaces", "Guards", "UI"]
     ),
     .target(
         name: "NotebookExports",
@@ -73,7 +73,7 @@ var targets: [Target] = [
         name: "AutoFlowTests",
         dependencies: ["AutoFlow", "NoemaCore"],
         path: "NoemaTests",
-        sources: ["AutoFlowTests.swift"]
+        sources: ["AutoFlowTests.swift", "SpacesTests.swift", "DataGuardsTests.swift"]
     ),
     .testTarget(
         name: "NoemaCoreTests",
