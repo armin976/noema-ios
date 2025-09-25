@@ -1,5 +1,6 @@
 import Foundation
 import WebKit
+import NoemaCore
 
 struct PythonResult: Codable {
     var stdout: String
@@ -257,9 +258,10 @@ final class PythonRunner: NSObject {
                 }
             }
         case "error":
-            let err = (dict["data"] as? String).map { RunnerError.javascriptError($0) } ?? RunnerError.javascriptError("Unknown error")
+            let message = dict["data"] as? String
+            let appError = mapAppError(from: message)
             finishStreams()
-            finish(with: .failure(err))
+            finish(with: .failure(appError))
         case "result":
             guard let data = dict["data"] as? [String: Any] else { return }
             let tables = (data["tables"] as? [String] ?? []).compactMap { $0.data(using: .utf8) }
@@ -281,6 +283,24 @@ final class PythonRunner: NSObject {
         default:
             break
         }
+    }
+}
+
+extension PythonRunner {
+    private func mapAppError(from message: String?) -> AppError {
+        let rawMessage = message ?? "Execution failed"
+        if rawMessage == "timeout" {
+            return AppError(code: .pyTimeout, message: "Python execution exceeded the allotted time.")
+        }
+        let combined = [rawMessage, currentStderr].joined(separator: currentStderr.isEmpty ? "" : "\n")
+        if combined.localizedCaseInsensitiveContains("memoryerror") || combined.localizedCaseInsensitiveContains("out of memory") {
+            return AppError(code: .pyMemory, message: "Python reported an out-of-memory condition.", suggestion: "Sample with nrows=… or drop columns.")
+        }
+        let trimmed = combined.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return AppError(code: .pyExec, message: "Python execution failed with no additional output.")
+        }
+        return AppError(code: .pyExec, message: trimmed)
     }
 }
 

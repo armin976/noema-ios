@@ -24,18 +24,13 @@ var targets: [Target] = [
         path: "Sources/Notebook"
     ),
     .target(
-        name: "InspectorExports",
-        dependencies: ["NoemaCore"],
-        path: "Sources/Inspector"
-    ),
-    .target(
         name: "Crew",
         dependencies: [],
         path: "Sources/Crew"
     ),
     .target(
         name: "CrewTools",
-        dependencies: ["Crew"],
+        dependencies: ["Crew", "NoemaCore"],
         path: "Sources/Tools"
     ),
     .testTarget(
@@ -67,6 +62,16 @@ var targets: [Target] = [
         dependencies: ["NoemaCore"],
         path: "NoemaTests",
         sources: ["ReproExportTests.swift"]
+    ),
+    .testTarget(
+        name: "NoemaCoreTests",
+        dependencies: ["NoemaCore"],
+        path: "NoemaTests",
+        sources: [
+            "ErrorPresenterTests.swift",
+            "AppDataPathResolverTests.swift",
+            "PyRunKeyRoundTripTests.swift"
+        ]
     )
 ]
 
@@ -76,6 +81,13 @@ targets.append(
         name: "CrewUI",
         dependencies: ["Crew"],
         path: "Sources/CrewUI"
+    )
+)
+targets.append(
+    .target(
+        name: "InspectorExports",
+        dependencies: ["NoemaCore"],
+        path: "Sources/Inspector"
     )
 )
 targets.append(

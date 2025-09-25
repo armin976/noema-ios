@@ -5067,6 +5067,9 @@ struct NoemaApp: App {
 
     var body: some Scene {
         WindowGroup { ContentView().preferredColorScheme(colorScheme) }
+#if DEBUG
+        .commands { DebugCommands() }
+#endif
     }
 }
 
