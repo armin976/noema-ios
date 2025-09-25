@@ -12,10 +12,11 @@ struct NotebookView: View {
     @State private var showingInspectorSheet = false
     @State private var navigatingToInspector = false
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    private let pythonExecutor = PythonExecuteTool()
 
     var body: some View {
         VStack(alignment: .leading) {
-            NavigationLink(destination: InspectorView().navigationTitle("Inspector"), isActive: $navigatingToInspector) {
+            NavigationLink(destination: InspectorView(pythonExecutor: pythonExecutor).navigationTitle("Inspector"), isActive: $navigatingToInspector) {
                 EmptyView()
             }
             .hidden()
@@ -89,7 +90,7 @@ struct NotebookView: View {
         }
         .sheet(isPresented: $showingInspectorSheet) {
             NavigationStack {
-                InspectorView()
+                InspectorView(pythonExecutor: pythonExecutor)
                     .navigationTitle("Inspector")
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { showingInspectorSheet = false } } }
             }

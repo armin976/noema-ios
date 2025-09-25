@@ -1,4 +1,5 @@
 import Foundation
+import Inspector
 
 struct PythonExecuteParams: Codable {
     let code: String
@@ -131,6 +132,23 @@ final class PythonExecuteTool: Tool {
             }
         }
         return files
+    }
+}
+
+extension PythonExecuteTool: InspectorPythonExecutionHandling {
+    func runPython(code: String, fileIDs: [String], timeoutMs: Int, force: Bool) async throws -> InspectorPythonExecutionResult {
+        var payload: [String: Any] = [
+            "code": code,
+            "timeout_ms": timeoutMs,
+            "force": force
+        ]
+        if !fileIDs.isEmpty {
+            payload["file_ids"] = fileIDs
+        }
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let resultData = try await call(args: data)
+        let result = try JSONDecoder().decode(PythonExecuteResult.self, from: resultData)
+        return InspectorPythonExecutionResult(stdout: result.stdout)
     }
 }
 

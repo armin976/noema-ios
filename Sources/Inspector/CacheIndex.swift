@@ -65,3 +65,9 @@ public actor CacheIndex {
         return items
     }
 }
+
+private struct PyRunCacheMeta: Codable {
+    let createdAt: Date
+    let artifacts: [String: String]
+    let imageFiles: [String]
+}

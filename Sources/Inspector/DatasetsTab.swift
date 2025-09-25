@@ -1,8 +1,21 @@
 import SwiftUI
 import UIKit
 
+public struct InspectorPythonExecutionResult {
+    public let stdout: String
+
+    public init(stdout: String) {
+        self.stdout = stdout
+    }
+}
+
+public protocol InspectorPythonExecutionHandling {
+    func runPython(code: String, fileIDs: [String], timeoutMs: Int, force: Bool) async throws -> InspectorPythonExecutionResult
+}
+
 struct DatasetsTab: View {
     let store: DatasetIndexStore
+    let pythonExecutor: InspectorPythonExecutionHandling?
     @State private var datasets: [DatasetInfo] = []
     @State private var hashing: Set<UUID> = []
     @State private var sampling: Set<UUID> = []
@@ -21,6 +34,11 @@ struct DatasetsTab: View {
         formatter.dateTimeStyle = .named
         return formatter
     }()
+
+    init(store: DatasetIndexStore, pythonExecutor: InspectorPythonExecutionHandling? = nil) {
+        self.store = store
+        self.pythonExecutor = pythonExecutor
+    }
 
     var body: some View {
         NavigationStack {
@@ -154,7 +172,7 @@ struct DatasetsTab: View {
                 }
             }
             .buttonStyle(.bordered)
-            .disabled(sampling.contains(info.id))
+            .disabled(sampling.contains(info.id) || pythonExecutor == nil)
 
             Spacer()
 
@@ -193,10 +211,10 @@ struct DatasetsTab: View {
     }
 
     private func sample(_ info: DatasetInfo) {
-        guard !sampling.contains(info.id) else { return }
+        guard !sampling.contains(info.id), let executor = pythonExecutor else { return }
         sampling.insert(info.id)
         Task {
-            let sampler = DatasetShapeSampler(store: store)
+            let sampler = DatasetShapeSampler(store: store, pythonExecutor: executor)
             if let shape = await sampler.sampleShape(for: info) {
                 var updated = info
                 updated.rows = shape.rows
@@ -221,11 +239,11 @@ struct DatasetsTab: View {
 
 private struct DatasetShapeSampler {
     let store: DatasetIndexStore
-    private let pythonTool: PythonExecuteTool
+    private let pythonExecutor: InspectorPythonExecutionHandling
 
-    init(store: DatasetIndexStore, pythonTool: PythonExecuteTool = PythonExecuteTool()) {
+    init(store: DatasetIndexStore, pythonExecutor: InspectorPythonExecutionHandling) {
         self.store = store
-        self.pythonTool = pythonTool
+        self.pythonExecutor = pythonExecutor
     }
 
     func sampleShape(for info: DatasetInfo) async -> (rows: Int, cols: Int)? {
@@ -242,16 +260,11 @@ try:
 except Exception:
     pass
 """
-        let payload: [String: Any] = [
-            "code": code,
-            "file_ids": [relative],
-            "timeout_ms": 2_000,
-            "force": true
-        ]
-        guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
         do {
-            let resultData = try await pythonTool.call(args: data)
-            let result = try JSONDecoder().decode(PythonExecuteResult.self, from: resultData)
+            let result = try await pythonExecutor.runPython(code: code,
+                                                            fileIDs: [relative],
+                                                            timeoutMs: 2_000,
+                                                            force: true)
             return parseShape(from: result.stdout)
         } catch {
             return nil
