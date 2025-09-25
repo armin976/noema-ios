@@ -25,6 +25,40 @@ import LeapSDK
 import MLX
 #endif
 
+// MARK: –– Experience coordination ------------------------------------------
+
+@MainActor
+final class AppExperienceCoordinator: ObservableObject {
+    @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
+    @Published var showOnboarding: Bool
+    @Published var showShortcutHelp = false
+    @Published private(set) var isFirstLaunch: Bool
+
+    init() {
+        let firstRun = !hasCompletedOnboarding
+        self.isFirstLaunch = firstRun
+        self.showOnboarding = firstRun
+    }
+
+    func markOnboardingComplete() {
+        hasCompletedOnboarding = true
+        isFirstLaunch = false
+        showOnboarding = false
+    }
+
+    func reopenOnboarding() {
+        showOnboarding = true
+    }
+
+    func presentShortcutHelp() {
+        showShortcutHelp = true
+    }
+
+    func dismissShortcutHelp() {
+        showShortcutHelp = false
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Temporary stubs for new SwiftUI modifiers used by iOS 26. These are no‑ops
 // here so the project can compile on older toolchains.
@@ -4236,6 +4270,8 @@ struct ChatView: View {
                                                     .background(Color.black.opacity(0.6))
                                                     .clipShape(Circle())
                                             }
+                                            .accessibilityLabel("Remove image \(idx + 1)")
+                                            .accessibilityHint("Removes the selected image from your message.")
                                             .offset(x: 6, y: -6)
                                         }
                                     }
@@ -4264,16 +4300,19 @@ struct ChatView: View {
                                         RoundedRectangle(cornerRadius: 16, style: .continuous)
                                             .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
                                     )
+                                    .accessibilityLabel("Add image from Photos")
                             }
                             .onChange(of: pickerItems) { _, items in
                                 Task { await loadPickedItems(items) }
                             }
                         }
-                        
+
                         TextField("Ask…", text: $text, axis: .vertical)
                             .lineLimit(1...5)
                             .focused(focus)
                             .submitLabel(.send)
+                            .accessibilityLabel("Message input")
+                            .accessibilityHint("Type what you want to ask the model.")
                             .onSubmit {
                                 if UIConstants.showMultimodalUI && vm.supportsImageInput && !vm.pendingImageURLs.isEmpty && vm.contextLimit < 5000 {
                                     showSmallCtxAlert = true
@@ -4305,6 +4344,9 @@ struct ChatView: View {
                             )
                             .foregroundColor(.white)
                     }
+                    .accessibilityLabel("Stop response")
+                    .accessibilityHint("Cancel the current generation.")
+                    .keyboardShortcut(.escape, modifiers: [])
                 } else {
                     Button(action: {
                         if UIConstants.showMultimodalUI && vm.supportsImageInput && !vm.pendingImageURLs.isEmpty && vm.contextLimit < 5000 {
@@ -4324,6 +4366,9 @@ struct ChatView: View {
                             .foregroundColor(.white)
                     }
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityLabel("Send message")
+                    .accessibilityHint("Submit your message to the assistant.")
+                    .keyboardShortcut(.return, modifiers: [.command])
                 }
             }
             .animation(.default, value: text)
@@ -4401,6 +4446,8 @@ struct ChatView: View {
                     } label: {
                         Image(systemName: "line.3.horizontal")
                     }
+                    .accessibilityLabel("Toggle chat list")
+                    .accessibilityHint("Show or hide your recent conversations.")
                 }
                 ToolbarItem(placement: .principal) {
                     modelHeader
@@ -4408,14 +4455,29 @@ struct ChatView: View {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     if horizontalSizeClass == .compact {
                         Button { showNotebookSheet = true } label: { Image(systemName: "square.and.pencil") }
+                            .accessibilityLabel("Open notebook")
+                            .accessibilityHint("Review or edit the current notebook.")
                     }
                     Button { vm.startNewSession() } label: { Image(systemName: "plus") }
+                        .accessibilityLabel("Start new chat")
+                        .accessibilityHint("Creates a fresh conversation.")
+                        .keyboardShortcut("n", modifiers: [.command])
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
         }
         .alert(item: $datasetManager.embedAlert) { info in
             Alert(title: Text(info.message))
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .shortcutNewChat)) { _ in
+            vm.startNewSession()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .shortcutFocusComposer)) { _ in
+            withAnimation { showSidebar = false }
+            inputFocused = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .shortcutStopGeneration)) { _ in
+            vm.stop()
         }
         .overlay(alignment: .top) {
             if let active = modelManager.activeDataset,
@@ -4561,6 +4623,8 @@ struct ChatView: View {
                             .background(.thinMaterial)
                             .clipShape(Circle())
                     }
+                    .accessibilityLabel("Scroll to latest message")
+                    .accessibilityHint("Jump to the bottom of the conversation.")
                     .padding(.trailing, 16)
                     .padding(.bottom, 96)
                 }
@@ -4651,6 +4715,8 @@ struct ChatView: View {
                             .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Unload model")
+                    .accessibilityHint("Disconnects the current model from the chat.")
                     Text(showPercent ?
                          "\(Int(Double(vm.totalTokens) / vm.contextLimit * 100)) %" :
                          "\(vm.totalTokens) tok")
@@ -4678,6 +4744,9 @@ struct ChatView: View {
                 Text("Recent Chats").font(.headline)
                 Spacer()
                 Button(action: { vm.startNewSession() }) { Image(systemName: "plus") }
+                .accessibilityLabel("Start new chat")
+                .accessibilityHint("Creates a fresh conversation.")
+                .keyboardShortcut("n", modifiers: [.command])
             }
             .padding()
             List(selection: $vm.activeSessionID) {
@@ -4814,6 +4883,7 @@ private struct CitationButton: View {
 /// Hosts the main tabs with the default system tab bar.
 private struct MainView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @EnvironmentObject var experience: AppExperienceCoordinator
     @StateObject private var tabRouter = TabRouter()
     @StateObject private var chatVM = ChatVM()
     @StateObject private var modelManager = AppModelManager()
@@ -4862,6 +4932,7 @@ private struct MainView: View {
                     .environmentObject(modelManager)
                     .environmentObject(tabRouter)
                     .environmentObject(downloadController)
+                    .environmentObject(experience)
                     .tabItem { Label("Settings", systemImage: "gearshape") }
             }
 
@@ -4961,30 +5032,40 @@ private struct MainView: View {
 
 // MARK: –– App entry ---------------------------------------------------------
 struct ContentView: View {
+    @EnvironmentObject var experience: AppExperienceCoordinator
     @State private var showSplash = true
-    @State private var showOnboarding = false
-    @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
 
     var body: some View {
         ZStack {
             MainView()
+                .environmentObject(experience)
 
             if showSplash {
                 SplashView()
                     .transition(.opacity)
             }
         }
-        .fullScreenCover(isPresented: $showOnboarding) {
-            OnboardingView(showOnboarding: $showOnboarding)
+        .fullScreenCover(isPresented: $experience.showOnboarding) {
+            OnboardingView(showOnboarding: $experience.showOnboarding)
+                .environmentObject(experience)
+        }
+        .sheet(isPresented: $experience.showShortcutHelp) {
+            KeyboardShortcutCheatSheetView {
+                experience.dismissShortcutHelp()
+            }
         }
         .onAppear {
             print("[Noema] app launched 🚀")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            let isFirstLaunch = experience.isFirstLaunch
+            if isFirstLaunch {
+                experience.showOnboarding = false
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                 withAnimation {
                     showSplash = false
-                    if !hasCompletedOnboarding {
-                        showOnboarding = true
-                    }
+                }
+                if isFirstLaunch {
+                    experience.reopenOnboarding()
                 }
             }
         }
@@ -5024,9 +5105,44 @@ private struct SplashView: View {
     }
 }
 
+private struct KeyboardShortcutCommands: Commands {
+    @ObservedObject var experience: AppExperienceCoordinator
+
+    var body: some Commands {
+        CommandMenu("Workspace") {
+            Button("New Chat") {
+                NotificationCenter.default.post(name: .shortcutNewChat, object: nil)
+            }
+            .keyboardShortcut("n", modifiers: [.command])
+
+            Button("Focus Composer") {
+                NotificationCenter.default.post(name: .shortcutFocusComposer, object: nil)
+            }
+            .keyboardShortcut("k", modifiers: [.command])
+
+            Button("Stop Response") {
+                NotificationCenter.default.post(name: .shortcutStopGeneration, object: nil)
+            }
+            .keyboardShortcut(".", modifiers: [.command])
+
+            Button("Keyboard Shortcuts…") {
+                experience.presentShortcutHelp()
+            }
+            .keyboardShortcut("?", modifiers: [.command, .shift])
+        }
+    }
+}
+
+extension Notification.Name {
+    static let shortcutNewChat = Notification.Name("noema.shortcut.newChat")
+    static let shortcutFocusComposer = Notification.Name("noema.shortcut.focusComposer")
+    static let shortcutStopGeneration = Notification.Name("noema.shortcut.stopGeneration")
+}
+
 @main
 struct NoemaApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    @StateObject private var experience = AppExperienceCoordinator()
     init() {
 #if canImport(MLX)
         // On non‑compatible devices (pre‑A13), force CPU execution to avoid
@@ -5066,10 +5182,17 @@ struct NoemaApp: App {
     }
 
     var body: some Scene {
-        WindowGroup { ContentView().preferredColorScheme(colorScheme) }
+        WindowGroup {
+            ContentView()
+                .environmentObject(experience)
+                .preferredColorScheme(colorScheme)
+        }
+        .commands {
+            KeyboardShortcutCommands(experience: experience)
 #if DEBUG
-        .commands { DebugCommands() }
+            DebugCommands()
 #endif
+        }
     }
 }
 

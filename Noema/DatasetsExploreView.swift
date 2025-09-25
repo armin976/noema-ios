@@ -97,7 +97,13 @@ struct DatasetsExploreView: View {
                 .environmentObject(datasetManager)
         }
         .overlay(alignment: .center) { loadingOverlay }
-        .overlay(alignment: .center) { Group { if vm.isLoadingSearch { ProgressView() } } }
+        .overlay(alignment: .center) {
+            if let state = searchStateContent {
+                ExperienceStateView(content: state)
+                    .padding()
+                    .transition(.opacity)
+            }
+        }
         .fileImporter(isPresented: $showImporter,
                       allowedContentTypes: allowedUTTypes(),
                       allowsMultipleSelection: true) { result in
@@ -312,12 +318,36 @@ struct DatasetsExploreView: View {
             .animation(.snappy, value: showSlowHint)
         }
     }
-    
+
     private func updateRegistry(_ token: String) {
         let hf = CombinedDatasetRegistry(primary: HuggingFaceDatasetRegistry(token: token),
                                          extras: [ManualDatasetRegistry(entries: CuratedDatasets.hf)])
         vm.updateHFRegistry(hf)
         Task { await vm.loadCurated() }
+    }
+
+    private var searchStateContent: ExperienceStateView.Content? {
+        if vm.isLoadingSearch {
+            return .loading(message: "Searching datasets…")
+        }
+        if let error = vm.searchError {
+            return .error(
+                title: "Couldn't load results",
+                message: error,
+                actionTitle: "Try Again",
+                action: { vm.triggerSearch() }
+            )
+        }
+        let trimmed = vm.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if vm.isSearching, !vm.isLoadingSearch, !trimmed.isEmpty, vm.searchResults.isEmpty {
+            return .empty(
+                title: "No results",
+                message: "Try a different query or broaden your keywords.",
+                actionTitle: "Clear Search",
+                action: { vm.searchText = "" }
+            )
+        }
+        return nil
     }
 
     // MARK: - Import helpers

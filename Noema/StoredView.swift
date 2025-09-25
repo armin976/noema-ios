@@ -38,30 +38,24 @@ struct StoredView: View {
                     if !modelManager.downloadedDatasets.isEmpty {
                         datasetsSection
                     }
-                    if modelManager.downloadedModels.isEmpty && modelManager.downloadedDatasets.isEmpty {
-                        VStack(spacing: 12) {
-                            Text("No items yet")
-                                .font(.headline)
-                            Text("Import a dataset (PDF, EPUB, or TXT) from Files, or explore online.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.center)
-                            Button {
-                                showImporter = true
-                            } label: {
-                                Label("Import Dataset", systemImage: "square.and.arrow.down")
-                            }
-                            .buttonStyle(.borderedProminent)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.vertical, 40)
-                        .listRowBackground(Color.clear)
-                    }
                 }
                 // Avoid forcing List re-creation on every models refresh to prevent scroll glitches
                 .navigationTitle("Stored")
                 .onAppear { modelManager.refresh() }
-                
+                .overlay(alignment: .center) {
+                    if modelManager.downloadedModels.isEmpty && modelManager.downloadedDatasets.isEmpty {
+                        ExperienceStateView(
+                            content: .empty(
+                                title: "Nothing saved yet",
+                                message: "Import your own PDFs, EPUBs, or text files to keep them handy offline.",
+                                actionTitle: "Import Dataset",
+                                action: { showImporter = true }
+                            )
+                        )
+                        .padding()
+                    }
+                }
+
                 // Floating off-grid indicator
                 if offGrid {
                     VStack {
@@ -84,6 +78,8 @@ struct StoredView: View {
                                         .shadow(color: .black.opacity(0.2), radius: 8, x: 0, y: 4)
                                 )
                             }
+                            .accessibilityLabel("Off-grid mode enabled")
+                            .accessibilityHint("Shows information about offline mode.")
                             .padding(.trailing, 20)
                             .padding(.bottom, 20)
                         }
@@ -368,4 +364,81 @@ struct StoredView: View {
         pendingPickedURLs.removeAll()
         showNameSheet = false
     }
+}
+
+struct ExperienceStateView: View {
+    enum Content {
+        case loading(message: String? = nil)
+        case empty(title: String, message: String, actionTitle: String?, action: (() -> Void)?)
+        case error(title: String, message: String, actionTitle: String?, action: (() -> Void)?)
+    }
+
+    let content: Content
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        VStack(spacing: 16) {
+            switch content {
+            case .loading(let message):
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .scaleEffect(1.1)
+                if let message = message {
+                    Text(message)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+            case .empty(let title, let message, let actionTitle, let action):
+                iconView(systemName: "tray")
+                titleView(title)
+                messageView(message)
+                if let actionTitle, let action {
+                    Button(actionTitle, action: action)
+                        .buttonStyle(.borderedProminent)
+                }
+            case .error(let title, let message, let actionTitle, let action):
+                iconView(systemName: "exclamationmark.octagon")
+                    .foregroundStyle(.red)
+                titleView(title)
+                messageView(message)
+                if let actionTitle, let action {
+                    Button(actionTitle, action: action)
+                        .buttonStyle(.bordered)
+                }
+            }
+        }
+        .padding(24)
+        .frame(maxWidth: 360)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.primary.opacity(colorScheme == .dark ? 0.2 : 0.08), lineWidth: 0.5)
+        )
+        .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.2 : 0.08), radius: 16, x: 0, y: 12)
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private func iconView(systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 34, weight: .semibold))
+            .foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder
+    private func titleView(_ text: String) -> some View {
+        Text(text)
+            .font(.title3.weight(.semibold))
+            .multilineTextAlignment(.center)
+    }
+
+    @ViewBuilder
+    private func messageView(_ text: String) -> some View {
+        Text(text)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+    }
+
 }

@@ -10,6 +10,7 @@ import AppKit
 
 struct OnboardingView: View {
     @Binding var showOnboarding: Bool
+    @EnvironmentObject var experience: AppExperienceCoordinator
     @State private var currentPage = 0
     @StateObject private var embedInstaller = EmbedModelInstaller()
     @State private var animateElements = false
@@ -365,7 +366,9 @@ struct OnboardingView: View {
                         .buttonStyle(.borderedProminent)
                         .tint(navyBlue)
                         .disabled(isDownloadingEmbedModel || embedInstaller.state == .ready)
-                        
+                        .accessibilityLabel("Download embedding model")
+                        .accessibilityHint("Installs the small model used for local dataset search.")
+
                         if isDownloadingEmbedModel && embedProgress > 0 {
                             ProgressView(value: embedProgress)
                                 .frame(width: 240)
@@ -374,12 +377,7 @@ struct OnboardingView: View {
                     }
                 }
                 
-                Button(action: {
-                    withAnimation(.easeInOut) {
-                        showOnboarding = false
-                    }
-                    UserDefaults.standard.set(true, forKey: "hasCompletedOnboarding")
-                }) {
+                Button(action: completeOnboarding) {
                     Text(embedInstaller.state == .ready ? "Start Using Noema" : "Skip for Now")
                         .font(.body)
                         .foregroundColor(embedInstaller.state == .ready ? navyBlue : textSecondary)
@@ -395,6 +393,13 @@ struct OnboardingView: View {
         }
         .opacity(animateElements ? 1 : 0)
         .animation(.easeOut(duration: 0.6), value: animateElements)
+    }
+
+    private func completeOnboarding() {
+        withAnimation(.easeInOut) {
+            showOnboarding = false
+        }
+        experience.markOnboardingComplete()
     }
 
     private func onboardingImageView(keywords: [String], height: CGFloat) -> some View {
@@ -537,12 +542,8 @@ struct OnboardingView: View {
         HStack {
             // Skip button (except on last page)
             if currentPage < totalPages - 1 {
-                Button("Skip") {
-                    withAnimation {
-                        showOnboarding = false
-                    }
-                    UserDefaults.standard.set(true, forKey: "hasCompletedOnboarding")
-                }
+                Button("Skip", action: completeOnboarding)
+                .keyboardShortcut(.escape, modifiers: [])
                 .foregroundColor(textSecondary)
             } else {
                 Spacer()
@@ -587,4 +588,5 @@ struct OnboardingView: View {
 
 #Preview {
     OnboardingView(showOnboarding: .constant(true))
+        .environmentObject(AppExperienceCoordinator())
 }
