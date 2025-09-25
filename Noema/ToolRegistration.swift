@@ -17,20 +17,23 @@ public final class ToolRegistrar {
         
         // Register web search tool
         await registerWebSearchTool()
-        
-        // Add more tools here as they become available
-        // registerDatasetSearchTool()
-        // registerCodeAnalysisTool()
-        // registerCalculatorTool()
-        
+
+        await registerPythonTool()
+
         isInitialized = true
         await logger.log("[ToolRegistrar] Tool initialization complete. Registered tools: \(ToolRegistry.shared.registeredToolNames)")
     }
-    
+
     private func registerWebSearchTool() async {
         let webTool = WebRetrieveTool()
         ToolRegistry.shared.register(webTool)
         await logger.log("[ToolRegistrar] Registered WebRetrieveTool (Brave Search)")
+    }
+
+    private func registerPythonTool() async {
+        let pythonTool = PythonExecuteTool()
+        ToolRegistry.shared.register(pythonTool)
+        await logger.log("[ToolRegistrar] Registered PythonExecuteTool")
     }
 }
 

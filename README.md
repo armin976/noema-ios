@@ -36,6 +36,29 @@ Noema implements a flexible tool calling system for both llama.cpp (server and i
 
 When tool calling is enabled, the model can issue JSON tool calls and receive structured responses, making it easy to access your documents without exceeding context limits.
 
+### Offline Python notebook & analytics pane
+- **Headless Pyodide runtime** – A bundled Pyodide WebAssembly build powers the `python.execute` tool. The interpreter runs inside a hidden `WKWebView`, entirely offline with wheels for `numpy`, `pandas` and `matplotlib` included in the app bundle.
+- **Notebook pane** – On iPad the chat view now shows a split layout: chat on the left, a live Notebook on the right. iPhone devices can open the Notebook from the chat toolbar. Each Python execution records stdout/stderr plus table and image artefacts directly into the notebook cells.
+- **Dataset sharing** – Import CSV files through Files.app. Any files placed in `On My iPhone/iPad > Noema > Datasets` are exposed to Pyodide via the custom `appdata://` scheme handled by `AppDataSchemeHandler`.
+- **Settings toggle** – Disable or enable Python execution under **Settings → Python → Enable offline Python**. When disabled, notebook cells render but the `Run` button is inactive.
+
+#### Sample workflow
+1. Import the bundled sample dataset from the Files app (`sample.csv` under *Noema ▸ Samples*).
+2. In chat, ask the assistant: “Summarize null counts and plot histograms for the numeric columns in sample.csv.”
+3. The model calls `python.execute` with a payload similar to:
+   ```python
+   import pandas as pd, matplotlib.pyplot as plt
+   df = pd.read_csv("/data/sample.csv")
+   print(df.isna().sum().to_frame("nulls").to_json(orient="table"))
+   numeric = df.select_dtypes(include="number")
+   numeric.hist(figsize=(8, 6))
+   plt.tight_layout()
+   plt.savefig("/tmp/hist.png", dpi=180)
+   ```
+4. The Notebook pane captures the JSON table preview and histogram image. You can export the notebook as Markdown plus JSON metadata or re-run the code cell to iterate on analysis.
+
+The entire workflow functions in airplane mode and satisfies App Store rule 2.5.2 because all executable code is user-authored and shipped inside the binary.
+
 ### Low-RAM, high-knowledge design
 Instead of embedding all knowledge inside huge model weights, Noema emphasises external knowledge sources. By pairing compact models with large local datasets (textbooks, PDFs, etc.), you can store far more information on-device than would be possible if the weights contained all of it. Retrieval-augmented generation ensures that the assistant cites relevant passages from your data rather than hallucinating answers.
 

@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Pyodide Runner</title>
+  <script type="text/javascript" src="pyodide/pyodide.js"></script>
+</head>
+<body>
+<script type="text/javascript">
+(function(){
+  const post = msg => {
+    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.pyOut) {
+      window.webkit.messageHandlers.pyOut.postMessage(msg);
+    }
+  };
+
+  let readyPromise = null;
+
+  async function ensureReady() {
+    if (readyPromise) { return readyPromise; }
+    readyPromise = (async () => {
+      if (typeof loadPyodide !== 'function') {
+        throw new Error('Pyodide bootstrap not found');
+      }
+      const py = await loadPyodide({indexURL: 'pyodide/'});
+      try {
+        await py.loadPackage('micropip');
+      } catch (err) {
+        console.warn('micropip load failed', err);
+      }
+      await py.runPythonAsync(`
+import micropip, os, sys
+os.environ['PIP_NO_INDEX'] = '1'
+os.environ['PIP_FIND_LINKS'] = '/wheels'
+_tables: list[str] = []
+_images: list[str] = []
+_artifacts: dict[str, str] = {}
+
+def __noema_emit_table(obj):
+    import json
+    if isinstance(obj, str):
+        _tables.append(obj)
+    else:
+        _tables.append(json.dumps(obj))
+
+def __noema_emit_image(path):
+    from pathlib import Path
+    p = Path(path)
+    if p.exists():
+        _images.append(str(p))
+
+def __noema_reset():
+    _tables.clear()
+    _images.clear()
+    _artifacts.clear()
+
+__noema_reset()
+`);
+      return py;
+    })();
+    return readyPromise;
+  }
+
+  function makeBinary(data) {
+    if (!data) { return new Uint8Array(); }
+    if (Array.isArray(data)) { return new Uint8Array(data); }
+    return Uint8Array.from(atob(data), c => c.charCodeAt(0));
+  }
+
+  async function writeFiles(py, files) {
+    if (!files) { return; }
+    for (const f of files) {
+      if (!f || !f.name) { continue; }
+      try {
+        const bytes = makeBinary(f.data);
+        const path = `/data/${f.name}`;
+        const parent = path.split('/').slice(0, -1).join('/');
+        if (parent && parent.length > 1) {
+          try { py.FS.mkdirTree(parent); } catch (e) {}
+        }
+        py.FS.writeFile(path, bytes, {encoding: 'binary'});
+      } catch (err) {
+        post({type: 'stderr', data: `Failed to load file ${f.name}: ${err}`});
+      }
+    }
+  }
+
+  async function collectOutputs(py) {
+    const tables = py.globals.get('_tables');
+    const images = py.globals.get('_images');
+    const artifacts = py.globals.get('_artifacts');
+    const result = {
+      tables: tables ? tables.toJs({dict_converter: Object.fromEntries}) : [],
+      images: [],
+      artifacts: {}
+    };
+    if (images) {
+      const arr = images.toJs({dict_converter: Object.fromEntries});
+      for (const path of arr) {
+        try {
+          const data = py.FS.readFile(path, {encoding: 'binary'});
+          result.images.push(Array.from(data));
+        } catch (err) {
+          post({type: 'stderr', data: `Failed to read image ${path}: ${err}`});
+        }
+      }
+    }
+    if (artifacts) {
+      const entries = artifacts.toJs({dict_converter: Object.fromEntries});
+      for (const key of Object.keys(entries)) {
+        try {
+          const data = py.FS.readFile(entries[key], {encoding: 'binary'});
+          result.artifacts[key] = Array.from(data);
+        } catch (err) {
+          post({type: 'stderr', data: `Failed to read artifact ${key}: ${err}`});
+        }
+      }
+    }
+    return result;
+  }
+
+  window.runPython = async function(payloadJSON) {
+    try {
+      const payload = typeof payloadJSON === 'string' ? JSON.parse(payloadJSON) : payloadJSON;
+      const { code, files, timeoutMs } = payload;
+      const py = await ensureReady();
+      await writeFiles(py, files);
+      await py.runPythonAsync('__noema_reset()');
+      const controller = new AbortController();
+      const timeout = typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : 15000;
+      let timedOut = false;
+      const t = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+        post({type: 'error', data: 'timeout'});
+      }, timeout);
+      py.setStdout({batched: (data) => post({type: 'stdout', data})});
+      py.setStderr({batched: (data) => post({type: 'stderr', data})});
+      try {
+        const wrapped = `\nimport asyncio\nasync def __noema_entry():\n    try:\n        ${code}\n    finally:\n        pass\nasyncio.run(__noema_entry())\n`;
+        await py.runPythonAsync(wrapped, {signal: controller.signal});
+        if (!timedOut) {
+          const collected = await collectOutputs(py);
+          post({type: 'result', data: collected});
+        }
+      } catch (err) {
+        post({type: 'error', data: String(err) });
+      } finally {
+        clearTimeout(t);
+      }
+    } catch (err) {
+      post({type: 'error', data: String(err)});
+    }
+  };
+
+  window.interruptPython = function() {
+    post({type: 'stderr', data: 'Interrupt not implemented in placeholder runner.'});
+  };
+})();
+</script>
+</body>
+</html>

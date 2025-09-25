@@ -12,6 +12,11 @@ final class SettingsModel: ObservableObject {
     @AppStorage("verboseLogging") var verboseLogging = false
     @AppStorage("huggingFaceToken") var huggingFaceToken = ""
     @AppStorage("bypassRAMCheck") var bypassRAMCheck = false
+    @AppStorage("pythonEnabled") var pythonEnabled = true {
+        didSet {
+            NotificationCenter.default.post(name: .pythonSettingsDidChange, object: pythonEnabled)
+        }
+    }
     // System preset removed; default system behavior is always used
     @AppStorage("ragMaxChunks") var ragMaxChunks = 5
     @AppStorage("ragMinScore") var ragMinScore: Double = 0.5
@@ -88,6 +93,12 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
+                }
+                Section("Python") {
+                    Toggle("Enable offline Python", isOn: $settings.pythonEnabled)
+                    Text("Runs Pyodide locally with bundled packages. Disable to prevent notebook execution.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 generalSection
                 Section("Embedding Model") {
