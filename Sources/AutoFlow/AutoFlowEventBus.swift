@@ -59,7 +59,7 @@ public actor AutoFlowEventBus {
             continuation.onTermination = { [id] _ in
                 Task { await self.removeContinuation(id) }
             }
-            Task { await self.storeContinuation(continuation, id: id) }
+            storeContinuation(continuation, id: id)
         }
     }
 

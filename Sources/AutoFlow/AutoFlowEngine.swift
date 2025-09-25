@@ -61,7 +61,7 @@ public actor AutoFlowEngine {
             continuation.onTermination = { [id] _ in
                 Task { await self.removeStatusContinuation(id) }
             }
-            Task { await self.storeStatusContinuation(continuation, id: id) }
+            storeStatusContinuation(continuation, id: id)
             continuation.yield(status)
         }
     }
@@ -119,24 +119,9 @@ public actor AutoFlowEngine {
         }
 
         let guardrail = await state.guardrailState(now: now)
-        switch guardrail {
-        case .disabled:
-            await broadcastStatus(with: .paused(reason: "AutoFlow disabled"))
+        if let phase = phase(for: guardrail, now: now) {
+            await broadcastStatus(with: phase)
             return
-        case let .manuallyPaused(until):
-            let reason = "Paused until \(isoFormatter.string(from: until))"
-            await broadcastStatus(with: .paused(reason: reason))
-            return
-        case let .circuitOpen(until):
-            let reason = "Circuit open until \(isoFormatter.string(from: until))"
-            await broadcastStatus(with: .paused(reason: reason))
-            return
-        case let .rateLimited(until):
-            let reason = "Rate limited until \(isoFormatter.string(from: until))"
-            await broadcastStatus(with: .paused(reason: reason))
-            return
-        case .ready:
-            break
         }
 
         let preferences = await state.preferences(now: now)
@@ -256,8 +241,13 @@ public actor AutoFlowEngine {
     }
 
     private func broadcastStatus() async {
-        let status = await state.status(now: dateProvider())
-        await broadcastStatus(with: status.phase)
+        let now = dateProvider()
+        let guardrail = await state.guardrailState(now: now)
+        if let phase = phase(for: guardrail, now: now) {
+            await broadcastStatus(with: phase)
+        } else {
+            await broadcastStatus(with: .idle)
+        }
     }
 
     private func broadcastStatus(with phase: AutoFlowStatus.Phase) async {
@@ -265,6 +255,21 @@ public actor AutoFlowEngine {
         status = AutoFlowStatus(phase: phase, lastActionAt: info.lastActionAt)
         for continuation in statusContinuations.values {
             continuation.yield(status)
+        }
+    }
+
+    private func phase(for guardrail: AutoFlowGuardrailState, now: Date) -> AutoFlowStatus.Phase? {
+        switch guardrail {
+        case .ready:
+            return nil
+        case .disabled:
+            return .paused(reason: "AutoFlow disabled")
+        case let .manuallyPaused(until):
+            return .paused(reason: "Paused until \(isoFormatter.string(from: until))")
+        case let .circuitOpen(until):
+            return .paused(reason: "Circuit open until \(isoFormatter.string(from: until))")
+        case let .rateLimited(until):
+            return .paused(reason: "Rate limited until \(isoFormatter.string(from: until))")
         }
     }
 
