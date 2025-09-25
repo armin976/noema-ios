@@ -37,7 +37,8 @@ var targets: [Target] = [
             "PreScanTests.swift",
             "PromptBuilderFamilyTests.swift",
             "SettingsPropagationTests.swift",
-            "UsageLimiterTests.swift"
+            "UsageLimiterTests.swift",
+            "InspectorTests.swift"
         ],
         sources: [
             "CrewEngineTests.swift",
