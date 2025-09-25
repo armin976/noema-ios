@@ -65,12 +65,25 @@ The entire workflow functions in airplane mode and satisfies App Store rule 2.5.
 - The console autoscrolls while open and retains the last 300 lines per cell so you can revisit logs even after closing the notebook or rerunning a cell.
 - Cached executions skip the interpreter and surface a concise status trace (for example, `starting → caching → finished`) so it is clear the output came from disk.
 
+### Repro Export
+- **One-tap export** – Bundle the current notebook by tapping *Export Notebook* in the notebook toolbar or *Export Last Run* from the Figures inspector. The exporter writes `noema-repro-<timestamp>.zip` into your Documents folder so you can immediately share it.
+- **Portable manifest** – Every bundle includes `MANIFEST.json` with SHA-256 hashes for notebook artifacts, referenced cache directories, python runner version, app version, and mounted datasets. Datasets are not copied; only their paths and hashes are recorded so collaborators can mount the same inputs.
+- **Artifacts preserved** – Cached stdout/stderr, tables, and generated figures are copied into `/artifacts/<cacheKey>/` inside the zip. If crew logs were produced they are included automatically.
+- **Replay guidance** – Unzip the bundle, open `notebook/notebook.md` alongside `MANIFEST.json`, remount the datasets listed in the manifest, and rerun cells if caches are missing.
+
+
 ### Result caching for Pyodide runs
 
 - **Deterministic cache keys** – Each `python.execute` call now computes a key derived from the SHA-256 hashes of the code string, mounted file contents, and the embedded runner version. Cached outputs live under `Library/Caches/python/<key>/`.
 - **Artifacts on disk** – Cache entries persist `stdout.txt`, `stderr.txt`, a JSON array of base64-encoded table payloads (`tables.json`), any rendered figures inside an `images/` folder, and `meta.json` describing bundled artifacts.
 - **Force reruns when needed** – Pass `"force": true` in the tool arguments (or tap *Force Rerun* in the notebook UI) to bypass the cache. This is handy after modifying a dataset in Files.app.
 - **Clear cache programmatically** – `PythonResultCache.shared.clear()` removes all cached runs, which is useful while testing or to reclaim disk space.
+
+### Inspector (MVP)
+
+- **Datasets tab** – Browse mounted CSVs under *On My iPhone/iPad ▸ Noema ▸ Datasets*. Each row surfaces name, size, modified time and on-demand SHA-256 hashes. Tap **Quick sample** to attempt a fast shape sampler (200-row pandas read) for approximate rows × columns.
+- **Figures tab** – Renders thumbnails from recent `python.execute` cache entries (`Library/Caches/python/<key>/images/*.png`). Tap any tile to open a full-resolution preview with sharing and “Reveal in Files”.
+- **Notes** – Hashes are computed lazily so large files avoid blocking the UI. Shape sampling falls back gracefully if pandas cannot ingest the file or times out inside the 2 s budget.
 
 ### Low-RAM, high-knowledge design
 Instead of embedding all knowledge inside huge model weights, Noema emphasises external knowledge sources. By pairing compact models with large local datasets (textbooks, PDFs, etc.), you can store far more information on-device than would be possible if the weights contained all of it. Retrieval-augmented generation ensures that the assistant cites relevant passages from your data rather than hallucinating answers.

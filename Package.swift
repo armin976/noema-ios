@@ -9,9 +9,25 @@ var products: [Product] = [
 #if !os(Linux)
 products.append(.library(name: "CrewUI", targets: ["CrewUI"]))
 products.append(.library(name: "NoemaPackages", targets: ["NoemaPackages"]))
+products.append(.library(name: "Inspector", targets: ["Inspector"]))
 #endif
 
 var targets: [Target] = [
+    .target(
+        name: "NoemaCore",
+        dependencies: [],
+        path: "Sources/Core"
+    ),
+    .target(
+        name: "NotebookExports",
+        dependencies: ["NoemaCore"],
+        path: "Sources/Notebook"
+    ),
+    .target(
+        name: "InspectorExports",
+        dependencies: ["NoemaCore"],
+        path: "Sources/Inspector"
+    ),
     .target(
         name: "Crew",
         dependencies: [],
@@ -37,13 +53,20 @@ var targets: [Target] = [
             "PreScanTests.swift",
             "PromptBuilderFamilyTests.swift",
             "SettingsPropagationTests.swift",
-            "UsageLimiterTests.swift"
+            "UsageLimiterTests.swift",
+            "InspectorTests.swift"
         ],
         sources: [
             "CrewEngineTests.swift",
             "CrewValidatorTests.swift",
             "CrewToolTests.swift"
         ]
+    ),
+    .testTarget(
+        name: "ReproExportTests",
+        dependencies: ["NoemaCore"],
+        path: "NoemaTests",
+        sources: ["ReproExportTests.swift"]
     )
 ]
 
@@ -67,6 +90,13 @@ targets.append(
         name: "NoemaPackages",
         dependencies: ["LlamaFramework", "RollingThought"],
         path: "Sources/NoemaPackages"
+    )
+)
+targets.append(
+    .target(
+        name: "Inspector",
+        dependencies: [],
+        path: "Sources/Inspector"
     )
 )
 targets.append(

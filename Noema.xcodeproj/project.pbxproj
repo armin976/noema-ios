@@ -27,8 +27,9 @@
 		64ABE8E22E494DCE00821D00 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64ABE8E02E494DCE00821D00 /* Metal.framework */; };
 		64ABE8E32E494DCE00821D00 /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64ABE8E12E494DCE00821D00 /* MetalKit.framework */; };
 		64D506812E5387A40022E586 /* StoreKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64D506802E5387A40022E586 /* StoreKit.framework */; };
-		64D5069E2E53BFB30022E586 /* CryptoKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64D5069D2E53BFB30022E586 /* CryptoKit.framework */; };
-		A8259F0A2A424CF1B4856CCF /* NoemaPackages in Frameworks */ = {isa = PBXBuildFile; productRef = 21FF187598A740D3901EFE90 /* NoemaPackages */; };
+                64D5069E2E53BFB30022E586 /* CryptoKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64D5069D2E53BFB30022E586 /* CryptoKit.framework */; };
+                A8259F0A2A424CF1B4856CCF /* NoemaPackages in Frameworks */ = {isa = PBXBuildFile; productRef = 21FF187598A740D3901EFE90 /* NoemaPackages */; };
+                A8F9FA0A2F6A1B3E00A5CDEF /* Inspector in Frameworks */ = {isa = PBXBuildFile; productRef = A8F9FA0B2F6A1B3E00A5CDEF /* Inspector */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -138,10 +139,11 @@
 				64ABE8E22E494DCE00821D00 /* Metal.framework in Frameworks */,
 				64ABE8E32E494DCE00821D00 /* MetalKit.framework in Frameworks */,
 				64ABE8DF2E494DC700821D00 /* Accelerate.framework in Frameworks */,
-				64D5069E2E53BFB30022E586 /* CryptoKit.framework in Frameworks */,
-				64D506812E5387A40022E586 /* StoreKit.framework in Frameworks */,
-				A8259F0A2A424CF1B4856CCF /* NoemaPackages in Frameworks */,
-				64431EBB2E5E2F5E00BD5E8C /* SwiftMath in Frameworks */,
+                                64D5069E2E53BFB30022E586 /* CryptoKit.framework in Frameworks */,
+                                64D506812E5387A40022E586 /* StoreKit.framework in Frameworks */,
+                                A8259F0A2A424CF1B4856CCF /* NoemaPackages in Frameworks */,
+                                A8F9FA0A2F6A1B3E00A5CDEF /* Inspector in Frameworks */,
+                                64431EBB2E5E2F5E00BD5E8C /* SwiftMath in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -230,9 +232,10 @@
 				64DCAF872E41264C001DA82F /* MLXLinalg */,
 				64DCAF892E41264C001DA82F /* MLXNN */,
 				64DCAF8B2E41264C001DA82F /* MLXOptimizers */,
-				64DCAF8D2E41264C001DA82F /* MLXRandom */,
-				21FF187598A740D3901EFE90 /* NoemaPackages */,
-				6473409C2E4E9C2F00F7AC43 /* MLXLLM */,
+                                64DCAF8D2E41264C001DA82F /* MLXRandom */,
+                                21FF187598A740D3901EFE90 /* NoemaPackages */,
+                                A8F9FA0B2F6A1B3E00A5CDEF /* Inspector */,
+                                6473409C2E4E9C2F00F7AC43 /* MLXLLM */,
 				6473409E2E4E9C2F00F7AC43 /* MLXLMCommon */,
 				647340A02E4E9C2F00F7AC43 /* MLXMNIST */,
 				647340A22E4E9C2F00F7AC43 /* MLXVLM */,
@@ -816,11 +819,16 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		21FF187598A740D3901EFE90 /* NoemaPackages */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 2FB3F4F8C56943ACAEC3C135 /* XCLocalSwiftPackageReference "." */;
-			productName = NoemaPackages;
-		};
+                21FF187598A740D3901EFE90 /* NoemaPackages */ = {
+                        isa = XCSwiftPackageProductDependency;
+                        package = 2FB3F4F8C56943ACAEC3C135 /* XCLocalSwiftPackageReference "." */;
+                        productName = NoemaPackages;
+                };
+                A8F9FA0B2F6A1B3E00A5CDEF /* Inspector */ = {
+                        isa = XCSwiftPackageProductDependency;
+                        package = 2FB3F4F8C56943ACAEC3C135 /* XCLocalSwiftPackageReference "." */;
+                        productName = Inspector;
+                };
 		6433409F2E5A584A00DDA633 /* RevenueCat */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 6433409E2E5A584A00DDA633 /* XCRemoteSwiftPackageReference "purchases-ios-spm" */;
