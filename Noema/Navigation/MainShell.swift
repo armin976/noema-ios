@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 import PhotosUI
@@ -11,6 +12,9 @@ struct MainShell: View {
     @EnvironmentObject private var downloadController: DownloadController
 
     @State private var showSplash = true
+    @State private var showDebugChatSheet = false
+    @State private var debugChatViewModel: ChatViewModel?
+    @State private var didCheckDebugAutolaunch = false
 
     var body: some View {
         ZStack {
@@ -38,6 +42,13 @@ struct MainShell: View {
                 experience.dismissShortcutHelp()
             }
         }
+        .sheet(isPresented: $showDebugChatSheet, onDismiss: { debugChatViewModel = nil }) {
+            if let vm = debugChatViewModel {
+                ChatScreen(viewModel: vm)
+            } else {
+                Text("Chat unavailable")
+            }
+        }
         .onAppear {
             print("[Noema] app launched 🚀")
             let isFirstLaunch = experience.isFirstLaunch
@@ -52,7 +63,21 @@ struct MainShell: View {
                     experience.reopenOnboarding()
                 }
             }
+            if !didCheckDebugAutolaunch {
+                didCheckDebugAutolaunch = true
+                if ProcessInfo.processInfo.arguments.contains("CHAT_SMOKE_AUTO") {
+                    presentDebugChat()
+                }
+            }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .debugChatRequested)) { _ in
+            presentDebugChat()
+        }
+    }
+
+    private func presentDebugChat() {
+        debugChatViewModel = ChatViewModel(modelManager: modelManager)
+        showDebugChatSheet = true
     }
 }
 
