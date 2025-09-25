@@ -105,19 +105,14 @@ final class PythonRunner: NSObject {
 
         let task = Task<PythonResult, Error> { @MainActor [weak self] in
             guard let self else { throw RunnerError.runtimeUnavailable }
-            defer {
-                contLock.lock()
-                runTasks.removeValue(forKey: id)
-                contLock.unlock()
-                if activeStreamRunID == id {
-                    activeStreamRunID = nil
-                }
-            }
             do {
                 let result = try await run(code: code, files: files, timeoutMs: timeoutMs)
                 return result
             } catch {
                 finishStreams(for: id)
+                if activeStreamRunID == id {
+                    activeStreamRunID = nil
+                }
                 throw error
             }
         }
@@ -136,7 +131,18 @@ final class PythonRunner: NSObject {
             throw RunnerError.notStarted
         }
         contLock.unlock()
-        return try await task.value
+        do {
+            let value = try await task.value
+            contLock.lock()
+            runTasks.removeValue(forKey: runID)
+            contLock.unlock()
+            return value
+        } catch {
+            contLock.lock()
+            runTasks.removeValue(forKey: runID)
+            contLock.unlock()
+            throw error
+        }
     }
 
     func interrupt() {
