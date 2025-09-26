@@ -12,7 +12,13 @@ struct DebugCommands: Commands {
             Button("Run Self-Check") {
                 Task { await DebugSelfCheckPresenter.shared.runSelfCheck() }
             }
+
             inspectorMenuItems
+
+            Button("Quick Start Setup") {
+                Task { await QuickStartDebugPresenter.shared.presentQuickStart() }
+            }
+
         }
     }
 

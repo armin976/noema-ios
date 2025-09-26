@@ -22,7 +22,12 @@ struct NoemaApp: App {
             KeyboardShortcutCommands(experience: appEnvironment.experience)
             InspectorCommands(inspectorController: inspectorController)
 #if DEBUG
+
             DebugCommands(inspectorController: inspectorController)
+
+            DebugCommands()
+            DebugChatCommand()
+
 #endif
         }
     }

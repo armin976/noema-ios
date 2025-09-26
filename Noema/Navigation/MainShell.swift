@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 import PhotosUI
@@ -13,6 +14,9 @@ struct MainShell: View {
     @AppStorage("inspectorEnabled") private var inspectorEnabled = false
 
     @State private var showSplash = true
+    @State private var showDebugChatSheet = false
+    @State private var debugChatViewModel: ChatViewModel?
+    @State private var didCheckDebugAutolaunch = false
 
     var body: some View {
         ZStack(alignment: .trailing) {
@@ -54,6 +58,13 @@ struct MainShell: View {
                 experience.dismissShortcutHelp()
             }
         }
+        .sheet(isPresented: $showDebugChatSheet, onDismiss: { debugChatViewModel = nil }) {
+            if let vm = debugChatViewModel {
+                ChatScreen(viewModel: vm)
+            } else {
+                Text("Chat unavailable")
+            }
+        }
         .onAppear {
             print("[Noema] app launched 🚀")
             let isFirstLaunch = experience.isFirstLaunch
@@ -68,6 +79,15 @@ struct MainShell: View {
                     experience.reopenOnboarding()
                 }
             }
+            if !didCheckDebugAutolaunch {
+                didCheckDebugAutolaunch = true
+                if ProcessInfo.processInfo.arguments.contains("CHAT_SMOKE_AUTO") {
+                    presentDebugChat()
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .debugChatRequested)) { _ in
+            presentDebugChat()
         }
         .animation(.spring(response: 0.35, dampingFraction: 0.9), value: inspectorController.isPresented)
         .onChange(of: inspectorEnabled) { enabled in
@@ -75,6 +95,11 @@ struct MainShell: View {
                 inspectorController.dismiss()
             }
         }
+    }
+
+    private func presentDebugChat() {
+        debugChatViewModel = ChatViewModel(modelManager: modelManager)
+        showDebugChatSheet = true
     }
 }
 
