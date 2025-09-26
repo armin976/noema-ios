@@ -4,6 +4,7 @@ import SwiftUI
 struct NoemaApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var appEnvironment = AppEnvironment()
+    private var inspectorController: InspectorController { appEnvironment.inspectorController }
 
     var body: some Scene {
         WindowGroup {
@@ -14,14 +15,14 @@ struct NoemaApp: App {
                 .environmentObject(appEnvironment.datasetManager)
                 .environmentObject(appEnvironment.downloadController)
                 .environmentObject(appEnvironment.tabRouter)
-                .environmentObject(appEnvironment.inspectorController)
+                .environmentObject(inspectorController)
                 .preferredColorScheme(appEnvironment.preferredColorScheme)
         }
         .commands {
             KeyboardShortcutCommands(experience: appEnvironment.experience)
-            InspectorCommands(inspectorController: appEnvironment.inspectorController)
+            InspectorCommands(inspectorController: inspectorController)
 #if DEBUG
-            DebugCommands(inspectorController: appEnvironment.inspectorController)
+            DebugCommands(inspectorController: inspectorController)
 #endif
         }
     }
