@@ -31,15 +31,18 @@ struct MainShell: View {
                     .ignoresSafeArea()
                     .contentShape(Rectangle())
                     .onTapGesture { inspectorController.dismiss() }
+                    .zIndex(1)
 
                 InspectorHost(controller: inspectorController)
                     .environmentObject(tabRouter)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .zIndex(2)
             }
 
             if showSplash {
                 SplashView()
                     .transition(.opacity)
+                    .zIndex(3)
             }
         }
         .fullScreenCover(isPresented: $experience.showOnboarding) {
