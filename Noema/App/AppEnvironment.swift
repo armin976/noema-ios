@@ -184,6 +184,7 @@ final class AppEnvironment: ObservableObject {
     let modelManager = AppModelManager()
     let datasetManager = DatasetManager()
     let downloadController = DownloadController()
+    let inspectorController = InspectorController()
 
     @AppStorage("appearance") private var appearance = "system"
 

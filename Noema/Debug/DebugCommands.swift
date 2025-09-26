@@ -2,16 +2,29 @@
 import SwiftUI
 import UIKit
 
+/// Adds developer tooling to the Debug menu while keeping presentation logic
+/// centralized around the shared ``InspectorController`` instance.
 struct DebugCommands: Commands {
+    @ObservedObject var inspectorController: InspectorController
+
     var body: some Commands {
         CommandMenu("Debug") {
             Button("Run Self-Check") {
                 Task { await DebugSelfCheckPresenter.shared.runSelfCheck() }
             }
+
+            inspectorMenuItems
+
             Button("Quick Start Setup") {
                 Task { await QuickStartDebugPresenter.shared.presentQuickStart() }
             }
+
         }
+    }
+
+    @ViewBuilder
+    private var inspectorMenuItems: some View {
+        InspectorDebugMenuItems(inspectorController: inspectorController)
     }
 }
 
