@@ -1,0 +1,29 @@
+# .gitignore
+# Ignore everything except Noema/, Makefile, and Package.swift
+!/Noema/
+!/Makefile
+!/Package.swift
+
+# macOS
+.DS_Store
+
+# Xcode
+*.xcuserstate
+**/xcuserdata/**
+DerivedData/
+
+# SwiftPM
+.build/
+.swiftpm/
+
+# Other
+.idea/
+.vscode/
+.cursor/
+*.dSYM
+
+# Secrets (keep local Secrets.plist files out of source control)
+Noema/Secrets.plist
+Noema/Noema/Noema/Secrets.plist
+
+
