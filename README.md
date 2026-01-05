@@ -52,7 +52,7 @@ All processing happens on your device. The app never sends your chats, files or 
 ## Getting Started
 
 ### Requirements
-- iOS 17 / iPadOS 17 or later with Apple Silicon (A12 Bionic or newer).
+- iOS 18 / iPadOS 18 or later with Apple Silicon (A12 Bionic or newer).
 - Enough free storage space to accommodate downloaded models and datasets (models range from a few hundred megabytes to multiple gigabytes; textbooks vary by file size).
 
 
