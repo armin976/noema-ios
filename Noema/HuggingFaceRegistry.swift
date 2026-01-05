@@ -38,12 +38,26 @@ public final class HuggingFaceRegistry: ModelRegistry, @unchecked Sendable {
         // This helps match models named "gemma-3-4b" or "gemma3-4b"
         let searchQuery = trimmed
         
-        // Build URLs based on whether we want to include vision models
+        // Build URLs. When a specific pipeline is provided we use the
+        // `filter` query parameter. In "All" explore mode we must avoid
+        // adding any pipeline filter so the Hub searches across all tasks.
         func makeURL(pipeline: String) -> URL {
             var c = URLComponents(string: "https://huggingface.co/api/models")!
             c.queryItems = [
                 URLQueryItem(name: "search", value: searchQuery),
                 URLQueryItem(name: "filter", value: pipeline),
+                URLQueryItem(name: "sort", value: "downloads"),
+                URLQueryItem(name: "limit", value: "50"),
+                URLQueryItem(name: "offset", value: String(offset)),
+                URLQueryItem(name: "cardData", value: "true")
+            ]
+            return c.url!
+        }
+
+        func makeURLAllPipelines() -> URL {
+            var c = URLComponents(string: "https://huggingface.co/api/models")!
+            c.queryItems = [
+                URLQueryItem(name: "search", value: searchQuery),
                 URLQueryItem(name: "sort", value: "downloads"),
                 URLQueryItem(name: "limit", value: "50"),
                 URLQueryItem(name: "offset", value: String(offset)),
@@ -58,11 +72,15 @@ public final class HuggingFaceRegistry: ModelRegistry, @unchecked Sendable {
         // Determine which URLs to fetch based on parameters
         let urlsToFetch: [URL]
         if visionOnly {
-            urlsToFetch = [urlVLM] // Only vision models
+            // Vision mode → explicitly filter to VLM pipeline
+            urlsToFetch = [urlVLM]
         } else if includeVisionModels {
-            urlsToFetch = [urlText, urlVLM] // Both text and vision
+            // Explore "All" mode → do NOT add a text-generation filter
+            // (and also avoid the VLM-specific filter). Query across all pipelines.
+            urlsToFetch = [makeURLAllPipelines()]
         } else {
-            urlsToFetch = [urlText] // Only text models
+            // Text mode → explicitly filter to text-generation pipeline
+            urlsToFetch = [urlText]
         }
         
         return .init { continuation in
@@ -242,7 +260,12 @@ public final class HuggingFaceRegistry: ModelRegistry, @unchecked Sendable {
         if lowerTags.contains(where: { $0.contains("gguf") || $0.contains("ggml") }) {
             result.insert(.gguf)
         }
-        if lowerTags.contains(where: { $0.contains("mlx") }) || id.hasPrefix("mlx-community/") {
+        // Treat MLX explicitly tagged repositories as MLX, and also
+        // heuristically include well-known publishers who host MLX conversions.
+        // This mirrors Explore filtering behavior so MLX mode surfaces expected results.
+        if lowerTags.contains(where: { $0.contains("mlx") })
+            || id.hasPrefix("mlx-community/")
+            || id.hasPrefix("lmstudio-community/") {
             result.insert(.mlx)
         }
         return result

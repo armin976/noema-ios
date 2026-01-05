@@ -34,13 +34,17 @@ final class EmbedModelInstaller: ObservableObject {
         }
         state = .downloading
         do {
-            let (tmp, _) = try await URLSession.shared.downloadWithProgress(from: remoteURL) { [weak self] p, _ in
-                await MainActor.run { self?.progress = p }
+            // Ensure destination directory exists first
+            try FileManager.default.createDirectory(at: EmbeddingModel.modelDir, withIntermediateDirectories: true)
+            let dest = EmbeddingModel.modelURL
+            try await BackgroundDownloadManager.shared.download(from: remoteURL, to: dest, expectedSize: nil) { [weak self] p in
+                // Progress callback may be non-async; hop to main safely.
+                Task { @MainActor in self?.progress = p }
             }
             state = .verifying
-            try verifyGGUF(at: tmp)
+            try verifyGGUF(at: dest)
             state = .installing
-            try atomicMove(from: tmp, to: EmbeddingModel.modelURL)
+            // File is already at destination, nothing to move
             // Log the successful download + install so we can trace this in the console / log file.
             Task.detached { await logger.log("[EmbedInstaller] ✅ Embedding model downloaded and installed at: \(EmbeddingModel.modelURL.path)") }
             UserDefaults.standard.set(true, forKey: "hasInstalledEmbedModel:\(EmbeddingModel.modelURL.path)")

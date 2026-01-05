@@ -198,6 +198,7 @@ struct PromptBuilder {
         }
     }
 
+    #if os(iOS) || os(visionOS) || os(macOS)
     /// Builds the final prompt, stop tokens and optional max token limit.
     static func build(template: String?, family: ModelKind, history: [ChatVM.Msg], system: String) -> (String, [String], Int?) {
         let tmpl = detect(template: template, family: family)
@@ -450,7 +451,9 @@ struct PromptBuilder {
             return (p, ["User:"], maxTokens)
         }
     }
+    #endif
 
+    #if os(iOS) || os(visionOS) || os(macOS)
     /// Builds from explicit message turns. If a system message is present, it will be serialized
     /// according to the detected template; otherwise treated as a no-system template.
     static func build(template: String?, family: ModelKind, messages: [ChatVM.Msg]) -> (String, [String], Int?) {
@@ -711,4 +714,5 @@ struct PromptBuilder {
             return (p, ["User:"], maxTokens)
         }
     }
+    #endif
 }

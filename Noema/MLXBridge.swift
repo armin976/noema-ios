@@ -46,6 +46,9 @@ enum MLXBridgeError: Error, LocalizedError {
     case imagesUnsupported
     case notVLM
     case notImplemented
+    case unsupportedVLMType(String)
+    case missingPreprocessorConfig
+    case vlmLoadingFailed(String)
     var errorDescription: String? {
         switch self {
         case .modelNotFound: return "MLX model directory not found"
@@ -54,6 +57,9 @@ enum MLXBridgeError: Error, LocalizedError {
         case .imagesUnsupported: return "This MLX model cannot accept images"
         case .notVLM: return "Requested VLM client for text-only model"
         case .notImplemented: return "MLX backend ready - API implementation needs fine-tuning for your mlx-swift-examples version"
+        case .unsupportedVLMType(let type): return "Unsupported VLM model type '\(type)'. Supported types: paligemma, qwen2_vl, qwen2_5_vl, qwen3_vl, idefics3, gemma3, smolvlm"
+        case .missingPreprocessorConfig: return "VLM model is missing preprocessor_config.json - this file is required for vision models"
+        case .vlmLoadingFailed(let details): return "VLM loading failed: \(details)"
         }
     }
 }
@@ -206,12 +212,15 @@ enum MLXBridge {
 
     static func makeTextClient(url: URL, settings: ModelSettings? = nil) async throws -> AnyLLMClient {
         let dir = directoryForMLX(url)
-        
+
         print("[MLXBridge] makeTextClient called with url: \(url.path)")
         print("[MLXBridge] Model directory: \(dir.path)")
-        
+
         // Check availability first
         checkMLXAvailability()
+
+        // Sanitize known problematic fields before handing the directory to MLX.
+        sanitizeMLXConfigIfNeeded(at: dir)
 
 #if canImport(MLX)
         // Disable MLX on devices without reliable GPU offload; CPU-only MLX is too slow
@@ -247,12 +256,25 @@ enum MLXBridge {
 
     static func makeVLMClient(url: URL) async throws -> AnyLLMClient {
         let dir = directoryForMLX(url)
-        
+
         print("[MLXBridge] makeVLMClient called with url: \(url.path)")
         print("[MLXBridge] VLM Model directory: \(dir.path)")
-        
+
         // Check availability first
         checkMLXAvailability()
+
+        // Sanitize known problematic fields before handing the directory to MLX.
+        sanitizeMLXConfigIfNeeded(at: dir)
+
+        // Early validation of VLM requirements
+        let validation = validateVLMDirectory(at: dir)
+        print("[MLXBridge] VLM validation - model_type: \(validation.modelType ?? "nil"), issues: \(validation.issues)")
+
+        if !validation.issues.isEmpty {
+            for issue in validation.issues {
+                print("[MLXBridge] VLM issue: \(issue)")
+            }
+        }
 
 #if canImport(MLX)
         // Disable MLX on devices without reliable GPU offload; CPU-only MLX is too slow
@@ -265,12 +287,12 @@ enum MLXBridge {
         // On pre‑A13 devices we avoid BF16 by preferring FP16 models at load time.
         _ = DeviceGPUInfo.requiresFloat16
 #endif
-        
+
         // Do not hard-fail if detection is uncertain; continue with VLM client and let runtime decide
         if !isVLMModel(at: dir) {
             print("[MLXBridge] VLM detection is uncertain; proceeding with cautious VLM/text fallback")
         }
-        
+
         if #available(macOS 13.0, iOS 16.0, *) {
             let client = try await MLXVLMClient(modelDirectory: dir)
             return AnyLLMClient(client)
@@ -286,6 +308,152 @@ enum MLXBridge {
             return url
         }
         return url.deletingLastPathComponent()
+    }
+
+    /// MLX's config decoder treats `quantization.mode` as a numeric/enum. Some community
+    /// configs (e.g., Olmo-3-7B-Think-6bit) ship it as a string ("affine"), causing a
+    /// type-mismatch crash. We rewrite the config in-place to drop string-valued modes.
+    private static func sanitizeMLXConfigIfNeeded(at dir: URL) {
+        let cfgPath = dir.appendingPathComponent("config.json")
+        guard FileManager.default.fileExists(atPath: cfgPath.path),
+              let data = try? Data(contentsOf: cfgPath),
+              var json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return
+        }
+
+        var changed = false
+
+        func stripStringMode(in key: String) -> Bool {
+            guard var block = json[key] as? [String: Any] else { return false }
+            guard let mode = block["mode"] as? String else { return false }
+            // Only remove when it's a string; leave numeric/enum values intact.
+            print("[MLXBridge] Stripping string quantization mode (\(mode)) from \(key)")
+            block.removeValue(forKey: "mode")
+            json[key] = block
+            return true
+        }
+
+        if stripStringMode(in: "quantization") { changed = true }
+        if stripStringMode(in: "quantization_config") { changed = true }
+
+        // Also handle nested quantization in text_config and vision_config (common in VLM models)
+        for nestedKey in ["text_config", "vision_config"] {
+            if var nested = json[nestedKey] as? [String: Any],
+               var quant = nested["quantization"] as? [String: Any],
+               quant["mode"] is String {
+                print("[MLXBridge] Stripping nested quantization mode from \(nestedKey)")
+                quant.removeValue(forKey: "mode")
+                nested["quantization"] = quant
+                json[nestedKey] = nested
+                changed = true
+            }
+        }
+
+        guard changed, let newData = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted]) else {
+            return
+        }
+        do {
+            try newData.write(to: cfgPath, options: .atomic)
+            print("[MLXBridge] Wrote sanitized config.json to \(cfgPath.path)")
+        } catch {
+            print("[MLXBridge] Failed to write sanitized config.json: \(error)")
+        }
+    }
+
+    // MARK: - VLM Validation Helpers
+
+    /// Supported VLM model types in mlx-swift-lm
+    private static let supportedVLMTypes: Set<String> = [
+        "paligemma", "qwen2_vl", "qwen2_5_vl", "qwen3_vl",
+        "idefics3", "gemma3", "smolvlm", "fastvlm", "llava_qwen2"
+    ]
+
+    /// Check if a model type string is a supported VLM type
+    static func isKnownVLMType(_ modelType: String) -> Bool {
+        let normalized = modelType.lowercased()
+        return supportedVLMTypes.contains(normalized)
+    }
+
+    /// Validates VLM model directory has all required files and returns diagnostic info
+    static func validateVLMDirectory(at dir: URL) -> (isValid: Bool, modelType: String?, issues: [String]) {
+        let fm = FileManager.default
+        var issues: [String] = []
+        var modelType: String?
+
+        // Check config.json
+        let configPath = dir.appendingPathComponent("config.json")
+        guard fm.fileExists(atPath: configPath.path) else {
+            issues.append("Missing config.json")
+            return (false, nil, issues)
+        }
+
+        // Parse model_type from config.json
+        if let data = try? Data(contentsOf: configPath),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            modelType = json["model_type"] as? String
+
+            if let mt = modelType {
+                if !isKnownVLMType(mt) {
+                    issues.append("model_type '\(mt)' is not a supported VLM type")
+                }
+            } else {
+                issues.append("config.json missing model_type field")
+            }
+        } else {
+            issues.append("Failed to parse config.json")
+        }
+
+        // Check preprocessor_config.json (required for VLM)
+        let preprocessorPath = dir.appendingPathComponent("preprocessor_config.json")
+        if !fm.fileExists(atPath: preprocessorPath.path) {
+            issues.append("Missing preprocessor_config.json (required for VLM models)")
+        }
+
+        // Check for weight files
+        let hasWeights = fm.fileExists(atPath: dir.appendingPathComponent("model.safetensors").path) ||
+                         fm.fileExists(atPath: dir.appendingPathComponent("model.safetensors.index.json").path)
+        if !hasWeights {
+            issues.append("No model weights found (model.safetensors or model.safetensors.index.json)")
+        }
+
+        // Check for sharded model with potential placeholder conflict
+        let indexPath = dir.appendingPathComponent("model.safetensors.index.json")
+        let singlePath = dir.appendingPathComponent("model.safetensors")
+        if fm.fileExists(atPath: indexPath.path) && fm.fileExists(atPath: singlePath.path) {
+            if let attrs = try? fm.attributesOfItem(atPath: singlePath.path),
+               let size = attrs[.size] as? Int64,
+               size < 1000 {
+                // This is likely a placeholder file that can cause loading issues
+                print("[MLXBridge] Warning: Found small model.safetensors (\(size) bytes) alongside index file - this may cause issues")
+                issues.append("Potential placeholder model.safetensors file detected (\(size) bytes) - consider removing it")
+            }
+        }
+
+        return (issues.isEmpty, modelType, issues)
+    }
+
+    /// Lists model directory contents for debugging
+    static func logModelDirectoryContents(at dir: URL) {
+        print("[MLXBridge] === Model Directory Contents ===")
+        print("[MLXBridge] Path: \(dir.path)")
+
+        guard let contents = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else {
+            print("[MLXBridge] Failed to list directory contents")
+            return
+        }
+
+        let fm = FileManager.default
+        for file in contents.sorted() {
+            let filePath = dir.appendingPathComponent(file).path
+            if let attrs = try? fm.attributesOfItem(atPath: filePath),
+               let size = attrs[.size] as? Int64 {
+                let sizeStr = size > 1_000_000 ? "\(size / 1_000_000) MB" : "\(size) bytes"
+                print("[MLXBridge]   \(file) (\(sizeStr))")
+            } else {
+                print("[MLXBridge]   \(file)")
+            }
+        }
+        print("[MLXBridge] ================================")
     }
 }
 
@@ -456,19 +624,34 @@ public final class MLXVLMClient: @unchecked Sendable {
     
     private func load() async throws {
         print("[MLXBridge] Attempting to load VLM model from: \(modelDirectory.path)")
-        
-        // Parse model_type for diagnostics
-        do {
-            let cfgURL = modelDirectory.appendingPathComponent("config.json")
-            let data = try Data(contentsOf: cfgURL)
-            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let mt = json["model_type"] as? String {
-                modelTypeHint = mt.lowercased()
+
+        // Log directory contents for debugging
+        MLXBridge.logModelDirectoryContents(at: modelDirectory)
+
+        // Validate VLM directory structure and required files
+        let validation = MLXBridge.validateVLMDirectory(at: modelDirectory)
+        modelTypeHint = validation.modelType?.lowercased()
+
+        if !validation.issues.isEmpty {
+            print("[MLXBridge] VLM validation issues:")
+            for issue in validation.issues {
+                print("[MLXBridge]   - \(issue)")
             }
-        } catch {
-            modelTypeHint = nil
         }
-        
+
+        // Check for critical issues that would prevent loading
+        if let mt = validation.modelType, !MLXBridge.isKnownVLMType(mt) {
+            print("[MLXBridge] ERROR: Unsupported VLM type '\(mt)'")
+            throw MLXBridgeError.unsupportedVLMType(mt)
+        }
+
+        // Check for missing preprocessor_config.json
+        let preprocessorPath = modelDirectory.appendingPathComponent("preprocessor_config.json")
+        if !FileManager.default.fileExists(atPath: preprocessorPath.path) {
+            print("[MLXBridge] ERROR: Missing preprocessor_config.json")
+            throw MLXBridgeError.missingPreprocessorConfig
+        }
+
         #if canImport(MLXVLM) && canImport(MLXLMCommon)
         if #available(iOS 16.0, macOS 13.0, *) {
             // Set GPU cache limit for MLX only when GPU offload is supported
@@ -477,14 +660,38 @@ public final class MLXVLMClient: @unchecked Sendable {
                 MLX.GPU.set(cacheLimit: 20 * 1024 * 1024)
             }
             #endif
+
             let configuration = ModelConfiguration(directory: modelDirectory)
+            print("[MLXBridge] Created ModelConfiguration for directory: \(modelDirectory.path)")
+            print("[MLXBridge] Calling VLMModelFactory.shared.loadContainer()...")
+
             do {
                 // Use VLMModelFactory from MLXVLM to load vision-language models
                 modelContainer = try await VLMModelFactory.shared.loadContainer(configuration: configuration)
                 print("[MLXBridge] VLM container loaded successfully")
             } catch {
-                print("[MLXBridge] Failed to load VLM container: \(error)")
-                throw MLXBridgeError.invalidModel
+                let errorStr = String(describing: error)
+                print("[MLXBridge] Failed to load VLM container: \(errorStr)")
+
+                // Provide actionable error messages based on error type
+                let userMessage: String
+                if errorStr.contains("Invalid json header") || errorStr.contains("Invalid header") || errorStr.contains("load_safetensors") {
+                    userMessage = """
+                        VLM safetensors loading failed. This can happen if:
+                        1. Model files are corrupted or incomplete - try re-downloading
+                        2. Model is from an incompatible source - try mlx-community models instead
+                        3. Sharded model files are malformed
+                        Original error: \(errorStr)
+                        """
+                } else if errorStr.contains("model_type") || errorStr.contains("registry") || errorStr.contains("unknown model") {
+                    userMessage = "VLM model type not recognized. Supported types: paligemma, qwen2_vl, qwen2_5_vl, qwen3_vl, idefics3, gemma3, smolvlm"
+                } else if errorStr.contains("preprocessor") || errorStr.contains("processor") {
+                    userMessage = "VLM processor configuration error. Ensure preprocessor_config.json is present and valid."
+                } else {
+                    userMessage = "VLM loading failed: \(errorStr)"
+                }
+
+                throw MLXBridgeError.vlmLoadingFailed(userMessage)
             }
         } else {
             throw MLXBridgeError.backendUnavailable

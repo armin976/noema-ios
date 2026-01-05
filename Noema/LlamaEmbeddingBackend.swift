@@ -15,28 +15,66 @@ final class LlamaEmbeddingBackend: EmbeddingsBackend {
         // Reasonable defaults for iOS
         let pathMsg = "[Embed] load_model path=\(modelPath)"
         Task.detached(priority: .utility) { await logger.log(pathMsg) }
-        let threadCount = max(1, min(4, ProcessInfo.processInfo.activeProcessorCount / 2))
+        let threadCount = max(1, ProcessInfo.processInfo.activeProcessorCount)
         Task.detached(priority: .utility) { await logger.log("[Embed] Using \(threadCount) threads") }
 
-        // Force CPU execution for the embedding model to avoid Metal
-        // initialization issues on certain devices. The underlying
-        // `LlamaEmbedder` explicitly specifies the CPU backend when loading
-        // the model, so we simply pass `nGpuLayers = 0` here.
-        let e = LlamaEmbedder(
-            modelPath: modelPath,
-            threads: Int32(threadCount),
-            nGpuLayers: 0
-        )
+        let desiredGpuLayers: Int32 = {
+#if canImport(Metal)
+            return 1_000_000 // Request full offload when GPU is available
+#else
+            return 0
+#endif
+        }()
 
-        guard e.isReady() else {
-            Task.detached(priority: .utility) { await logger.log("[Embed] ❌ Failed to load embedder on CPU") }
-            throw EmbeddingError.loadFailed("embedder init failed on CPU")
+        let threads32 = Int32(threadCount)
+        var loadedWithGPU = false
+        var resolvedEmbedder: LlamaEmbedder?
+
+#if canImport(Metal)
+        if DeviceGPUInfo.supportsGPUOffload && desiredGpuLayers > 0 {
+            Task.detached(priority: .utility) { await logger.log("[Embed] Attempting GPU offload with nGpuLayers=\(desiredGpuLayers)") }
+            let gpuEmbedder = LlamaEmbedder(
+                modelPath: modelPath,
+                threads: threads32,
+                nGpuLayers: desiredGpuLayers
+            )
+
+            if gpuEmbedder.isReady() {
+                resolvedEmbedder = gpuEmbedder
+                loadedWithGPU = true
+            } else {
+                Task.detached(priority: .utility) { await logger.log("[Embed] ⚠️ GPU offload failed, falling back to CPU") }
+                gpuEmbedder.unload()
+            }
+        }
+#endif
+
+        if resolvedEmbedder == nil {
+            let cpuEmbedder = LlamaEmbedder(
+                modelPath: modelPath,
+                threads: threads32,
+                nGpuLayers: 0
+            )
+
+            guard cpuEmbedder.isReady() else {
+                Task.detached(priority: .utility) { await logger.log("[Embed] ❌ Failed to load embedder on CPU") }
+                throw EmbeddingError.loadFailed("embedder init failed on CPU")
+            }
+
+            resolvedEmbedder = cpuEmbedder
         }
 
-        embedder = e
-        dimension = Int(e.dimension())
+        guard let resolvedEmbedder else {
+            throw EmbeddingError.loadFailed("embedder init unresolved")
+        }
+
+        embedder = resolvedEmbedder
+        dimension = Int(resolvedEmbedder.dimension())
         let dim = dimension
-        Task.detached(priority: .utility) { await logger.log("[Embed] ✅ Model loaded successfully (CPU), dim=\(dim), threads=\(threadCount)") }
+        Task.detached(priority: .utility) {
+            let backend = loadedWithGPU ? "GPU" : "CPU"
+            await logger.log("[Embed] ✅ Model loaded successfully (\(backend)), dim=\(dim), threads=\(threadCount)")
+        }
     }
 
     func warmUp() throws {

@@ -54,9 +54,13 @@ static inline void noema_llama_kv_cache_clear(struct llama_context *ctx) {
     noema_llama_backend_addref();
     struct llama_model_params mp = llama_model_default_params();
     ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
-    ggml_backend_dev_t devices[] = { cpu, NULL };
-    mp.devices = devices;
+    static ggml_backend_dev_t cpu_devices[2];
     mp.n_gpu_layers = nGpuLayers;
+    if (nGpuLayers <= 0) {
+      cpu_devices[0] = cpu;
+      cpu_devices[1] = NULL;
+      mp.devices = cpu_devices;
+    }
     _model = llama_load_model_from_file(modelPath.UTF8String, mp);
     if (!_model) { noema_llama_backend_release(); return self; }
     struct llama_context_params cp = llama_context_default_params();

@@ -10,14 +10,68 @@
 	<string>1795466538023864</string>
 	<key>FacebookClientToken</key>
 	<string>0a0fa2a5334269aa4bd4cfe61eb04d89</string>
-	<key>FacebookDisplayName</key>
-	<string>NoemaAI</string>
-	<key>ITSAppUsesNonExemptEncryption</key>
-	<false/>
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>fetch</string>
-		<string>processing</string>
-	</array>
+        <key>FacebookDisplayName</key>
+        <string>NoemaAI</string>
+        <key>ITSAppUsesNonExemptEncryption</key>
+        <false/>
+        <key>CloudKitContainerIdentifier</key>
+        <string>iCloud.arminproducts.Noema</string>
+        <key>NSCameraUsageDescription</key>
+        <string>Allow Noema to capture a photo for your chat attachment.</string>
+        <key>NSPhotoLibraryUsageDescription</key>
+        <string>Allow Noema to show your recent photos when attaching images.</string>
+        <key>NSBluetoothAlwaysUsageDescription</key>
+        <string>Noema uses Bluetooth to share relay setup details with your other devices.</string>
+        <key>NSBluetoothPeripheralUsageDescription</key>
+        <string>Noema uses Bluetooth to share relay setup details with your other devices.</string>
+        <key>UIBackgroundModes</key>
+        <array>
+                <string>fetch</string>
+                <string>processing</string>
+        </array>
+        <key>SKAdNetworkItems</key>
+        <array>
+            <dict>
+                <key>SKAdNetworkIdentifier</key>
+                <string>v9wttpbfk9.skadnetwork</string>
+            </dict>
+            <dict>
+                <key>SKAdNetworkIdentifier</key>
+                <string>n38lu8286q.skadnetwork</string>
+            </dict>
+            <dict>
+                <key>SKAdNetworkIdentifier</key>
+                <string>2fnua5tdw4.skadnetwork</string>
+            </dict>
+            <dict>
+                <key>SKAdNetworkIdentifier</key>
+                <string>3rd42ekr43.skadnetwork</string>
+            </dict>
+            <dict>
+                <key>SKAdNetworkIdentifier</key>
+                <string>4fzdc2evr5.skadnetwork</string>
+            </dict>
+            <dict>
+                <key>SKAdNetworkIdentifier</key>
+                <string>7ug5zh24hu.skadnetwork</string>
+            </dict>
+            <dict>
+                <key>SKAdNetworkIdentifier</key>
+                <string>cg4yq2srnc.skadnetwork</string>
+            </dict>
+            <dict>
+                <key>SKAdNetworkIdentifier</key>
+                <string>f38h382jlk.skadnetwork</string>
+            </dict>
+            <dict>
+                <key>SKAdNetworkIdentifier</key>
+                <string>glqzh8vgby.skadnetwork</string>
+            </dict>
+            <dict>
+                <key>SKAdNetworkIdentifier</key>
+                <string>prcb7njmu6.skadnetwork</string>
+            </dict>
+        </array>
+
 </dict>
 </plist>

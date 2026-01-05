@@ -1,13 +1,30 @@
 // RollingThought.swift
 import SwiftUI
 
+#if os(macOS)
+import AppKit
+#endif
+
+@available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
+private extension Color {
+    static var rollingThoughtBackground: Color {
+#if os(macOS)
+        return Color(nsColor: NSColor.windowBackgroundColor)
+#else
+        return Color(.systemGray6)
+#endif
+    }
+}
+
 // MARK: - Token Stream Protocol
+@available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
 public protocol TokenStream: Sendable {
     associatedtype AsyncTokenSequence: AsyncSequence where AsyncTokenSequence.Element == String
     func tokens() -> AsyncTokenSequence
 }
 
 // MARK: - Rolling Thought View Model
+@available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
 @MainActor
 public final class RollingThoughtViewModel: ObservableObject {
     public enum Phase: String, Codable, Equatable {
@@ -131,9 +148,14 @@ public final class RollingThoughtViewModel: ObservableObject {
         streamTask?.cancel()
         streamTask = nil
 
-        phase = .idle
-        didReachLogicalCompletion = false
-        shouldFinishWhenStreamEnds = false
+        // Defer state mutation to the next runloop to avoid publishing
+        // changes while SwiftUI is in the middle of a view update pass.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.phase = .idle
+            self.didReachLogicalCompletion = false
+            self.shouldFinishWhenStreamEnds = false
+        }
     }
 
     public func markInterrupted() {
@@ -243,6 +265,7 @@ public final class RollingThoughtViewModel: ObservableObject {
 }
 
 // MARK: - Rolling Thought Box Component
+@available(macOS 11.0, iOS 14.0, tvOS 14.0, watchOS 7.0, *)
 public struct RollingThoughtBox: View {
     @ObservedObject public var viewModel: RollingThoughtViewModel
     @Namespace private var namespace
@@ -310,14 +333,14 @@ public struct RollingThoughtBox: View {
                 HStack(spacing: 4) {
                     Image(systemName: "brain")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(.secondary)
                     Text("Thinking")
                         .font(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(.secondary)
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
-                .background(Color(.systemGray6))
+                .background(Color.rollingThoughtBackground)
                 .clipShape(Capsule())
                 
                 Spacer()
@@ -332,7 +355,7 @@ public struct RollingThoughtBox: View {
                             Text(l.isEmpty ? " " : l)
                                 .id("rt-line-\(i)")
                                 .font(.system(size: 11, weight: .regular, design: .monospaced))
-                                .foregroundStyle(.primary.opacity(0.8))
+                                .foregroundColor(Color.primary.opacity(0.8))
                                 .lineLimit(1)
                                 .truncationMode(.tail)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -348,7 +371,9 @@ public struct RollingThoughtBox: View {
                 .padding(.horizontal, 4)
                 .simultaneousGesture(DragGesture().onChanged { _ in shouldAutoScroll = false })
                 .onChange(of: viewModel.fullText) { _ in
-                    if shouldAutoScroll {
+                    guard shouldAutoScroll else { return }
+                    DispatchQueue.main.async {
+                        guard shouldAutoScroll else { return }
                         withAnimation(.easeOut(duration: 0.12)) {
                             proxy.scrollTo("rt-bottom", anchor: .bottom)
                         }
@@ -367,7 +392,7 @@ public struct RollingThoughtBox: View {
                     if viewModel.phase == .streaming && viewModel.fullText.isEmpty {
                         Text("• • •")
                             .font(.system(size: 11, weight: .regular, design: .monospaced))
-                            .foregroundStyle(.secondary.opacity(0.6))
+                            .foregroundColor(Color.secondary.opacity(0.6))
                     }
                 }
                 .mask(
@@ -384,7 +409,7 @@ public struct RollingThoughtBox: View {
             }
         }
         .padding(12)
-        .background(Color(.systemGray6))
+        .background(Color.rollingThoughtBackground)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -403,14 +428,14 @@ public struct RollingThoughtBox: View {
                 HStack(spacing: 4) {
                     Image(systemName: "brain")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(.secondary)
                     Text("Chain of Thought")
                         .font(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(.secondary)
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
-                .background(Color(.systemGray6))
+                .background(Color.rollingThoughtBackground)
                 .clipShape(Capsule())
                 
                 Spacer()
@@ -420,10 +445,10 @@ public struct RollingThoughtBox: View {
                         .font(.caption2.weight(.medium))
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(.primary)
+                .foregroundColor(.primary)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
-                .background(Color(.systemGray6))
+                .background(Color.rollingThoughtBackground)
                 .clipShape(Capsule())
             }
             
@@ -432,7 +457,7 @@ public struct RollingThoughtBox: View {
                     VStack(alignment: .leading, spacing: 0) {
                         Text(viewModel.fullText.isEmpty ? "Waiting for thoughts..." : viewModel.fullText)
                             .font(.system(size: 11, weight: .regular, design: .monospaced))
-                            .foregroundStyle(.primary)
+                            .foregroundColor(.primary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .textSelection(.enabled)
                             .padding(8)
@@ -444,7 +469,7 @@ public struct RollingThoughtBox: View {
                     }
                 }
                 .frame(maxHeight: 200)
-                .background(Color(.systemBackground))
+                .background(Color.rollingThoughtBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .simultaneousGesture(DragGesture().onChanged { _ in shouldAutoScroll = false })
                 .overlay(alignment: .bottomTrailing) {
@@ -465,7 +490,9 @@ public struct RollingThoughtBox: View {
                     }
                 }
                 .onChange(of: viewModel.fullText) { _ in
-                    if shouldAutoScroll {
+                    guard shouldAutoScroll else { return }
+                    DispatchQueue.main.async {
+                        guard shouldAutoScroll else { return }
                         proxy.scrollTo("scrollBottom", anchor: .bottom)
                     }
                 }
@@ -481,7 +508,7 @@ public struct RollingThoughtBox: View {
             }
         }
         .padding(12)
-        .background(Color(.systemGray6))
+        .background(Color.rollingThoughtBackground)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -494,14 +521,14 @@ public struct RollingThoughtBox: View {
             HStack(spacing: 4) {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.caption)
-                    .foregroundStyle(.green)
+                    .foregroundColor(.green)
                 Text("Thought complete")
                     .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(.secondary)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(Color(.systemGray6))
+            .background(Color.rollingThoughtBackground)
             .clipShape(Capsule())
             
             Spacer()
@@ -509,16 +536,16 @@ public struct RollingThoughtBox: View {
             Button(action: { viewModel.toggleExpanded() }) {
                 Text("View")
                     .font(.caption2.weight(.medium))
-                    .foregroundStyle(.primary)
+                    .foregroundColor(.primary)
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(Color(.systemGray6))
+            .background(Color.rollingThoughtBackground)
             .clipShape(Capsule())
         }
         .padding(8)
-        .background(Color(.systemGray6).opacity(0.5))
+        .background(Color.rollingThoughtBackground.opacity(0.5))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -531,14 +558,14 @@ public struct RollingThoughtBox: View {
             HStack(spacing: 4) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundColor(.orange)
                 Text("Thought interrupted")
                     .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(.secondary)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(Color(.systemGray6))
+            .background(Color.rollingThoughtBackground)
             .clipShape(Capsule())
 
             Spacer()
@@ -546,16 +573,16 @@ public struct RollingThoughtBox: View {
             Button(action: { viewModel.toggleExpanded() }) {
                 Text("View")
                     .font(.caption2.weight(.medium))
-                    .foregroundStyle(.primary)
+                    .foregroundColor(.primary)
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(Color(.systemGray6))
+            .background(Color.rollingThoughtBackground)
             .clipShape(Capsule())
         }
         .padding(8)
-        .background(Color(.systemGray6).opacity(0.65))
+        .background(Color.rollingThoughtBackground.opacity(0.65))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)

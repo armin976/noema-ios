@@ -32,6 +32,7 @@ final class GuidedWalkthroughManager: ObservableObject {
 
     enum HighlightID: Hashable {
         case chatCanvas
+        case chatSidebar
         case chatSidebarButton
         case chatNewChatButton
         case chatInput
@@ -143,7 +144,8 @@ final class GuidedWalkthroughManager: ObservableObject {
         case .modelSettingsIntro:
             advance(to: .modelSettingsContext)
         case .modelSettingsContext:
-            advance(to: .modelSettingsDefault)
+            shouldDismissModelSettings = true
+            advance(to: .storedDatasets)
         case .modelSettingsDefault:
             shouldDismissModelSettings = true
             advance(to: .storedDatasets)
@@ -205,7 +207,7 @@ final class GuidedWalkthroughManager: ObservableObject {
         case .storedRecommend: return .storedList
         case .storedFormats: return .storedList
         case .modelSettingsContext: return .modelSettingsContext
-        case .modelSettingsDefault: return .modelSettingsDefault
+        case .modelSettingsDefault: return nil
         case .storedDatasets: return .storedDatasets
         case .exploreIntro: return .exploreSwitchBar
         case .exploreDatasets: return .exploreDatasetList
@@ -247,7 +249,7 @@ final class GuidedWalkthroughManager: ObservableObject {
         case .modelSettingsContext:
             return ("Context Length", "Higher context lets the model remember more of the conversation, but it uses more memory.", "Next", nil)
         case .modelSettingsDefault:
-            return ("Default Model", "Turn this on to autoload the model when Noema launches.", "Finish Settings", nil)
+            return ("Startup Defaults", "Configure automatic loading from the new Startup section in Settings. Favorites still pin models for quick access.", "Finish Settings", nil)
         case .storedDatasets:
             return ("Datasets", "Downloaded datasets appear here too. Activate one to give the model focused knowledge.", "Next", nil)
         case .exploreIntro:
@@ -347,7 +349,7 @@ final class GuidedWalkthroughManager: ObservableObject {
         if !isVision {
             switch quant.format {
             case .gguf:
-                isVision = ChatVM.guessLlamaVisionModel(from: url)
+                isVision = ModelVisionDetector.guessLlamaVisionModel(from: url)
             case .mlx:
                 isVision = MLXBridge.isVLMModel(at: url)
             case .slm:
@@ -363,12 +365,21 @@ final class GuidedWalkthroughManager: ObservableObject {
             isToolCapable = ToolCapabilityDetector.isToolCapableLocal(url: url, format: quant.format)
         }
 
+        let moeInfo: MoEInfo?
+        switch quant.format {
+        case .gguf, .mlx:
+            moeInfo = ModelScanner.moeInfo(for: url, format: quant.format)
+        case .slm, .apple:
+            moeInfo = nil
+        }
+        let architectureLabels = LocalModel.architectureLabels(for: url, format: quant.format, modelID: detail.id)
         let local = LocalModel(
             modelID: detail.id,
             name: name,
             url: url,
             quant: quant.label,
-            architecture: detail.id,
+            architecture: architectureLabels.display,
+            architectureFamily: architectureLabels.family,
             format: quant.format,
             sizeGB: Double(effectiveSize) / 1_073_741_824.0,
             isMultimodal: isVision,
@@ -377,7 +388,8 @@ final class GuidedWalkthroughManager: ObservableObject {
             downloadDate: Date(),
             lastUsedDate: nil,
             isFavourite: false,
-            totalLayers: ModelScanner.layerCount(for: url, format: quant.format)
+            totalLayers: ModelScanner.layerCount(for: url, format: quant.format),
+            moeInfo: moeInfo
         )
 
         var settings = modelManager.settings(for: local)
@@ -481,13 +493,15 @@ final class GuidedWalkthroughManager: ObservableObject {
                 format: quant.format,
                 sizeBytes: usableSize,
                 contextLength: requestedContext,
-                layerCount: layerCount
+                layerCount: layerCount,
+                moeInfo: local.moeInfo
             )
             if !fits {
                 if let maxContext = ModelRAMAdvisor.maxContextUnderBudget(
                     format: quant.format,
                     sizeBytes: usableSize,
-                    layerCount: layerCount
+                    layerCount: layerCount,
+                    moeInfo: local.moeInfo
                 ) {
                     let safeContext = max(512, min(requestedContext, maxContext))
                     if Double(safeContext) < updated.contextLength {
@@ -515,9 +529,9 @@ final class GuidedWalkthroughManager: ObservableObject {
 }
 
 struct GuidedHighlightPreferenceKey: PreferenceKey {
-    nonisolated(unsafe) static var defaultValue: [GuidedWalkthroughManager.HighlightID: Anchor<CGRect>] = [:]
+    static var defaultValue: [GuidedWalkthroughManager.HighlightID: Anchor<CGRect>] { [:] }
 
-    nonisolated(unsafe) static func reduce(value: inout [GuidedWalkthroughManager.HighlightID: Anchor<CGRect>], nextValue: () -> [GuidedWalkthroughManager.HighlightID: Anchor<CGRect>]) {
+    static func reduce(value: inout [GuidedWalkthroughManager.HighlightID: Anchor<CGRect>], nextValue: () -> [GuidedWalkthroughManager.HighlightID: Anchor<CGRect>]) {
         value.merge(nextValue(), uniquingKeysWith: { $1 })
     }
 }

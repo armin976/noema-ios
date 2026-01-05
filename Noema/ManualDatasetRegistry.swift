@@ -33,8 +33,15 @@ public final class ManualDatasetRegistry: DatasetRegistry, @unchecked Sendable {
 
     public static let defaultEntries: [Entry] = [
         Entry(
-            record: DatasetRecord(id: "example/dataset", displayName: "Example Dataset", publisher: "example", summary: "Sample dataset", installed: false),
-            details: DatasetDetails(id: "example/dataset", summary: "Sample dataset", files: [DatasetFile(id: "data.txt", name: "data.txt", sizeBytes: 1024, downloadURL: URL(string: "https://example.com/data.txt")!)], displayName: "Example Dataset")
+            record: DatasetRecord(id: "example/dataset",
+                                  displayName: "Example Dataset",
+                                  publisher: "example",
+                                  summary: String(localized: "Sample dataset", locale: LocalizationManager.preferredLocale()),
+                                  installed: false),
+            details: DatasetDetails(id: "example/dataset",
+                                    summary: String(localized: "Sample dataset", locale: LocalizationManager.preferredLocale()),
+                                    files: [DatasetFile(id: "data.txt", name: "data.txt", sizeBytes: 1024, downloadURL: URL(string: "https://example.com/data.txt")!)],
+                                    displayName: "Example Dataset")
         )
     ]
 }

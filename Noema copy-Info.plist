@@ -13,5 +13,21 @@
 	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>CloudKitContainerIdentifier</key>
+	<string>iCloud.arminproducts.Noema</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Allow Noema to capture a photo for your chat attachment.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Allow Noema to show your recent photos when attaching images.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Noema uses Bluetooth to share relay setup details with your other devices.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>Noema uses Bluetooth to share relay setup details with your other devices.</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>CFBundleDisplayName</key>
+	<string>Noema</string>
+	<key>CFBundleName</key>
+	<string>Noema</string>
 </dict>
 </plist>

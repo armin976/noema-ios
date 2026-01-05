@@ -9,6 +9,10 @@ public enum QuantExtractor {
         var seenLabels: Set<String> = []
         for file in files {
             let lower = file.path.lowercased()
+            // Skip projector artifacts (.mmproj or *.gguf that contain projector keywords)
+            if lower.contains("mmproj") || lower.contains("projector") || lower.contains("image_proj") {
+                continue
+            }
             if lower.hasSuffix(".gguf") {
                 let label = Self.label(for: file.path, repoID: repoID, ext: ".gguf")
                 // Skip duplicate labels within the same repo (common with mirrored filenames)

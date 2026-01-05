@@ -14,7 +14,7 @@ extension URLSession {
                 progress: @escaping @Sendable (Double, Int64) async -> Void
         ) async throws -> (URL, URLResponse) {
                 if NetworkKillSwitch.isEnabled { throw URLError(.notConnectedToInternet) }
-                final class Handler: NSObject, URLSessionDownloadDelegate {
+                final class Handler: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
                         let progressHandler: @Sendable (Double, Int64) async -> Void
                         let knownExpected: Int64
                         var lastBytes: Int64 = 0

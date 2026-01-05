@@ -9,6 +9,41 @@ public enum ModelFormat: String, Codable, CaseIterable, Hashable, Sendable {
     case apple = "APPLE"
 }
 
+struct MoEInfo: Codable, Hashable, Sendable {
+    /// Indicates whether the model advertises mixture-of-experts metadata.
+    var isMoE: Bool
+    /// Total experts available in each MoE layer.
+    var expertCount: Int
+    /// Recommended number of experts to use per token, if provided by metadata.
+    var defaultUsed: Int?
+    /// Count of transformer blocks that contain MoE experts.
+    var moeLayerCount: Int?
+    /// Total transformer block count reported by the model.
+    var totalLayerCount: Int?
+    /// Reported hidden dimension (embedding length).
+    var hiddenSize: Int?
+    /// Reported feed-forward dimension.
+    var feedForwardSize: Int?
+    /// Reported vocabulary size.
+    var vocabSize: Int?
+}
+
+extension MoEInfo {
+    /// Default metadata used when a scan fails. Treated as dense/unknown.
+    static var denseFallback: MoEInfo {
+        MoEInfo(
+            isMoE: false,
+            expertCount: 0,
+            defaultUsed: nil,
+            moeLayerCount: nil,
+            totalLayerCount: nil,
+            hiddenSize: nil,
+            feedForwardSize: nil,
+            vocabSize: nil
+        )
+    }
+}
+
 extension ModelFormat {
     var tagGradient: LinearGradient {
         switch self {
@@ -87,6 +122,20 @@ public struct ModelRecord: Identifiable, Hashable, Codable, Sendable {
     public let installed: Bool
     public let tags: [String]?
     public let pipeline_tag: String?
+    public let minRAMBytes: Int64?
+
+    public init(id: String, displayName: String, publisher: String, summary: String?, hasInstallableQuant: Bool, formats: Set<ModelFormat>, installed: Bool, tags: [String]?, pipeline_tag: String?, minRAMBytes: Int64? = nil) {
+        self.id = id
+        self.displayName = displayName
+        self.publisher = publisher
+        self.summary = summary
+        self.hasInstallableQuant = hasInstallableQuant
+        self.formats = formats
+        self.installed = installed
+        self.tags = tags
+        self.pipeline_tag = pipeline_tag
+        self.minRAMBytes = minRAMBytes
+    }
 }
 
 public struct ModelDetails: Identifiable, Hashable, Codable, Equatable, Sendable {
@@ -95,29 +144,41 @@ public struct ModelDetails: Identifiable, Hashable, Codable, Equatable, Sendable
     public let summary: String?
     public let quants: [QuantInfo]
     public let promptTemplate: String?
+    /// Optional conservative RAM requirement (bytes) for the lowest quant we ship for this model.
+    /// Hidden/internal hint used to gate installs on devices with limited memory.
+    public let minRAMBytes: Int64?
+
+    public init(id: String,
+                summary: String?,
+                quants: [QuantInfo],
+                promptTemplate: String?,
+                minRAMBytes: Int64? = nil) {
+        self.id = id
+        self.summary = summary
+        self.quants = quants
+        self.promptTemplate = promptTemplate
+        self.minRAMBytes = minRAMBytes
+    }
 }
 
 extension ModelDetails {
     /// Returns true if this model is vision-capable according to cached Hub metadata
     /// or local GGUF heuristics (first available GGUF quant).
     var isVision: Bool {
-        // Prefer Hub pipeline_tag/tags
         if let meta = HuggingFaceMetadataCache.cached(repoId: id), meta.isVision {
             return true
         }
-        // Fallback: if there is a GGUF quant, try to heuristically detect vision
-        if let gguf = quants.first(where: { $0.format == .gguf }) {
-            let dir = InstalledModelsStore.baseDir(for: .gguf, modelID: id)
-            // If already downloaded, check the gguf header for indicators
-            if let local = InstalledModelsStore.firstGGUF(in: dir) {
-                if ChatVM.guessLlamaVisionModel(from: local) { return true }
-                if GGUFMetadata.isVisionLikely(at: local) { return true }
-            }
-            // If not present locally yet, heuristically infer from repo id
-            if VisionModelDetector.isVisionModelCachedOrHeuristic(repoId: id) { return true }
-            // As a last resort, try to infer from the download filename (cheap heuristic)
-            let lower = gguf.downloadURL.lastPathComponent.lowercased()
-            if lower.contains("vl") || lower.contains("vision") || lower.contains("llava") { return true }
+        if ProjectorLocator.hasProjectorForModelID(id) {
+            return true
+        }
+        return false
+    }
+
+    /// Returns true if the Hub metadata indicates a Mixture-of-Experts architecture.
+    /// Detection rule: treat as MoE when `gguf.architecture` contains "moe" (case-insensitive).
+    var isMoE: Bool {
+        if let arch = HuggingFaceMetadataCache.cached(repoId: id)?.gguf?.architecture?.lowercased() {
+            return arch.contains("moe")
         }
         return false
     }

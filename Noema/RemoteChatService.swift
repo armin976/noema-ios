@@ -1,4 +1,16 @@
 import Foundation
+import RelayKit
+#if os(iOS) || os(visionOS)
+#if canImport(NetworkExtension)
+import NetworkExtension
+#endif
+#if canImport(SystemConfiguration)
+import SystemConfiguration.CaptiveNetwork
+#endif
+#if canImport(UIKit)
+import UIKit
+#endif
+#endif
 
 actor RemoteChatService {
     struct RequestOptions {
@@ -150,6 +162,21 @@ actor RemoteChatService {
     private var cancellationHandler: (() -> Void)?
     private let decoder: JSONDecoder
     private var bufferedToolTokens: [String] = []
+#if os(iOS) || os(visionOS)
+    private let relayOutbox = RelayOutbox()
+    private var relayFullHistory: [(role: String, text: String)]?
+    private let clientIdentity = RemoteChatService.makeClientIdentity()
+    private var lanMonitorTask: Task<Void, Never>?
+    private var lanRefreshHandler: (@Sendable () async -> RemoteBackend?)?
+    private var lanLastMatchedSSID: String?
+    private var lanLastRefresh: Date?
+    private var lanLastObservedLocalSSID: String?
+    private var lanManualOverride = false
+    private static let lanRefreshMinimumInterval: TimeInterval = 30
+#endif
+    private var relayContainerID: String?
+    private var conversationID: UUID?
+    private var transportObserver: (@Sendable (RemoteSessionTransport, Bool) async -> Void)?
 
     init(backend: RemoteBackend, modelID: String, toolSpecs: [ToolSpec]) {
         self.backend = backend
@@ -160,8 +187,21 @@ actor RemoteChatService {
         self.decoder = decoder
     }
 
+    deinit {
+#if os(iOS) || os(visionOS)
+        lanMonitorTask?.cancel()
+#endif
+    }
+
     func updateBackend(_ backend: RemoteBackend) {
         self.backend = backend
+#if os(iOS) || os(visionOS)
+        if backend.endpointType != .noemaRelay {
+            cancelLANMonitor()
+        } else if lanRefreshHandler != nil {
+            startLANMonitor()
+        }
+#endif
     }
 
     func updateModelID(_ id: String) {
@@ -174,6 +214,43 @@ actor RemoteChatService {
 
     func updateOptions(stops: [String], temperature: Double?, includeTools: Bool) {
         options = RequestOptions(stops: stops, temperature: temperature, includeTools: includeTools)
+    }
+
+#if os(iOS) || os(visionOS)
+    // Exposed preflight to adopt LAN before first message.
+    // Refreshes metadata and computes an immediate LAN match if possible.
+    func preflightLANAdoption() async -> String? {
+        await refreshRelayMetadata(reason: "activate-session-preflight", allowThrottle: false)
+        return await currentLANMatch()
+    }
+
+    func updateRelayFullHistory(_ history: [(role: String, text: String)]) {
+        relayFullHistory = history
+    }
+
+    func setLANRefreshHandler(_ handler: (@Sendable () async -> RemoteBackend?)?) {
+        lanRefreshHandler = handler
+        if handler == nil {
+            cancelLANMonitor()
+        } else {
+            startLANMonitor()
+            Task {
+                await refreshRelayMetadata(reason: "handler-installed", allowThrottle: false)
+            }
+        }
+    }
+#endif
+
+    func updateRelayContainerID(_ identifier: String?) {
+        relayContainerID = identifier?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func updateConversationID(_ id: UUID?) {
+        conversationID = id
+    }
+
+    func setTransportObserver(_ observer: (@Sendable (RemoteSessionTransport, Bool) async -> Void)?) {
+        transportObserver = observer
     }
 
     func cancelActiveStream() {
@@ -203,6 +280,372 @@ actor RemoteChatService {
         cancellationHandler = nil
     }
 
+    private func relayParameters() -> [String: String] {
+        var params: [String: String] = [:]
+        let trimmedModel = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedModel.isEmpty {
+            params["model"] = trimmedModel
+        }
+        params["backend"] = backend.endpointType.rawValue
+        params["backendName"] = backend.name
+        if let temperature = options.temperature {
+            params["temperature"] = String(temperature)
+        }
+        if !options.stops.isEmpty {
+            params["stop"] = options.stops.joined(separator: ",")
+        }
+        return params
+    }
+
+#if os(iOS) || os(visionOS)
+    private func startLANMonitor() {
+        guard lanMonitorTask == nil,
+              lanRefreshHandler != nil,
+              backend.endpointType == .noemaRelay else { return }
+        Task {
+            await logger.log("[RemoteChat] [LAN] Starting LAN monitor for backend '\(backend.name)' (handler installed: \(lanRefreshHandler != nil))")
+        }
+        lanLastRefresh = nil
+        lanLastObservedLocalSSID = nil
+        lanMonitorTask = Task { [weak self] in
+            await self?.refreshRelayMetadata(reason: "monitor-start", allowThrottle: false)
+            await self?.lanMonitorIteration()
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                if Task.isCancelled { break }
+                await self?.lanMonitorIteration()
+            }
+        }
+    }
+
+    private func cancelLANMonitor() {
+        lanMonitorTask?.cancel()
+        lanMonitorTask = nil
+        lanLastMatchedSSID = nil
+        lanLastObservedLocalSSID = nil
+        Task {
+            await logger.log("[RemoteChat] [LAN] Cancelled LAN monitor for backend '\(backend.name)'")
+        }
+    }
+
+    private func lanMonitorIteration() async {
+        guard backend.endpointType == .noemaRelay else {
+            cancelLANMonitor()
+            return
+        }
+
+        let now = Date()
+        let localSSIDRaw = await WiFiSSIDProvider.shared.currentSSID()
+        let localSSID = sanitizedSSID(localSSIDRaw)
+
+        if lanLastObservedLocalSSID != localSSID {
+            let previous = lanLastObservedLocalSSID ?? "nil"
+            let current = localSSID ?? "nil"
+            lanLastObservedLocalSSID = localSSID
+            await logger.log("[RemoteChat] [LAN] Local Wi-Fi changed for '\(backend.name)' (previous=\(previous), current=\(current))")
+            await refreshRelayMetadata(reason: "local-wifi-change", allowThrottle: false)
+        }
+
+        let metadataMissing = backend.relayLANChatEndpointURL == nil || backend.relayAuthorizationHeader == nil
+        let expectedSSID = sanitizedSSID(backend.relayWiFiSSID)
+
+        await logger.log(
+            "[RemoteChat] [LAN] Monitor tick for '\(backend.name)': localSSID=\(localSSID ?? "nil"), expectedSSID=\(expectedSSID ?? "nil"), hasLANURL=\(backend.relayLANChatEndpointURL != nil), metadataMissing=\(metadataMissing)"
+        )
+
+        if lanLastRefresh == nil,
+           metadataMissing,
+           shouldAllowLANRefresh(at: now) {
+            await refreshRelayMetadata(reason: "monitor-initial", allowThrottle: false)
+        }
+
+        let matchedSSID = await matchedLANSSID(localSSID: localSSID)
+
+        if let matchedSSID {
+            if lanLastMatchedSSID != matchedSSID {
+                lanLastMatchedSSID = matchedSSID
+                await logger.log("[RemoteChat] [LAN] Matched LAN for '\(backend.name)' using SSID token '\(matchedSSID.isEmpty ? "<unknown>" : matchedSSID)'")
+                await notifyTransport(.lan(ssid: matchedSSID), streaming: false)
+                if lanManualOverride {
+                    lanManualOverride = false
+                    await logger.log("[RemoteChat] [LAN] Manual override cleared after successful LAN match for '\(backend.name)'")
+                }
+            }
+        } else if lanLastMatchedSSID != nil {
+            await logger.log("[RemoteChat] [LAN] Lost LAN match for '\(backend.name)'; reverting to Cloud Relay")
+            lanLastMatchedSSID = nil
+            await notifyTransport(.cloudRelay, streaming: false)
+        }
+    }
+
+    private func shouldAllowLANRefresh(at now: Date) -> Bool {
+        guard let last = lanLastRefresh else { return true }
+        return now.timeIntervalSince(last) >= Self.lanRefreshMinimumInterval
+    }
+
+    func forceLANRefresh(reason: String) async {
+        guard backend.endpointType == .noemaRelay else { return }
+        await logger.log("[RemoteChat] [LAN] Forcing LAN monitor iteration (\(reason)) for '\(backend.name)'")
+        if lanMonitorTask == nil {
+            startLANMonitor()
+        }
+        await refreshRelayMetadata(reason: "force-\(reason)", allowThrottle: false)
+        await lanMonitorIteration()
+    }
+
+    func setLANManualOverride(_ enabled: Bool, reason: String) async {
+        guard backend.endpointType == .noemaRelay else { return }
+        lanManualOverride = enabled
+        await logger.log("[RemoteChat] [LAN] Manual override \(enabled ? "enabled" : "disabled") (\(reason)) for '\(backend.name)'")
+        if enabled {
+            await forceLANRefresh(reason: "manual-override")
+        }
+    }
+
+    private func refreshRelayMetadata(reason: String, allowThrottle: Bool) async {
+        guard backend.endpointType == .noemaRelay else { return }
+        guard let handler = lanRefreshHandler else { return }
+        let now = Date()
+        if allowThrottle, let last = lanLastRefresh, now.timeIntervalSince(last) < Self.lanRefreshMinimumInterval {
+            await logger.log("[RemoteChat] [LAN] Skipping Cloud Relay metadata refresh (\(reason)) for '\(backend.name)' (throttled)")
+            return
+        }
+        await logger.log("[RemoteChat] [LAN] Requesting Cloud Relay metadata refresh (\(reason)) for '\(backend.name)'")
+        if let updated = await handler() {
+            self.backend = updated
+        }
+        lanLastRefresh = now
+        let lanURL = backend.relayLANChatEndpointURL?.absoluteString ?? "nil"
+        let hostSSID = sanitizedSSID(backend.relayWiFiSSID) ?? "nil"
+        await logger.log("[RemoteChat] [LAN] Metadata received (\(reason)) for '\(backend.name)': hostSSID=\(hostSSID), lanURL=\(lanURL)")
+
+#if os(iOS) || os(visionOS)
+        // If we still don't have a LAN endpoint (e.g., CloudKit timed out or
+        // SSID is unavailable), try Bonjour discovery as a local fallback so
+        // we can switch transports immediately.
+        if backend.relayLANChatEndpointURL == nil {
+            if let url = await LANServiceDiscovery.shared.discoverNoemaLANURL(timeout: 2.5) {
+                var adopted = backend
+                adopted.relayLANURLString = url
+                self.backend = adopted
+                await logger.log("[RemoteChat] [LAN] Bonjour fallback discovered \(url) for '\(backend.name)'")
+            }
+        }
+#endif
+    }
+
+    private func sanitizedSSID(_ ssid: String?) -> String? {
+        guard let value = ssid?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
+
+    private struct ClientIdentity {
+        let id: String
+        let name: String
+        let model: String
+        let platform: String
+    }
+
+    private static func makeClientIdentity() -> ClientIdentity {
+#if canImport(UIKit)
+        let device = UIDevice.current
+        let name = device.name
+        let model = device.model
+        let idiom = device.userInterfaceIdiom == .pad ? "iPadOS" : "iOS"
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        let versionLabel = "\(idiom) \(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
+        let provider = SystemTimeProvider()
+        let identifier = provider.currentIDFV() ?? UUID().uuidString
+        return ClientIdentity(id: identifier, name: name, model: model, platform: versionLabel)
+#else
+        return ClientIdentity(id: UUID().uuidString, name: "Noema Device", model: "Unknown", platform: "iOS")
+#endif
+    }
+#endif
+
+#if os(iOS) || os(visionOS)
+    private func performRelayStream(
+        for input: LLMInput,
+        continuation: AsyncThrowingStream<String, Error>.Continuation
+    ) async {
+        await logger.log("[RemoteChat] [Cloud] Performing Cloud Relay request for '\(backend.name)' model '\(modelID)'")
+        await notifyTransport(.cloudRelay, streaming: false)
+        do {
+            guard let containerID = relayContainerID, !containerID.isEmpty else {
+                throw InferenceError.notConfigured
+            }
+            guard let conversationID else {
+                throw InferenceError.other("Missing conversation identifier for relay")
+            }
+            let history = relayHistory(from: input)
+            var parameters = relayParameters()
+            if backend.endpointType == .noemaRelay {
+                parameters["transport"] = "cloud"
+                parameters["clientId"] = clientIdentity.id
+                parameters["clientName"] = clientIdentity.name
+                parameters["clientModel"] = clientIdentity.model
+                parameters["clientPlatform"] = clientIdentity.platform
+                if let rawSSID = await WiFiSSIDProvider.shared.currentSSID(),
+                   let ssid = sanitizedSSID(rawSSID) {
+                    parameters["clientSSID"] = ssid
+                }
+            }
+            let envelope = try await relayOutbox.sendAndAwaitReply(
+                containerID: containerID,
+                conversationID: conversationID,
+                history: history,
+                parameters: parameters
+            )
+            if let assistant = envelope.messages.last(where: { $0.role.lowercased() == "assistant" }) {
+                let output = assistant.fullText ?? assistant.text
+                _ = continuation.yield(output)
+            }
+            continuation.finish()
+        } catch {
+            continuation.finish(throwing: error)
+        }
+    }
+
+    private func relayHistory(from input: LLMInput) -> [(role: String, text: String, fullText: String?)] {
+        let sanitizedEntries: [(role: String, text: String)]
+        switch input.content {
+        case .messages(let messages):
+            sanitizedEntries = messages.map { ($0.role, $0.content) }
+        case .plain(let text):
+            sanitizedEntries = [(role: "user", text: text)]
+        case .multimodal(let text, _):
+            sanitizedEntries = [(role: "user", text: text)]
+        }
+#if os(iOS) || os(visionOS)
+        let rawEntries = relayFullHistory
+        relayFullHistory = nil
+#else
+        let rawEntries: [(role: String, text: String)]? = nil
+#endif
+        guard let rawEntries, rawEntries.count == sanitizedEntries.count else {
+            return sanitizedEntries.map { ($0.role, $0.text, $0.text) }
+        }
+        return zip(sanitizedEntries, rawEntries).map { sanitized, raw in
+            (sanitized.role, sanitized.text, raw.text)
+        }
+    }
+
+    private func matchedLANSSID() async -> String? {
+        let localRaw = await WiFiSSIDProvider.shared.currentSSID()
+        let localSSID = sanitizedSSID(localRaw)
+        return await matchedLANSSID(localSSID: localSSID)
+    }
+
+    private func matchedLANSSID(localSSID: String?) async -> String? {
+        guard backend.endpointType == .noemaRelay else { return nil }
+        guard backend.relayLANChatEndpointURL != nil else { return nil }
+
+        if lanManualOverride {
+            if await isLANHostReachable() {
+                let overrideSSID = sanitizedSSID(backend.relayWiFiSSID)
+                await logger.log("[RemoteChat] [LAN] Manual override using LAN endpoint for '\(backend.name)' (reportedSSID=\(overrideSSID ?? "<unknown>"))")
+                if let overrideSSID { return overrideSSID }
+                if let localSSID { return localSSID }
+                // Do not surface transport medium (Ethernet/Wi‑Fi) as a label
+                return ""
+            } else {
+                await logger.log("[RemoteChat] [LAN] Manual override requested for '\(backend.name)' but LAN host is unreachable")
+                return nil
+            }
+        }
+
+        if let expectedSSID = sanitizedSSID(backend.relayWiFiSSID),
+           let localSSID,
+           LANSubnet.ssidsMatch(expectedSSID, localSSID) {
+            await logger.log("[RemoteChat] [LAN] SSID match for '\(backend.name)' (expected=\(expectedSSID), local=\(localSSID))")
+            return localSSID
+        }
+
+        // If the host is on Ethernet (no SSID) but we share the same subnet,
+        // treat it as a LAN match.
+        if sanitizedSSID(backend.relayWiFiSSID) == nil,
+           let host = backend.relayLANChatEndpointURL?.host,
+           LANSubnet.isSameSubnet(host: host) {
+            await logger.log("[RemoteChat] [LAN] Same-subnet match for '\(backend.name)' (host=\(host)); using LAN")
+            if let localSSID { return localSSID }
+            // Do not surface transport medium (Ethernet/Wi‑Fi) as a label
+            return ""
+        }
+
+        guard await isLANHostReachable() else { return nil }
+        await logger.log("[RemoteChat] [LAN] Reachability probe succeeded for '\(backend.name)' (SSID unavailable, using empty token)")
+        if let localSSID { return localSSID }
+        // Do not surface transport medium (Ethernet/Wi‑Fi) as a label
+        return ""
+    }
+
+    private func currentLANMatch() async -> String? {
+        let localRaw = await WiFiSSIDProvider.shared.currentSSID()
+        let localSSID = sanitizedSSID(localRaw)
+        return await matchedLANSSID(localSSID: localSSID)
+    }
+
+    private func isLANHostReachable() async -> Bool {
+        guard backend.endpointType == .noemaRelay else { return false }
+        // Prefer a lightweight unauthenticated health check first.
+        if let healthURL = backend.relayLANHealthEndpointURL {
+            var req = URLRequest(url: healthURL)
+            req.httpMethod = "GET"
+            req.timeoutInterval = 3
+            let cfg = URLSessionConfiguration.ephemeral
+            cfg.timeoutIntervalForRequest = 3
+            cfg.timeoutIntervalForResource = 3
+            cfg.waitsForConnectivity = false
+            let session = URLSession(configuration: cfg)
+            defer { session.invalidateAndCancel() }
+            await logger.log("[RemoteChat] [LAN] Health probe → \(healthURL.absoluteString) for '\(backend.name)'")
+            do {
+                let (_, resp) = try await session.data(for: req)
+                if let http = resp as? HTTPURLResponse, (200...299).contains(http.statusCode) {
+                    return true
+                }
+            } catch { /* fall through to chat HEAD */ }
+        }
+
+        guard let url = backend.relayLANChatEndpointURL else { return false }
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        request.timeoutInterval = 4
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let auth = backend.relayAuthorizationHeader {
+            request.setValue(auth, forHTTPHeaderField: "Authorization")
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 4
+        configuration.timeoutIntervalForResource = 4
+        configuration.waitsForConnectivity = false
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let hostDescription = url.absoluteString
+        await logger.log("[RemoteChat] [LAN] HEAD probe → \(hostDescription) for '\(backend.name)'")
+        do {
+            let (_, response) = try await session.data(for: request)
+            if let http = response as? HTTPURLResponse {
+                switch http.statusCode {
+                case 200..<400, 401, 403, 405:
+                    return true
+                default:
+                    await logger.log("[RemoteChat] [LAN] HEAD probe failed with status #\(http.statusCode) for '\(backend.name)'; treating as unreachable")
+                    return false
+                }
+            }
+        } catch {
+            if let urlError = error as? URLError,
+               urlError.code == .badServerResponse || urlError.code == .cannotDecodeRawData {
+                return true
+            }
+        }
+        return false
+    }
+#endif
+
     private func currentEndpointKind() -> EndpointKind {
         let rawPath: String
         if let url = backend.chatEndpointURL {
@@ -219,6 +662,11 @@ actor RemoteChatService {
     private func performStream(for input: LLMInput, continuation: AsyncThrowingStream<String, Error>.Continuation) async {
         bufferedToolTokens.removeAll(keepingCapacity: false)
 
+#if os(iOS) || os(visionOS)
+        var usedLANTransport = false
+        var lanTransportSSID: String?
+#endif
+
         do {
             let prompt = input.prompt
             guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -226,13 +674,62 @@ actor RemoteChatService {
                 return
             }
 
+#if os(iOS) || os(visionOS)
+            if backend.endpointType == .noemaRelay {
+                if lanLastRefresh == nil {
+                    await refreshRelayMetadata(reason: "stream-preflight", allowThrottle: false)
+                }
+                if let matchedSSID = await currentLANMatch() {
+                    lanTransportSSID = matchedSSID
+                    cancelLANMonitor()
+                } else {
+                    await logger.log("[RemoteChat] [Cloud] No LAN match available for '\(backend.name)' – streaming via Cloud Relay")
+                    startLANMonitor()
+                    await notifyTransport(.cloudRelay, streaming: false)
+                    await performRelayStream(for: input, continuation: continuation)
+                    return
+                }
+            } else if backend.endpointType == .cloudRelay {
+                await logger.log("[RemoteChat] [Cloud] Backend '\(backend.name)' configured for Cloud Relay; streaming via CloudKit")
+                await notifyTransport(.cloudRelay, streaming: false)
+                await performRelayStream(for: input, continuation: continuation)
+                return
+            }
+#endif
             if backend.endpointType == .ollama {
+                await notifyTransport(.direct, streaming: true)
                 try await performOllamaStream(prompt: prompt, continuation: continuation)
                 return
             }
 
+#if os(iOS) || os(visionOS)
+            var kind: EndpointKind
+            var request: URLRequest
+            if backend.endpointType == .noemaRelay {
+                guard let matchedSSID = lanTransportSSID else {
+                    throw RemoteChatError.invalidEndpoint
+                }
+                kind = .chat
+                Task {
+                    let ssidLabel = matchedSSID.isEmpty ? "<unknown>" : matchedSSID
+                    await logger.log("[RemoteChat] [LAN] Switching transport from Cloud Relay to direct LAN for '\(backend.name)' (SSID \(ssidLabel))")
+                }
+                request = try buildRelayLANRequest(prompt: prompt, matchedSSID: matchedSSID)
+                usedLANTransport = true
+                await notifyTransport(.lan(ssid: matchedSSID), streaming: true)
+                Task {
+                    await logger.log("[RemoteChat] Using LAN transport for \(backend.name) (SSID \(matchedSSID))")
+                }
+            } else {
+                kind = currentEndpointKind()
+                request = try buildRequest(prompt: prompt, kind: kind)
+                await notifyTransport(.direct, streaming: true)
+            }
+#else
             let kind = currentEndpointKind()
             let request = try buildRequest(prompt: prompt, kind: kind)
+            await notifyTransport(.direct, streaming: true)
+#endif
             let (bytes, response) = try await URLSession.shared.bytes(for: request)
             try Task.checkCancellation()
             guard let http = response as? HTTPURLResponse else {
@@ -539,6 +1036,18 @@ actor RemoteChatService {
         } catch is CancellationError {
             continuation.finish()
         } catch {
+#if os(iOS) || os(visionOS)
+            if usedLANTransport {
+                let ssidDescription = lanTransportSSID ?? "unknown SSID"
+                Task {
+                    await logger.log("[RemoteChat] ⚠️ LAN transport failed for \(backend.name) on \(ssidDescription): \(error.localizedDescription). Falling back to Cloud Relay.")
+                }
+                startLANMonitor()
+                await notifyTransport(.cloudRelay, streaming: false)
+                await performRelayStream(for: input, continuation: continuation)
+                return
+            }
+#endif
             continuation.finish(throwing: error)
         }
     }
@@ -634,6 +1143,77 @@ actor RemoteChatService {
         }
 
         continuation.finish()
+    }
+
+#if os(iOS) || os(visionOS)
+    private func buildRelayLANRequest(prompt: String, matchedSSID: String) throws -> URLRequest {
+        guard let url = backend.relayLANChatEndpointURL else {
+            throw RemoteChatError.invalidEndpoint
+        }
+
+        let trimmedModel = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let modelValue: String = {
+            if !trimmedModel.isEmpty { return trimmedModel }
+            if let fallback = backend.customModelIDs.first { return fallback }
+            return trimmedModel
+        }()
+        guard !modelValue.isEmpty else {
+            throw RemoteChatError.missingModelIdentifier
+        }
+
+        var body: [String: Any] = [
+            "model": modelValue,
+            "stream": true,
+            "messages": [
+                [
+                    "role": "user",
+                    "content": prompt
+                ]
+            ]
+        ]
+
+        if !options.stops.isEmpty {
+            body["stop"] = options.stops
+        }
+        if let temperature = options.temperature {
+            body["temperature"] = temperature
+        }
+        if options.includeTools && !toolSpecs.isEmpty {
+            body["tools"] = try toolsPayload(from: toolSpecs)
+            body["tool_choice"] = "auto"
+        }
+
+        let data = try JSONSerialization.data(withJSONObject: body, options: [])
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = data
+        request.timeoutInterval = 60
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let auth = backend.relayAuthorizationHeader {
+            request.setValue(auth, forHTTPHeaderField: "Authorization")
+        }
+        request.setValue(clientIdentity.id, forHTTPHeaderField: "X-Noema-Client-ID")
+        request.setValue(clientIdentity.name, forHTTPHeaderField: "X-Noema-Client-Name")
+        request.setValue(clientIdentity.model, forHTTPHeaderField: "X-Noema-Client-Model")
+        request.setValue(clientIdentity.platform, forHTTPHeaderField: "X-Noema-Client-Platform")
+        request.setValue("lan", forHTTPHeaderField: "X-Noema-Transport")
+        if !matchedSSID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            request.setValue(matchedSSID, forHTTPHeaderField: "X-Noema-Client-SSID")
+        }
+        if let hostID = backend.relayHostDeviceID {
+            request.setValue(hostID, forHTTPHeaderField: "X-Noema-Relay-Device")
+        }
+        Task {
+            await logger.log("[RemoteChat] [LAN] Issuing chat request to \(url.absoluteString) for '\(backend.name)' (SSID token: \(matchedSSID.isEmpty ? "<unknown>" : matchedSSID))")
+        }
+        return request
+    }
+#endif
+
+    private func notifyTransport(_ transport: RemoteSessionTransport, streaming: Bool) async {
+        guard let observer = transportObserver else { return }
+        await observer(transport, streaming)
     }
 
     private func buildRequest(prompt: String, kind: EndpointKind) throws -> URLRequest {
@@ -801,3 +1381,56 @@ actor RemoteChatService {
         return jsonString
     }
 }
+
+#if os(iOS) || os(visionOS)
+actor WiFiSSIDProvider {
+    static let shared = WiFiSSIDProvider()
+
+    private var cachedSSID: String?
+    private var lastFetch: Date?
+    private var hotspotFailureUntil: Date?
+
+    func currentSSID() async -> String? {
+        if #available(iOS 14.0, visionOS 1.0, *) {
+            if let failureUntil = hotspotFailureUntil, failureUntil > Date() {
+                return cachedSSID
+            }
+            let ssid = await withCheckedContinuation { continuation in
+                NEHotspotNetwork.fetchCurrent { network in
+                    continuation.resume(returning: network?.ssid)
+                }
+            }
+            cachedSSID = ssid
+            lastFetch = Date()
+            if ssid == nil {
+                hotspotFailureUntil = Date().addingTimeInterval(60)
+            } else {
+                hotspotFailureUntil = nil
+            }
+            return ssid
+        } else if let ssid = fetchSSIDViaCaptiveNetwork() {
+            cachedSSID = ssid
+            lastFetch = Date()
+            return ssid
+        }
+        if let lastFetch, Date().timeIntervalSince(lastFetch) < 10, let cachedSSID {
+            return cachedSSID
+        }
+        return cachedSSID
+    }
+#if !os(visionOS)
+    private func fetchSSIDViaCaptiveNetwork() -> String? {
+        guard let interfaces = CNCopySupportedInterfaces() as? [String] else { return nil }
+        for interface in interfaces {
+            if let info = CNCopyCurrentNetworkInfo(interface as CFString) as? [CFString: Any],
+               let ssid = info[kCNNetworkInfoKeySSID] as? String {
+                return ssid
+            }
+        }
+        return nil
+    }
+#else
+    private func fetchSSIDViaCaptiveNetwork() -> String? { nil }
+#endif
+}
+#endif

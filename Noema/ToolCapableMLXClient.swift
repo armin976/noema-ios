@@ -1,4 +1,5 @@
 // ToolCapableMLXClient.swift
+#if os(iOS) || os(macOS) || os(visionOS)
 import Foundation
 
 // MARK: - XML-style tool call structure (for models that use XML tags)
@@ -140,14 +141,8 @@ public final class ToolCapableMLXClient: ToolCapableLLM {
             systemContent += "\n\n<tools>\n\(toolSchemas)\n</tools>\n\n" + detailedInstructions
         }
 
-        // Serialize conversation using model-aware templates
-        let family = ModelKind.detect(id: modelName)
-        let history: [ChatVM.Msg] = messages.compactMap { m in
-            let text = m.content ?? ""
-            return ChatVM.Msg(role: m.role, text: text)
-        }
-        let (builtPrompt, _, _) = PromptBuilder.build(template: nil, family: family, history: history, system: systemContent)
-        return builtPrompt
+        let sanitizedMessages = messages.filter { $0.role != "system" }
+        return renderPromptWithSystemContent(systemContent, messages: sanitizedMessages)
     }
     
     private func generateXMLToolSchemas(_ tools: [ToolSpec]) -> String {
@@ -472,14 +467,8 @@ public final class ToolCapableMLXClient: ToolCapableLLM {
             }
         }
 
-        // Use model-aware prompt building rather than hard-coding ChatML
-        let family = ModelKind.detect(id: modelName)
-        let history: [ChatVM.Msg] = messages.compactMap { m in
-            let text = m.content ?? ""
-            return ChatVM.Msg(role: m.role, text: text)
-        }
-        let (builtPrompt, _, _) = PromptBuilder.build(template: nil, family: family, history: history, system: systemContent)
-        return builtPrompt
+        let sanitizedMessages = messages.filter { $0.role != "system" }
+        return renderPromptWithSystemContent(systemContent, messages: sanitizedMessages)
     }
 
     // Strip code fences and stray prose around a JSON object; also convert {"name":...,"arguments":...} ➜ {"tool_name":...,"arguments":...}
@@ -525,6 +514,41 @@ public final class ToolCapableMLXClient: ToolCapableLLM {
             - \(tool.function.name): \(tool.function.description)\n        Parameters:\n\(params)
             """
         }.joined(separator: "\n")
+    }
+}
+
+extension ToolCapableMLXClient {
+    private func renderPromptWithSystemContent(_ system: String, messages: [ToolChatMessage]) -> String {
+#if canImport(UIKit) || os(visionOS)
+        let family = ModelKind.detect(id: modelName)
+        let history: [ChatVM.Msg] = messages.map { message in
+            let text = message.content ?? ""
+            return ChatVM.Msg(role: message.role, text: text)
+        }
+        let (prompt, _, _) = PromptBuilder.build(template: nil, family: family, history: history, system: system)
+        return prompt
+#else
+        return renderFallbackPrompt(system: system, messages: messages)
+#endif
+    }
+
+    private func renderFallbackPrompt(system: String, messages: [ToolChatMessage]) -> String {
+        var lines: [String] = []
+        let trimmedSystem = system.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedSystem.isEmpty {
+            lines.append("System: \(trimmedSystem)")
+        }
+        for message in messages {
+            let role = message.role.capitalized
+            let content = message.content?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if content.isEmpty {
+                lines.append("\(role):")
+            } else {
+                lines.append("\(role): \(content)")
+            }
+        }
+        lines.append("Assistant: ")
+        return lines.joined(separator: "\n")
     }
 }
 
@@ -649,3 +673,5 @@ private func resolveActiveSystemPrompt(from existing: String?) -> String {
     // longer reflect the current web search armed state.
     return SystemPromptResolver.general()
 }
+
+#endif

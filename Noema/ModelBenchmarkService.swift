@@ -1,6 +1,29 @@
 // ModelBenchmarkService.swift
 import Foundation
 
+@MainActor
+protocol ModelBenchmarkingViewModel: AnyObject {
+    var modelLoaded: Bool { get }
+    var loadedModelURL: URL? { get }
+    var loadedModelSettings: ModelSettings? { get }
+    var loadedModelFormat: ModelFormat? { get }
+    var loadError: String? { get }
+
+    func load(
+        url: URL,
+        settings: ModelSettings?,
+        format: ModelFormat?,
+        forceReload: Bool
+    ) async -> Bool
+
+    func activeClientForBenchmark() throws -> AnyLLMClient
+    func makeBenchmarkInput(from rawPrompt: String) -> LLMInput
+
+    /// Called by the benchmark service to ensure any model it loaded
+    /// is explicitly torn down after the benchmark finishes.
+    func unloadAfterBenchmark() async
+}
+
 @_silgen_name("app_memory_footprint")
 private func c_app_memory_footprint() -> UInt
 
@@ -13,13 +36,19 @@ enum ModelBenchmarkError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unsupportedFormat:
-            return "Benchmarking is not available for this model format."
+            return String(localized: "Benchmarking is not available for this model format.")
         case .weightsMissing:
-            return "The selected model's weights could not be located."
+            return String(localized: "The selected model's weights could not be located.")
         case .loadFailed(let message):
-            return "Failed to load model for benchmark: \(message)"
+            return String.localizedStringWithFormat(
+                String(localized: "Failed to load model for benchmark: %@"),
+                message
+            )
         case .generationFailed(let message):
-            return "Benchmark generation failed: \(message)"
+            return String.localizedStringWithFormat(
+                String(localized: "Benchmark generation failed: %@"),
+                message
+            )
         }
     }
 }
@@ -44,6 +73,10 @@ struct ModelBenchmarkResult: Identifiable {
 struct ModelBenchmarkProgress {
     let fraction: Double
     let detail: String
+}
+
+private struct MainActorIsolated<Value>: @unchecked Sendable {
+    let value: Value
 }
 
 enum ModelBenchmarkService {
@@ -73,18 +106,32 @@ enum ModelBenchmarkService {
         return "You are running a performance benchmark. Respond with a numbered list of 24 concise technology facts, each under ten words. Finish with a short summary sentence."
     }()
 
-    static func run(
+    static func run<VM: ModelBenchmarkingViewModel>(
         model: LocalModel,
         settings: ModelSettings,
-        vm: ChatVM,
+        vm: VM,
         progress: (@MainActor (ModelBenchmarkProgress) -> Void)? = nil
     ) async throws -> ModelBenchmarkResult {
+        let vmRef = MainActorIsolated(value: vm)
         let settingsSnapshot = settings
-        let needsLoad = await MainActor.run {
-            !(vm.modelLoaded &&
-              vm.loadedModelURL == model.url &&
-              vm.loadedModelSettings == settings &&
-              vm.loadedModelFormat == model.format)
+        let isLoaded = await MainActor.run { vmRef.value.modelLoaded }
+        let loadedURL = await MainActor.run { vmRef.value.loadedModelURL }
+        let loadedSettings = await MainActor.run { vmRef.value.loadedModelSettings }
+        let loadedFormat = await MainActor.run { vmRef.value.loadedModelFormat }
+        let urlMatches = loadedURL == Optional(model.url)
+        let settingsMatch = loadedSettings == Optional(settings)
+        let formatMatch = loadedFormat == Optional(model.format)
+        let needsLoad = !(isLoaded && urlMatches && settingsMatch && formatMatch)
+
+        // Track whether this run performed a load so we can clean up.
+        var loadedForBenchmark = false
+        defer {
+            if loadedForBenchmark {
+                // Fire-and-forget on the main actor; we don't want to block result delivery
+                Task { @MainActor in
+                    await vmRef.value.unloadAfterBenchmark()
+                }
+            }
         }
 
         if needsLoad {
@@ -93,39 +140,25 @@ enum ModelBenchmarkService {
             log("Reusing existing loaded model for benchmark run")
         }
 
-        return try await performBenchmark(
-            model: model,
-            settings: settingsSnapshot,
-            vm: vm,
-            progress: progress,
-            needsLoad: needsLoad
-        )
-    }
-
-    private static func performBenchmark(
-        model: LocalModel,
-        settings: ModelSettings,
-        vm: ChatVM,
-        progress: (@MainActor (ModelBenchmarkProgress) -> Void)?,
-        needsLoad: Bool
-    ) async throws -> ModelBenchmarkResult {
-        log("Starting benchmark for model=\(model.name) format=\(model.format) settings=[\(describe(settings: settings))]")
+        log("Starting benchmark for model=\(model.name) format=\(model.format) settings=[\(describe(settings: settingsSnapshot))]")
         guard model.format != .apple else { throw ModelBenchmarkError.unsupportedFormat }
 
         try Task.checkCancellation()
 
         if needsLoad {
-            let loadSucceeded = await vm.load(
+            let loadSucceeded = await vmRef.value.load(
                 url: model.url,
-                settings: settings,
+                settings: settingsSnapshot,
                 format: model.format,
                 forceReload: true
             )
             if !loadSucceeded {
-                let message = await MainActor.run { vm.loadError ?? "Unknown load failure" }
+                let loadError = await MainActor.run { vmRef.value.loadError }
+                let message = loadError ?? "Unknown load failure"
                 logError("Benchmark load failed: \(message)")
                 throw ModelBenchmarkError.loadFailed(message)
             }
+            loadedForBenchmark = true
         } else {
             try Task.checkCancellation()
         }
@@ -134,18 +167,22 @@ enum ModelBenchmarkService {
 
         let client: AnyLLMClient
         do {
-            client = try await MainActor.run { () throws -> AnyLLMClient in
-                try vm.activeClientForBenchmark()
+            client = try await MainActor.run {
+                try vmRef.value.activeClientForBenchmark()
             }
         } catch {
             logError("Benchmark client unavailable: \(error.localizedDescription)")
             throw ModelBenchmarkError.loadFailed(error.localizedDescription)
         }
 
+        let input = await MainActor.run {
+            vmRef.value.makeBenchmarkInput(from: prompt)
+        }
+
         return try await executeBenchmark(
             with: client,
-            vm: vm,
-            settings: settings,
+            input: input,
+            settings: settingsSnapshot,
             format: model.format,
             progress: progress
         )
@@ -153,7 +190,7 @@ enum ModelBenchmarkService {
 
     private static func executeBenchmark(
         with client: AnyLLMClient,
-        vm: ChatVM,
+        input: LLMInput,
         settings: ModelSettings,
         format: ModelFormat,
         progress: (@MainActor (ModelBenchmarkProgress) -> Void)?
@@ -162,7 +199,6 @@ enum ModelBenchmarkService {
         let startFootprint = Int64(c_app_memory_footprint())
         var peakFootprint = startFootprint
         let start = Date()
-        let input = await vm.makeBenchmarkInput(from: prompt)
         var aggregate = ""
         var firstTokenDate: Date?
         var chunkCount = 0
@@ -178,7 +214,10 @@ enum ModelBenchmarkService {
             try Task.checkCancellation()
             let stream = try await client.textStream(from: input)
             await MainActor.run {
-                progress?(ModelBenchmarkProgress(fraction: 0.0, detail: "Streaming benchmark output…"))
+                progress?(ModelBenchmarkProgress(
+                    fraction: 0.0,
+                    detail: String(localized: "Streaming benchmark output…")
+                ))
             }
             for try await chunk in stream {
                 try Task.checkCancellation()
@@ -198,7 +237,11 @@ enum ModelBenchmarkService {
                 if now.timeIntervalSince(lastUIUpdate) >= 0.5 {
                     let estTokens = estimateTokens(for: aggregate)
                     let fraction = min(1.0, Double(estTokens) / Double(generationCap))
-                    let label = "Streaming… \(chunkCount) chunks (~\(estTokens) tok est.)"
+                    let label = String.localizedStringWithFormat(
+                        String(localized: "Streaming… %d chunks (~%d tok est.)"),
+                        chunkCount,
+                        estTokens
+                    )
                     await MainActor.run {
                         progress?(ModelBenchmarkProgress(fraction: fraction, detail: label))
                     }

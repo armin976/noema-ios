@@ -118,6 +118,7 @@ final class DatasetsExploreViewModel: ObservableObject {
         searchResults.append(contentsOf: unique)
         canLoadMore = unique.count == perPage
         isLoadingSearch = false
+
     }
 
     func loadNextPage() {

@@ -3,7 +3,13 @@ import SwiftUI
 
 @MainActor
 enum MainTab: Hashable {
-    case chat, stored, explore, settings
+    case chat
+    case stored
+    case explore
+#if os(macOS)
+    case relay
+#endif
+    case settings
 }
 
 @MainActor

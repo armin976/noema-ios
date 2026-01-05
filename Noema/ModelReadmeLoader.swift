@@ -218,7 +218,7 @@ final class ModelReadmeLoader: ObservableObject {
     private func discoverReadmeCandidate() async -> URL? {
         var comps = URLComponents(string: "https://huggingface.co/api/models/\(repo)")!
         comps.queryItems = [URLQueryItem(name: "full", value: "1")]
-        var req = URLRequest(url: comps.url!)
+        let req = URLRequest(url: comps.url!)
         // Don't send Authorization for public model API query in README discovery
         do {
             let (data, _) = try await HFHubRequestManager.shared.data(for: req.url!,
@@ -315,7 +315,7 @@ final class ModelReadmeLoader: ObservableObject {
     static func fetchSummary(repo: String, token: String?) async -> String? {
         var comps = URLComponents(string: "https://huggingface.co/api/models/\(repo)")!
         comps.queryItems = [URLQueryItem(name: "cardData", value: "true")]
-        var req = URLRequest(url: comps.url!)
+        let req = URLRequest(url: comps.url!)
         do {
             let (data, _) = try await HFHubRequestManager.shared.data(for: req.url!,
                                                                       token: token,

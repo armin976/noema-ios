@@ -17,8 +17,11 @@ enum RunnerFactory {
     static func load(url: URL, format: ModelFormat) async throws -> Runner {
         switch format {
         case .gguf:
+            // Prefer explicit projector if present next to the weights
+            let mmproj = ProjectorLocator.projectorPath(alongside: url)
+            let param = LlamaParameter(options: LlamaOptions(), contextLength: nil, threadCount: nil, mmproj: mmproj)
             return .llm(try await AnyLLMClient(
-                NoemaLlamaClient.llama(url: url)
+                NoemaLlamaClient.llama(url: url, parameter: param)
             ))
         case .mlx:
             // Route MLX models to text or VLM backend based on config

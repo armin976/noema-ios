@@ -7,18 +7,23 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		054606C8C278AD20251A8DE3 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 096DFC38282AE7CC1CBC47D0 /* MLXLLM */; };
+		0958C14A15754DABA9706146 /* MLXVLM in Frameworks */ = {isa = PBXBuildFile; productRef = F0F32833168AC421BAFF1301 /* MLXVLM */; };
+		173B500E616CE0C8720732B4 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 035AB236448800F41072CFF7 /* MLXLMCommon */; };
+		36F3CC4A934A927DB446262C /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = A75FE0F413B83C5653A358FA /* MLXLMCommon */; };
+		5A799E3027157C932A64382B /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 89508E8A4241F3F06F767D32 /* MLXLMCommon */; };
+		6426A0162ED7B84400615267 /* MLXMNIST in Frameworks */ = {isa = PBXBuildFile; productRef = 6426A0152ED7B84400615267 /* MLXMNIST */; };
+		644228FD2EBEBC2D00422935 /* FacebookBasics in Frameworks */ = {isa = PBXBuildFile; productRef = 644228FC2EBEBC2D00422935 /* FacebookBasics */; };
+		644228FF2EBEBC2D00422935 /* FacebookCore in Frameworks */ = {isa = PBXBuildFile; productRef = 644228FE2EBEBC2D00422935 /* FacebookCore */; };
 		64431EBB2E5E2F5E00BD5E8C /* SwiftMath in Frameworks */ = {isa = PBXBuildFile; productRef = 64431EBA2E5E2F5E00BD5E8C /* SwiftMath */; };
-		644FC4D02E7F14A900628A30 /* LeapModelDownloader in Frameworks */ = {isa = PBXBuildFile; productRef = 644FC4CF2E7F14A900628A30 /* LeapModelDownloader */; };
-		644FC4D22E7F14A900628A30 /* LeapSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 644FC4D12E7F14A900628A30 /* LeapSDK */; };
-		646E49E22E8EDF51004C5BD8 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 646E49D62E8EDF51004C5BD8 /* MLXLLM */; };
+		6458090C2EBEA4110034074C /* LeapModelDownloader in Frameworks */ = {isa = PBXBuildFile; productRef = 6458090B2EBEA4110034074C /* LeapModelDownloader */; };
+		6458090E2EBEA4110034074C /* LeapSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 6458090D2EBEA4110034074C /* LeapSDK */; };
 		646E49E42E8EDF51004C5BD8 /* MLXRandom in Frameworks */ = {isa = PBXBuildFile; productRef = 646E49D32E8EDF51004C5BD8 /* MLXRandom */; };
 		646E49E52E8EDF51004C5BD8 /* MLXOptimizers in Frameworks */ = {isa = PBXBuildFile; productRef = 646E49D22E8EDF51004C5BD8 /* MLXOptimizers */; };
 		646E49E62E8EDF51004C5BD8 /* MLXNN in Frameworks */ = {isa = PBXBuildFile; productRef = 646E49D12E8EDF51004C5BD8 /* MLXNN */; };
 		646E49E72E8EDF51004C5BD8 /* MLXLinalg in Frameworks */ = {isa = PBXBuildFile; productRef = 646E49D02E8EDF51004C5BD8 /* MLXLinalg */; };
 		646E49E92E8EDF51004C5BD8 /* MLXFast in Frameworks */ = {isa = PBXBuildFile; productRef = 646E49CF2E8EDF51004C5BD8 /* MLXFast */; };
-		646E49EA2E8EDF51004C5BD8 /* MLXVLM in Frameworks */ = {isa = PBXBuildFile; productRef = 646E49DA2E8EDF51004C5BD8 /* MLXVLM */; };
 		646E49EB2E8EDF51004C5BD8 /* MLXMNIST in Frameworks */ = {isa = PBXBuildFile; productRef = 646E49D92E8EDF51004C5BD8 /* MLXMNIST */; };
-		646E49EC2E8EDF51004C5BD8 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 646E49D82E8EDF51004C5BD8 /* MLXLMCommon */; };
 		646E49ED2E8EDF51004C5BD8 /* MLXFFT in Frameworks */ = {isa = PBXBuildFile; productRef = 646E49CE2E8EDF51004C5BD8 /* MLXFFT */; };
 		646E49EE2E8EDF51004C5BD8 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 646E49CC2E8EDF51004C5BD8 /* MLX */; };
 		646E49EF2E8EDF51004C5BD8 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64ABE8E02E494DCE00821D00 /* Metal.framework */; };
@@ -27,23 +32,32 @@
 		646E49F22E8EDF51004C5BD8 /* CryptoKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64D5069D2E53BFB30022E586 /* CryptoKit.framework */; };
 		646E49F32E8EDF51004C5BD8 /* NoemaPackages in Frameworks */ = {isa = PBXBuildFile; productRef = 646E49D42E8EDF51004C5BD8 /* NoemaPackages */; };
 		646E49F42E8EDF51004C5BD8 /* SwiftMath in Frameworks */ = {isa = PBXBuildFile; productRef = 646E49DB2E8EDF51004C5BD8 /* SwiftMath */; };
-		646E4A982E8F4168004C5BD8 /* FacebookCore in Frameworks */ = {isa = PBXBuildFile; productRef = 646E4A972E8F4168004C5BD8 /* FacebookCore */; };
-		64733FCB2E4E925C00F7AC43 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 64DCAF812E41264C001DA82F /* MLX */; };
-		64733FCC2E4E925C00F7AC43 /* MLXFFT in Frameworks */ = {isa = PBXBuildFile; productRef = 64DCAF832E41264C001DA82F /* MLXFFT */; };
-		64733FCD2E4E925C00F7AC43 /* MLXFast in Frameworks */ = {isa = PBXBuildFile; productRef = 64DCAF852E41264C001DA82F /* MLXFast */; };
-		64733FCE2E4E925C00F7AC43 /* MLXLinalg in Frameworks */ = {isa = PBXBuildFile; productRef = 64DCAF872E41264C001DA82F /* MLXLinalg */; };
-		64733FCF2E4E925C00F7AC43 /* MLXNN in Frameworks */ = {isa = PBXBuildFile; productRef = 64DCAF892E41264C001DA82F /* MLXNN */; };
-		64733FD02E4E925C00F7AC43 /* MLXOptimizers in Frameworks */ = {isa = PBXBuildFile; productRef = 64DCAF8B2E41264C001DA82F /* MLXOptimizers */; };
-		64733FD12E4E925C00F7AC43 /* MLXRandom in Frameworks */ = {isa = PBXBuildFile; productRef = 64DCAF8D2E41264C001DA82F /* MLXRandom */; };
-		6473409D2E4E9C2F00F7AC43 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 6473409C2E4E9C2F00F7AC43 /* MLXLLM */; };
-		6473409F2E4E9C2F00F7AC43 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 6473409E2E4E9C2F00F7AC43 /* MLXLMCommon */; };
-		647340A12E4E9C2F00F7AC43 /* MLXMNIST in Frameworks */ = {isa = PBXBuildFile; productRef = 647340A02E4E9C2F00F7AC43 /* MLXMNIST */; };
-		647340A32E4E9C2F00F7AC43 /* MLXVLM in Frameworks */ = {isa = PBXBuildFile; productRef = 647340A22E4E9C2F00F7AC43 /* MLXVLM */; };
+		647D61A82E955AEA003DC7F3 /* MLXRandom in Frameworks */ = {isa = PBXBuildFile; productRef = 647D61952E955AEA003DC7F3 /* MLXRandom */; };
+		647D61A92E955AEA003DC7F3 /* MLXOptimizers in Frameworks */ = {isa = PBXBuildFile; productRef = 647D61942E955AEA003DC7F3 /* MLXOptimizers */; };
+		647D61AA2E955AEA003DC7F3 /* MLXNN in Frameworks */ = {isa = PBXBuildFile; productRef = 647D61932E955AEA003DC7F3 /* MLXNN */; };
+		647D61AB2E955AEA003DC7F3 /* MLXLinalg in Frameworks */ = {isa = PBXBuildFile; productRef = 647D61922E955AEA003DC7F3 /* MLXLinalg */; };
+		647D61AD2E955AEA003DC7F3 /* MLXFast in Frameworks */ = {isa = PBXBuildFile; productRef = 647D61912E955AEA003DC7F3 /* MLXFast */; };
+		647D61AF2E955AEA003DC7F3 /* MLXMNIST in Frameworks */ = {isa = PBXBuildFile; productRef = 647D619B2E955AEA003DC7F3 /* MLXMNIST */; };
+		647D61B22E955AEA003DC7F3 /* MLXFFT in Frameworks */ = {isa = PBXBuildFile; productRef = 647D61902E955AEA003DC7F3 /* MLXFFT */; };
+		647D61B32E955AEA003DC7F3 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 647D618E2E955AEA003DC7F3 /* MLX */; };
+		647D61B42E955AEA003DC7F3 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64ABE8E02E494DCE00821D00 /* Metal.framework */; };
+		647D61B52E955AEA003DC7F3 /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64ABE8E12E494DCE00821D00 /* MetalKit.framework */; };
+		647D61B62E955AEA003DC7F3 /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64ABE8DE2E494DC600821D00 /* Accelerate.framework */; };
+		647D61B72E955AEA003DC7F3 /* CryptoKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64D5069D2E53BFB30022E586 /* CryptoKit.framework */; };
+		647D61B82E955AEA003DC7F3 /* NoemaPackages in Frameworks */ = {isa = PBXBuildFile; productRef = 647D61962E955AEA003DC7F3 /* NoemaPackages */; };
+		647D61B92E955AEA003DC7F3 /* SwiftMath in Frameworks */ = {isa = PBXBuildFile; productRef = 647D619D2E955AEA003DC7F3 /* SwiftMath */; };
 		64ABE8DF2E494DC700821D00 /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64ABE8DE2E494DC600821D00 /* Accelerate.framework */; };
 		64ABE8E22E494DCE00821D00 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64ABE8E02E494DCE00821D00 /* Metal.framework */; };
 		64ABE8E32E494DCE00821D00 /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64ABE8E12E494DCE00821D00 /* MetalKit.framework */; };
 		64D5069E2E53BFB30022E586 /* CryptoKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64D5069D2E53BFB30022E586 /* CryptoKit.framework */; };
+		64F1A0B92F00000000000001 /* RelayKit in Frameworks */ = {isa = PBXBuildFile; productRef = 64F1A0B82F00000000000000 /* RelayKit */; };
+		64F1A0BA2F00000000000001 /* RelayKit in Frameworks */ = {isa = PBXBuildFile; productRef = 64F1A0B82F00000000000000 /* RelayKit */; };
+		64F1A0BB2F00000000000001 /* RelayKit in Frameworks */ = {isa = PBXBuildFile; productRef = 64F1A0B82F00000000000000 /* RelayKit */; };
+		761B93CC43210A77C5F2C3EF /* MLXVLM in Frameworks */ = {isa = PBXBuildFile; productRef = 9671064702E2AE64A359AADF /* MLXVLM */; };
+		7BF8CC40DD072A43B16A07C2 /* MLXVLM in Frameworks */ = {isa = PBXBuildFile; productRef = 417AB310C4DB5F8DFE71956C /* MLXVLM */; };
+		88B93A66A8F06F7EAA21C91A /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = B6CF4E9B49381B893090A7F0 /* MLXLLM */; };
 		A8259F0A2A424CF1B4856CCF /* NoemaPackages in Frameworks */ = {isa = PBXBuildFile; productRef = 21FF187598A740D3901EFE90 /* NoemaPackages */; };
+		BFDB12BA4EAF40FB69496641 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 06EF816A0080BF19C8D0E0E4 /* MLXLLM */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -84,12 +98,22 @@
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		647D61BB2E955AEA003DC7F3 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		642CDB352E231965009017C6 /* Noema.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Noema.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		642CDB472E231968009017C6 /* NoemaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NoemaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		642CDB512E231968009017C6 /* NoemaUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NoemaUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		642CDB472E231968009017C6 /* NoemaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; name = NoemaTests.xctest; path = Noema.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		642CDB512E231968009017C6 /* NoemaUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; name = NoemaUITests.xctest; path = Noema.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		643392BC2E5E228B004C2269 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
 		643392BE2E5E229E004C2269 /* CoreText.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreText.framework; path = System/Library/Frameworks/CoreText.framework; sourceTree = SDKROOT; };
 		643392C02E5E22A4004C2269 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
@@ -97,8 +121,10 @@
 		643392C42E5E22BB004C2269 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 		644183FF2E4CE8AD00C5E265 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
 		644184012E4CE8AD00C5E265 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
-		646E49FA2E8EDF51004C5BD8 /* NoemaVisionOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NoemaVisionOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		646E49FA2E8EDF51004C5BD8 /* Noema.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Noema.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		646E49FB2E8EDF51004C5BD8 /* Noema copy-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = "Noema copy-Info.plist"; path = "/Users/arminstamate/Desktop/untitled folder 3/untitled folder/Noema/Noema/Noema copy-Info.plist"; sourceTree = "<absolute>"; };
+		647D61BF2E955AEA003DC7F3 /* Noema.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Noema.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		647D61C02E955AEA003DC7F3 /* Noema copy2-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = "Noema copy2-Info.plist"; path = "/Users/arminstamate/Desktop/untitled folder 3/untitled folder/Noema/Noema/Noema copy2-Info.plist"; sourceTree = "<absolute>"; };
 		64ABE8DE2E494DC600821D00 /* Accelerate.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Accelerate.framework; path = System/Library/Frameworks/Accelerate.framework; sourceTree = SDKROOT; };
 		64ABE8E02E494DCE00821D00 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
 		64ABE8E12E494DCE00821D00 /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
@@ -113,6 +139,16 @@
 				Noema.xcdatamodeld,
 			);
 			target = 646E49CB2E8EDF51004C5BD8 /* NoemaVisionOS */;
+		};
+		647D61C12E955AEA003DC7F3 /* Exceptions for "Noema" folder in "NoemaMac" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+				Noema.xcdatamodeld,
+				Resources/leap_catalog.json,
+				"Resources/markdown-it.min.js",
+			);
+			target = 647D618D2E955AEA003DC7F3 /* NoemaMac */;
 		};
 		64AE28E52E771B0D00DEDA56 /* Exceptions for "Noema" folder in "Noema" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
@@ -129,6 +165,7 @@
 			exceptions = (
 				64AE28E52E771B0D00DEDA56 /* Exceptions for "Noema" folder in "Noema" target */,
 				646E49FC2E8EDF51004C5BD8 /* Exceptions for "Noema" folder in "NoemaVisionOS" target */,
+				647D61C12E955AEA003DC7F3 /* Exceptions for "Noema" folder in "NoemaMac" target */,
 			);
 			path = Noema;
 			sourceTree = "<group>";
@@ -155,26 +192,21 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				6473409D2E4E9C2F00F7AC43 /* MLXLLM in Frameworks */,
-				644FC4D02E7F14A900628A30 /* LeapModelDownloader in Frameworks */,
-				64733FD12E4E925C00F7AC43 /* MLXRandom in Frameworks */,
-				64733FD02E4E925C00F7AC43 /* MLXOptimizers in Frameworks */,
-				64733FCF2E4E925C00F7AC43 /* MLXNN in Frameworks */,
-				64733FCE2E4E925C00F7AC43 /* MLXLinalg in Frameworks */,
-				644FC4D22E7F14A900628A30 /* LeapSDK in Frameworks */,
-				64733FCD2E4E925C00F7AC43 /* MLXFast in Frameworks */,
-				647340A32E4E9C2F00F7AC43 /* MLXVLM in Frameworks */,
-				647340A12E4E9C2F00F7AC43 /* MLXMNIST in Frameworks */,
-				6473409F2E4E9C2F00F7AC43 /* MLXLMCommon in Frameworks */,
-				646E4A982E8F4168004C5BD8 /* FacebookCore in Frameworks */,
-				64733FCC2E4E925C00F7AC43 /* MLXFFT in Frameworks */,
-				64733FCB2E4E925C00F7AC43 /* MLX in Frameworks */,
+				36F3CC4A934A927DB446262C /* MLXLMCommon in Frameworks */,
+				054606C8C278AD20251A8DE3 /* MLXLLM in Frameworks */,
+				7BF8CC40DD072A43B16A07C2 /* MLXVLM in Frameworks */,
+				644228FD2EBEBC2D00422935 /* FacebookBasics in Frameworks */,
+				6458090E2EBEA4110034074C /* LeapSDK in Frameworks */,
 				64ABE8E22E494DCE00821D00 /* Metal.framework in Frameworks */,
+				6426A0162ED7B84400615267 /* MLXMNIST in Frameworks */,
+				6458090C2EBEA4110034074C /* LeapModelDownloader in Frameworks */,
+				644228FF2EBEBC2D00422935 /* FacebookCore in Frameworks */,
 				64ABE8E32E494DCE00821D00 /* MetalKit.framework in Frameworks */,
 				64ABE8DF2E494DC700821D00 /* Accelerate.framework in Frameworks */,
 				64D5069E2E53BFB30022E586 /* CryptoKit.framework in Frameworks */,
 				A8259F0A2A424CF1B4856CCF /* NoemaPackages in Frameworks */,
 				64431EBB2E5E2F5E00BD5E8C /* SwiftMath in Frameworks */,
+				64F1A0B92F00000000000001 /* RelayKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -196,15 +228,15 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				646E49E22E8EDF51004C5BD8 /* MLXLLM in Frameworks */,
 				646E49E42E8EDF51004C5BD8 /* MLXRandom in Frameworks */,
 				646E49E52E8EDF51004C5BD8 /* MLXOptimizers in Frameworks */,
 				646E49E62E8EDF51004C5BD8 /* MLXNN in Frameworks */,
+				5A799E3027157C932A64382B /* MLXLMCommon in Frameworks */,
+				BFDB12BA4EAF40FB69496641 /* MLXLLM in Frameworks */,
+				0958C14A15754DABA9706146 /* MLXVLM in Frameworks */,
 				646E49E72E8EDF51004C5BD8 /* MLXLinalg in Frameworks */,
 				646E49E92E8EDF51004C5BD8 /* MLXFast in Frameworks */,
-				646E49EA2E8EDF51004C5BD8 /* MLXVLM in Frameworks */,
 				646E49EB2E8EDF51004C5BD8 /* MLXMNIST in Frameworks */,
-				646E49EC2E8EDF51004C5BD8 /* MLXLMCommon in Frameworks */,
 				646E49ED2E8EDF51004C5BD8 /* MLXFFT in Frameworks */,
 				646E49EE2E8EDF51004C5BD8 /* MLX in Frameworks */,
 				646E49EF2E8EDF51004C5BD8 /* Metal.framework in Frameworks */,
@@ -213,6 +245,32 @@
 				646E49F22E8EDF51004C5BD8 /* CryptoKit.framework in Frameworks */,
 				646E49F32E8EDF51004C5BD8 /* NoemaPackages in Frameworks */,
 				646E49F42E8EDF51004C5BD8 /* SwiftMath in Frameworks */,
+				64F1A0BA2F00000000000001 /* RelayKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		647D61A52E955AEA003DC7F3 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				647D61A82E955AEA003DC7F3 /* MLXRandom in Frameworks */,
+				647D61A92E955AEA003DC7F3 /* MLXOptimizers in Frameworks */,
+				647D61AA2E955AEA003DC7F3 /* MLXNN in Frameworks */,
+				173B500E616CE0C8720732B4 /* MLXLMCommon in Frameworks */,
+				88B93A66A8F06F7EAA21C91A /* MLXLLM in Frameworks */,
+				761B93CC43210A77C5F2C3EF /* MLXVLM in Frameworks */,
+				647D61AB2E955AEA003DC7F3 /* MLXLinalg in Frameworks */,
+				647D61AD2E955AEA003DC7F3 /* MLXFast in Frameworks */,
+				647D61AF2E955AEA003DC7F3 /* MLXMNIST in Frameworks */,
+				647D61B22E955AEA003DC7F3 /* MLXFFT in Frameworks */,
+				647D61B32E955AEA003DC7F3 /* MLX in Frameworks */,
+				647D61B42E955AEA003DC7F3 /* Metal.framework in Frameworks */,
+				647D61B52E955AEA003DC7F3 /* MetalKit.framework in Frameworks */,
+				647D61B62E955AEA003DC7F3 /* Accelerate.framework in Frameworks */,
+				647D61B72E955AEA003DC7F3 /* CryptoKit.framework in Frameworks */,
+				647D61B82E955AEA003DC7F3 /* NoemaPackages in Frameworks */,
+				647D61B92E955AEA003DC7F3 /* SwiftMath in Frameworks */,
+				64F1A0BB2F00000000000001 /* RelayKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -228,6 +286,7 @@
 				644184032E4CE8AD00C5E265 /* NoemaEmbeddingActivity */,
 				64AD2F612E26FE5F00BAE465 /* Frameworks */,
 				646E49FB2E8EDF51004C5BD8 /* Noema copy-Info.plist */,
+				647D61C02E955AEA003DC7F3 /* Noema copy2-Info.plist */,
 				642CDB362E231965009017C6 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -238,7 +297,8 @@
 				642CDB352E231965009017C6 /* Noema.app */,
 				642CDB472E231968009017C6 /* NoemaTests.xctest */,
 				642CDB512E231968009017C6 /* NoemaUITests.xctest */,
-				646E49FA2E8EDF51004C5BD8 /* NoemaVisionOS.app */,
+				646E49FA2E8EDF51004C5BD8 /* Noema.app */,
+				647D61BF2E955AEA003DC7F3 /* Noema.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -271,6 +331,7 @@
 				642CDB312E231965009017C6 /* Sources */,
 				642CDB322E231965009017C6 /* Frameworks */,
 				642CDB332E231965009017C6 /* Resources */,
+				64F9F0A02FA8F4AA00ABCDEF /* Re-sign llama.framework */,
 				644184182E4CE8AF00C5E265 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
@@ -282,22 +343,17 @@
 			);
 			name = Noema;
 			packageProductDependencies = (
-				64DCAF812E41264C001DA82F /* MLX */,
-				64DCAF832E41264C001DA82F /* MLXFFT */,
-				64DCAF852E41264C001DA82F /* MLXFast */,
-				64DCAF872E41264C001DA82F /* MLXLinalg */,
-				64DCAF892E41264C001DA82F /* MLXNN */,
-				64DCAF8B2E41264C001DA82F /* MLXOptimizers */,
-				64DCAF8D2E41264C001DA82F /* MLXRandom */,
 				21FF187598A740D3901EFE90 /* NoemaPackages */,
-				6473409C2E4E9C2F00F7AC43 /* MLXLLM */,
-				6473409E2E4E9C2F00F7AC43 /* MLXLMCommon */,
-				647340A02E4E9C2F00F7AC43 /* MLXMNIST */,
-				647340A22E4E9C2F00F7AC43 /* MLXVLM */,
+				64F1A0B82F00000000000000 /* RelayKit */,
 				64431EBA2E5E2F5E00BD5E8C /* SwiftMath */,
-				644FC4CF2E7F14A900628A30 /* LeapModelDownloader */,
-				644FC4D12E7F14A900628A30 /* LeapSDK */,
-				646E4A972E8F4168004C5BD8 /* FacebookCore */,
+				6458090B2EBEA4110034074C /* LeapModelDownloader */,
+				6458090D2EBEA4110034074C /* LeapSDK */,
+				644228FC2EBEBC2D00422935 /* FacebookBasics */,
+				644228FE2EBEBC2D00422935 /* FacebookCore */,
+				A75FE0F413B83C5653A358FA /* MLXLMCommon */,
+				096DFC38282AE7CC1CBC47D0 /* MLXLLM */,
+				417AB310C4DB5F8DFE71956C /* MLXVLM */,
+				6426A0152ED7B84400615267 /* MLXMNIST */,
 			);
 			productName = Noema;
 			productReference = 642CDB352E231965009017C6 /* Noema.app */;
@@ -356,6 +412,8 @@
 				646E49E02E8EDF51004C5BD8 /* Sources */,
 				646E49E12E8EDF51004C5BD8 /* Frameworks */,
 				646E49F52E8EDF51004C5BD8 /* Resources */,
+				64F9F0B42FA9000000ABCDE3 /* Embed llama.framework (copy) */,
+				64F9F0A12FA8F4AA00ABCDE0 /* Re-sign llama.framework */,
 				646E49F62E8EDF51004C5BD8 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
@@ -372,19 +430,57 @@
 				646E49CF2E8EDF51004C5BD8 /* MLXFast */,
 				646E49D02E8EDF51004C5BD8 /* MLXLinalg */,
 				646E49D12E8EDF51004C5BD8 /* MLXNN */,
+				89508E8A4241F3F06F767D32 /* MLXLMCommon */,
+				06EF816A0080BF19C8D0E0E4 /* MLXLLM */,
+				F0F32833168AC421BAFF1301 /* MLXVLM */,
 				646E49D22E8EDF51004C5BD8 /* MLXOptimizers */,
 				646E49D32E8EDF51004C5BD8 /* MLXRandom */,
 				646E49D42E8EDF51004C5BD8 /* NoemaPackages */,
-				646E49D62E8EDF51004C5BD8 /* MLXLLM */,
-				646E49D82E8EDF51004C5BD8 /* MLXLMCommon */,
+				64F1A0B82F00000000000000 /* RelayKit */,
 				646E49D92E8EDF51004C5BD8 /* MLXMNIST */,
-				646E49DA2E8EDF51004C5BD8 /* MLXVLM */,
 				646E49DB2E8EDF51004C5BD8 /* SwiftMath */,
-				646E49DD2E8EDF51004C5BD8 /* LeapModelDownloader */,
-				646E49DF2E8EDF51004C5BD8 /* LeapSDK */,
 			);
 			productName = Noema;
-			productReference = 646E49FA2E8EDF51004C5BD8 /* NoemaVisionOS.app */;
+			productReference = 646E49FA2E8EDF51004C5BD8 /* Noema.app */;
+			productType = "com.apple.product-type.application";
+		};
+		647D618D2E955AEA003DC7F3 /* NoemaMac */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 647D61BC2E955AEA003DC7F3 /* Build configuration list for PBXNativeTarget "NoemaMac" */;
+			buildPhases = (
+				647D61A42E955AEA003DC7F3 /* Sources */,
+				647D61A52E955AEA003DC7F3 /* Frameworks */,
+				647D61BA2E955AEA003DC7F3 /* Resources */,
+				64F9F0B42FA9000000ABCDE3 /* Embed llama.framework (copy) */,
+				64F9F0A22FA8F4AA00ABCDE1 /* Re-sign llama.framework */,
+				647D61BB2E955AEA003DC7F3 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				642CDB372E231965009017C6 /* Noema */,
+			);
+			name = NoemaMac;
+			packageProductDependencies = (
+				647D618E2E955AEA003DC7F3 /* MLX */,
+				647D61902E955AEA003DC7F3 /* MLXFFT */,
+				647D61912E955AEA003DC7F3 /* MLXFast */,
+				647D61922E955AEA003DC7F3 /* MLXLinalg */,
+				647D61932E955AEA003DC7F3 /* MLXNN */,
+				035AB236448800F41072CFF7 /* MLXLMCommon */,
+				B6CF4E9B49381B893090A7F0 /* MLXLLM */,
+				9671064702E2AE64A359AADF /* MLXVLM */,
+				647D61942E955AEA003DC7F3 /* MLXOptimizers */,
+				647D61952E955AEA003DC7F3 /* MLXRandom */,
+				647D61962E955AEA003DC7F3 /* NoemaPackages */,
+				64F1A0B82F00000000000000 /* RelayKit */,
+				647D619B2E955AEA003DC7F3 /* MLXMNIST */,
+				647D619D2E955AEA003DC7F3 /* SwiftMath */,
+			);
+			productName = Noema;
+			productReference = 647D61BF2E955AEA003DC7F3 /* Noema.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -417,16 +513,25 @@
 			knownRegions = (
 				en,
 				Base,
+				ar,
+				"zh-Hans",
+				fr,
+				de,
+				hi,
+				ja,
+				ko,
+				ro,
+				tr,
 			);
 			mainGroup = 642CDB2C2E231965009017C6;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				64DCAF802E41264C001DA82F /* XCRemoteSwiftPackageReference "mlx-swift" */,
 				2FB3F4F8C56943ACAEC3C135 /* XCLocalSwiftPackageReference "." */,
-				6473409B2E4E9C2E00F7AC43 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */,
 				64431EB92E5E2F5E00BD5E8C /* XCRemoteSwiftPackageReference "SwiftMath" */,
-				644FC4CE2E7F14A900628A30 /* XCRemoteSwiftPackageReference "leap-ios" */,
-				646E4A962E8F4168004C5BD8 /* XCRemoteSwiftPackageReference "facebook-ios-sdk" */,
+				6458090A2EBEA4110034074C /* XCRemoteSwiftPackageReference "leap-ios" */,
+				644228FB2EBEBC2D00422935 /* XCRemoteSwiftPackageReference "facebook-ios-sdk" */,
+				53802217708316E36FDFDC47 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */,
+				6426A0142ED7B84400615267 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 642CDB362E231965009017C6 /* Products */;
@@ -437,6 +542,7 @@
 				646E49CB2E8EDF51004C5BD8 /* NoemaVisionOS */,
 				642CDB462E231968009017C6 /* NoemaTests */,
 				642CDB502E231968009017C6 /* NoemaUITests */,
+				647D618D2E955AEA003DC7F3 /* NoemaMac */,
 			);
 		};
 /* End PBXProject section */
@@ -470,7 +576,111 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		647D61BA2E955AEA003DC7F3 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		64F9F0A02FA8F4AA00ABCDEF /* Re-sign llama.framework */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${PROJECT_DIR}/scripts/resign-llama.sh",
+				"${BUILT_PRODUCTS_DIR}/llama.framework",
+				"${BUILT_PRODUCTS_DIR}/PackageFrameworks/llama.framework",
+				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/llama.framework",
+				"${CODESIGNING_FOLDER_PATH}/Frameworks/llama.framework",
+			);
+			name = "Re-sign llama.framework";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"${DERIVED_FILE_DIR}/resign-llama.stamp",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${PROJECT_DIR}/scripts/resign-llama.sh\"\n";
+		};
+		64F9F0A12FA8F4AA00ABCDE0 /* Re-sign llama.framework */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${PROJECT_DIR}/scripts/resign-llama.sh",
+				"${BUILT_PRODUCTS_DIR}/llama.framework",
+				"${BUILT_PRODUCTS_DIR}/PackageFrameworks/llama.framework",
+				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/llama.framework",
+				"${CODESIGNING_FOLDER_PATH}/Frameworks/llama.framework",
+			);
+			name = "Re-sign llama.framework";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"${DERIVED_FILE_DIR}/resign-llama.stamp",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${PROJECT_DIR}/scripts/resign-llama.sh\"\n";
+		};
+		64F9F0A22FA8F4AA00ABCDE1 /* Re-sign llama.framework */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${PROJECT_DIR}/scripts/resign-llama.sh",
+				"${BUILT_PRODUCTS_DIR}/llama.framework",
+				"${BUILT_PRODUCTS_DIR}/PackageFrameworks/llama.framework",
+				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/llama.framework",
+				"${CODESIGNING_FOLDER_PATH}/Frameworks/llama.framework",
+			);
+			name = "Re-sign llama.framework";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"${DERIVED_FILE_DIR}/resign-llama.stamp",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${PROJECT_DIR}/scripts/resign-llama.sh\"\n";
+		};
+		64F9F0B42FA9000000ABCDE3 /* Embed llama.framework (copy) */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${PROJECT_DIR}/scripts/embed-llama.sh",
+				"${BUILT_PRODUCTS_DIR}/PackageFrameworks/llama.framework",
+				"${BUILT_PRODUCTS_DIR}/llama.framework",
+			);
+			name = "Embed llama.framework (copy)";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"${DERIVED_FILE_DIR}/embed-llama.stamp",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${PROJECT_DIR}/scripts/embed-llama.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		642CDB312E231965009017C6 /* Sources */ = {
@@ -501,6 +711,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		647D61A42E955AEA003DC7F3 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -522,6 +739,7 @@
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
@@ -570,7 +788,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
@@ -588,6 +806,7 @@
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
@@ -630,7 +849,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
@@ -648,6 +867,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES = YES;
 				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = Noema/Noema.entitlements;
@@ -675,12 +895,13 @@
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
-				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				IPHONEOS_DEPLOYMENT_TARGET = 18;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.4;
+				MARKETING_VERSION = 2;
 				OTHER_CFLAGS = (
 					"-O3",
 					"-DGGML_USE_ACCELERATE",
@@ -692,7 +913,7 @@
 				);
 				OTHER_LDFLAGS = "\"-ObjC \"";
 				PRODUCT_BUNDLE_IDENTIFIER = arminproducts.Noema;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = Noema;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
@@ -714,6 +935,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES = YES;
 				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
 				CLANG_CXX_STANDARD_LIBRARY_HARDENING = extensive;
 				CLANG_ENABLE_MODULES = YES;
@@ -742,12 +964,13 @@
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
-				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				IPHONEOS_DEPLOYMENT_TARGET = 18;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.4;
+				MARKETING_VERSION = 2;
 				OTHER_CFLAGS = (
 					"-O3",
 					"-DGGML_USE_ACCELERATE",
@@ -759,7 +982,7 @@
 				);
 				OTHER_LDFLAGS = "\"-ObjC \"";
 				PRODUCT_BUNDLE_IDENTIFIER = arminproducts.Noema;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = Noema;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
@@ -781,10 +1004,10 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = arminproducts.NoemaTests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = Noema;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -799,10 +1022,10 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = arminproducts.NoemaTests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = Noema;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -818,7 +1041,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = arminproducts.NoemaUITests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = Noema;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -834,7 +1057,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = arminproducts.NoemaUITests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = Noema;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -848,6 +1071,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES = YES;
 				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = Noema/Noema.entitlements;
@@ -856,6 +1080,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = XX3Z6V9TU9;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = c23;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"GGML_USE_ACCELERATE=1",
@@ -875,12 +1100,13 @@
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
-				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.4;
+				MARKETING_VERSION = 2;
 				OTHER_CFLAGS = (
 					"-O3",
 					"-DGGML_USE_ACCELERATE",
@@ -891,7 +1117,7 @@
 					"-std=c++17",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = arminproducts.Noema;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = Noema;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "xros xrsimulator";
 				SUPPORTS_MACCATALYST = NO;
@@ -913,6 +1139,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES = YES;
 				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
 				CLANG_CXX_STANDARD_LIBRARY_HARDENING = extensive;
 				CLANG_ENABLE_MODULES = YES;
@@ -922,6 +1149,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = XX3Z6V9TU9;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = c23;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"GGML_USE_ACCELERATE=1",
@@ -941,12 +1169,13 @@
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
-				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.4;
+				MARKETING_VERSION = 2;
 				OTHER_CFLAGS = (
 					"-O3",
 					"-DGGML_USE_ACCELERATE",
@@ -968,6 +1197,168 @@
 				SWIFT_OBJC_INTEROP_MODE = objcxx;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 7;
+				XROS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Release;
+		};
+		647D61BD2E955AEA003DC7F3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				AUTOMATION_APPLE_EVENTS = NO;
+				CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = Noema/RelayServer.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = XX3Z6V9TU9;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_BLUETOOTH = YES;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
+				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
+				ENABLE_RESOURCE_ACCESS_USB = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				ENABLE_USER_SELECTED_FILES = readwrite;
+				GCC_C_LANGUAGE_STANDARD = c23;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"GGML_USE_ACCELERATE=1",
+					"ACCELERATE_NEW_LAPACK=1",
+					"ACCELERATE_LAPACK_ILP64=1",
+					"GGML_VERSION=\"dev\"",
+					"GGML_COMMIT=\"local\"",
+				);
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "";
+				INFOPLIST_FILE = "Noema copy2-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Noema;
+				INFOPLIST_KEY_CFBundleName = Noema;
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 2;
+				OTHER_CFLAGS = (
+					"-O3",
+					"-DGGML_USE_ACCELERATE",
+					"-DGGML_METAL_NDEBUG",
+				);
+				OTHER_CPLUSPLUSFLAGS = (
+					"$(OTHER_CFLAGS)",
+					"-std=c++17",
+				);
+				OTHER_LDFLAGS = "\"-ObjC \"";
+				PRODUCT_BUNDLE_IDENTIFIER = arminproducts.Noema;
+				PRODUCT_NAME = Noema;
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				REGISTER_APP_GROUPS = YES;
+				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
+				RUNTIME_EXCEPTION_ALLOW_JIT = YES;
+				RUNTIME_EXCEPTION_ALLOW_UNSIGNED_EXECUTABLE_MEMORY = NO;
+				RUNTIME_EXCEPTION_DEBUGGING_TOOL = NO;
+				RUNTIME_EXCEPTION_DISABLE_EXECUTABLE_PAGE_PROTECTION = NO;
+				RUNTIME_EXCEPTION_DISABLE_LIBRARY_VALIDATION = YES;
+				SUPPORTED_PLATFORMS = macosx;
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "Noema/Noema-Bridging.h";
+				SWIFT_OBJC_INTEROP_MODE = objcxx;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+				XROS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Debug;
+		};
+		647D61BE2E955AEA003DC7F3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
+				CLANG_CXX_STANDARD_LIBRARY_HARDENING = extensive;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = Noema/RelayServer.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = XX3Z6V9TU9;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = c23;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"GGML_USE_ACCELERATE=1",
+					"ACCELERATE_NEW_LAPACK=1",
+					"ACCELERATE_LAPACK_ILP64=1",
+					"GGML_VERSION=\"dev\"",
+					"GGML_COMMIT=\"local\"",
+				);
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "";
+				INFOPLIST_FILE = "Noema copy2-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Noema;
+				INFOPLIST_KEY_CFBundleName = Noema;
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 2;
+				OTHER_CFLAGS = (
+					"-O3",
+					"-DGGML_USE_ACCELERATE",
+					"-DGGML_METAL_NDEBUG",
+				);
+				OTHER_CPLUSPLUSFLAGS = (
+					"$(OTHER_CFLAGS)",
+					"-std=c++17",
+				);
+				OTHER_LDFLAGS = "\"-ObjC \"";
+				PRODUCT_BUNDLE_IDENTIFIER = arminproducts.Noema;
+				PRODUCT_NAME = Noema;
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SUPPORTED_PLATFORMS = macosx;
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "Noema/Noema-Bridging.h";
+				SWIFT_OBJC_INTEROP_MODE = objcxx;
+				SWIFT_VERSION = 6.0;
 				XROS_DEPLOYMENT_TARGET = 26.0;
 			};
 			name = Release;
@@ -1020,6 +1411,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		647D61BC2E955AEA003DC7F3 /* Build configuration list for PBXNativeTarget "NoemaMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				647D61BD2E955AEA003DC7F3 /* Debug */,
+				647D61BE2E955AEA003DC7F3 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -1031,9 +1431,37 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = .;
 		};
+		647D61972E955AEA003DC7F3 /* XCLocalSwiftPackageReference "." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = .;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		53802217708316E36FDFDC47 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ml-explore/mlx-swift-lm.git";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+		6426A0142ED7B84400615267 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ml-explore/mlx-swift-examples";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+		644228FB2EBEBC2D00422935 /* XCRemoteSwiftPackageReference "facebook-ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/facebook/facebook-ios-sdk";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
 		64431EB92E5E2F5E00BD5E8C /* XCRemoteSwiftPackageReference "SwiftMath" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/mgriebling/SwiftMath.git";
@@ -1042,7 +1470,7 @@
 				kind = branch;
 			};
 		};
-		644FC4CE2E7F14A900628A30 /* XCRemoteSwiftPackageReference "leap-ios" */ = {
+		6458090A2EBEA4110034074C /* XCRemoteSwiftPackageReference "leap-ios" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/Liquid4All/leap-ios.git";
 			requirement = {
@@ -1074,23 +1502,15 @@
 				kind = branch;
 			};
 		};
-		646E49DE2E8EDF51004C5BD8 /* XCRemoteSwiftPackageReference "leap-ios" */ = {
+		647D618F2E955AEA003DC7F3 /* XCRemoteSwiftPackageReference "mlx-swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/Liquid4All/leap-ios.git";
+			repositoryURL = "https://github.com/ml-explore/mlx-swift.git";
 			requirement = {
 				branch = main;
 				kind = branch;
 			};
 		};
-		646E4A962E8F4168004C5BD8 /* XCRemoteSwiftPackageReference "facebook-ios-sdk" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/facebook/facebook-ios-sdk";
-			requirement = {
-				branch = main;
-				kind = branch;
-			};
-		};
-		6473409B2E4E9C2E00F7AC43 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */ = {
+		647D61992E955AEA003DC7F3 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/ml-explore/mlx-swift-examples";
 			requirement = {
@@ -1098,9 +1518,9 @@
 				kind = branch;
 			};
 		};
-		64DCAF802E41264C001DA82F /* XCRemoteSwiftPackageReference "mlx-swift" */ = {
+		647D619E2E955AEA003DC7F3 /* XCRemoteSwiftPackageReference "SwiftMath" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/ml-explore/mlx-swift.git";
+			repositoryURL = "https://github.com/mgriebling/SwiftMath.git";
 			requirement = {
 				branch = main;
 				kind = branch;
@@ -1109,24 +1529,59 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		035AB236448800F41072CFF7 /* MLXLMCommon */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 53802217708316E36FDFDC47 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXLMCommon;
+		};
+		06EF816A0080BF19C8D0E0E4 /* MLXLLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 53802217708316E36FDFDC47 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXLLM;
+		};
+		096DFC38282AE7CC1CBC47D0 /* MLXLLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 53802217708316E36FDFDC47 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXLLM;
+		};
 		21FF187598A740D3901EFE90 /* NoemaPackages */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 2FB3F4F8C56943ACAEC3C135 /* XCLocalSwiftPackageReference "." */;
 			productName = NoemaPackages;
+		};
+		417AB310C4DB5F8DFE71956C /* MLXVLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 53802217708316E36FDFDC47 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXVLM;
+		};
+		6426A0152ED7B84400615267 /* MLXMNIST */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6426A0142ED7B84400615267 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
+			productName = MLXMNIST;
+		};
+		644228FC2EBEBC2D00422935 /* FacebookBasics */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 644228FB2EBEBC2D00422935 /* XCRemoteSwiftPackageReference "facebook-ios-sdk" */;
+			productName = FacebookBasics;
+		};
+		644228FE2EBEBC2D00422935 /* FacebookCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 644228FB2EBEBC2D00422935 /* XCRemoteSwiftPackageReference "facebook-ios-sdk" */;
+			productName = FacebookCore;
 		};
 		64431EBA2E5E2F5E00BD5E8C /* SwiftMath */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 64431EB92E5E2F5E00BD5E8C /* XCRemoteSwiftPackageReference "SwiftMath" */;
 			productName = SwiftMath;
 		};
-		644FC4CF2E7F14A900628A30 /* LeapModelDownloader */ = {
+		6458090B2EBEA4110034074C /* LeapModelDownloader */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 644FC4CE2E7F14A900628A30 /* XCRemoteSwiftPackageReference "leap-ios" */;
+			package = 6458090A2EBEA4110034074C /* XCRemoteSwiftPackageReference "leap-ios" */;
 			productName = LeapModelDownloader;
 		};
-		644FC4D12E7F14A900628A30 /* LeapSDK */ = {
+		6458090D2EBEA4110034074C /* LeapSDK */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 644FC4CE2E7F14A900628A30 /* XCRemoteSwiftPackageReference "leap-ios" */;
+			package = 6458090A2EBEA4110034074C /* XCRemoteSwiftPackageReference "leap-ios" */;
 			productName = LeapSDK;
 		};
 		646E49CC2E8EDF51004C5BD8 /* MLX */ = {
@@ -1169,100 +1624,95 @@
 			package = 646E49D52E8EDF51004C5BD8 /* XCLocalSwiftPackageReference "." */;
 			productName = NoemaPackages;
 		};
-		646E49D62E8EDF51004C5BD8 /* MLXLLM */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 646E49D72E8EDF51004C5BD8 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
-			productName = MLXLLM;
-		};
-		646E49D82E8EDF51004C5BD8 /* MLXLMCommon */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 646E49D72E8EDF51004C5BD8 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
-			productName = MLXLMCommon;
-		};
 		646E49D92E8EDF51004C5BD8 /* MLXMNIST */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 646E49D72E8EDF51004C5BD8 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
 			productName = MLXMNIST;
-		};
-		646E49DA2E8EDF51004C5BD8 /* MLXVLM */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 646E49D72E8EDF51004C5BD8 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
-			productName = MLXVLM;
 		};
 		646E49DB2E8EDF51004C5BD8 /* SwiftMath */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 646E49DC2E8EDF51004C5BD8 /* XCRemoteSwiftPackageReference "SwiftMath" */;
 			productName = SwiftMath;
 		};
-		646E49DD2E8EDF51004C5BD8 /* LeapModelDownloader */ = {
+		647D618E2E955AEA003DC7F3 /* MLX */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 646E49DE2E8EDF51004C5BD8 /* XCRemoteSwiftPackageReference "leap-ios" */;
-			productName = LeapModelDownloader;
-		};
-		646E49DF2E8EDF51004C5BD8 /* LeapSDK */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 646E49DE2E8EDF51004C5BD8 /* XCRemoteSwiftPackageReference "leap-ios" */;
-			productName = LeapSDK;
-		};
-		646E4A972E8F4168004C5BD8 /* FacebookCore */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 646E4A962E8F4168004C5BD8 /* XCRemoteSwiftPackageReference "facebook-ios-sdk" */;
-			productName = FacebookCore;
-		};
-		6473409C2E4E9C2F00F7AC43 /* MLXLLM */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 6473409B2E4E9C2E00F7AC43 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
-			productName = MLXLLM;
-		};
-		6473409E2E4E9C2F00F7AC43 /* MLXLMCommon */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 6473409B2E4E9C2E00F7AC43 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
-			productName = MLXLMCommon;
-		};
-		647340A02E4E9C2F00F7AC43 /* MLXMNIST */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 6473409B2E4E9C2E00F7AC43 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
-			productName = MLXMNIST;
-		};
-		647340A22E4E9C2F00F7AC43 /* MLXVLM */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 6473409B2E4E9C2E00F7AC43 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
-			productName = MLXVLM;
-		};
-		64DCAF812E41264C001DA82F /* MLX */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 64DCAF802E41264C001DA82F /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			package = 647D618F2E955AEA003DC7F3 /* XCRemoteSwiftPackageReference "mlx-swift" */;
 			productName = MLX;
 		};
-		64DCAF832E41264C001DA82F /* MLXFFT */ = {
+		647D61902E955AEA003DC7F3 /* MLXFFT */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 64DCAF802E41264C001DA82F /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			package = 647D618F2E955AEA003DC7F3 /* XCRemoteSwiftPackageReference "mlx-swift" */;
 			productName = MLXFFT;
 		};
-		64DCAF852E41264C001DA82F /* MLXFast */ = {
+		647D61912E955AEA003DC7F3 /* MLXFast */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 64DCAF802E41264C001DA82F /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			package = 647D618F2E955AEA003DC7F3 /* XCRemoteSwiftPackageReference "mlx-swift" */;
 			productName = MLXFast;
 		};
-		64DCAF872E41264C001DA82F /* MLXLinalg */ = {
+		647D61922E955AEA003DC7F3 /* MLXLinalg */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 64DCAF802E41264C001DA82F /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			package = 647D618F2E955AEA003DC7F3 /* XCRemoteSwiftPackageReference "mlx-swift" */;
 			productName = MLXLinalg;
 		};
-		64DCAF892E41264C001DA82F /* MLXNN */ = {
+		647D61932E955AEA003DC7F3 /* MLXNN */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 64DCAF802E41264C001DA82F /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			package = 647D618F2E955AEA003DC7F3 /* XCRemoteSwiftPackageReference "mlx-swift" */;
 			productName = MLXNN;
 		};
-		64DCAF8B2E41264C001DA82F /* MLXOptimizers */ = {
+		647D61942E955AEA003DC7F3 /* MLXOptimizers */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 64DCAF802E41264C001DA82F /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			package = 647D618F2E955AEA003DC7F3 /* XCRemoteSwiftPackageReference "mlx-swift" */;
 			productName = MLXOptimizers;
 		};
-		64DCAF8D2E41264C001DA82F /* MLXRandom */ = {
+		647D61952E955AEA003DC7F3 /* MLXRandom */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 64DCAF802E41264C001DA82F /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			package = 647D618F2E955AEA003DC7F3 /* XCRemoteSwiftPackageReference "mlx-swift" */;
 			productName = MLXRandom;
+		};
+		647D61962E955AEA003DC7F3 /* NoemaPackages */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 647D61972E955AEA003DC7F3 /* XCLocalSwiftPackageReference "." */;
+			productName = NoemaPackages;
+		};
+		647D619B2E955AEA003DC7F3 /* MLXMNIST */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 647D61992E955AEA003DC7F3 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
+			productName = MLXMNIST;
+		};
+		647D619D2E955AEA003DC7F3 /* SwiftMath */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 647D619E2E955AEA003DC7F3 /* XCRemoteSwiftPackageReference "SwiftMath" */;
+			productName = SwiftMath;
+		};
+		64F1A0B82F00000000000000 /* RelayKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 2FB3F4F8C56943ACAEC3C135 /* XCLocalSwiftPackageReference "." */;
+			productName = RelayKit;
+		};
+		89508E8A4241F3F06F767D32 /* MLXLMCommon */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 53802217708316E36FDFDC47 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXLMCommon;
+		};
+		9671064702E2AE64A359AADF /* MLXVLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 53802217708316E36FDFDC47 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXVLM;
+		};
+		A75FE0F413B83C5653A358FA /* MLXLMCommon */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 53802217708316E36FDFDC47 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXLMCommon;
+		};
+		B6CF4E9B49381B893090A7F0 /* MLXLLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 53802217708316E36FDFDC47 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXLLM;
+		};
+		F0F32833168AC421BAFF1301 /* MLXVLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 53802217708316E36FDFDC47 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXVLM;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

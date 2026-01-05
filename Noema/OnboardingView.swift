@@ -1,10 +1,9 @@
 // OnboardingView.swift
+#if canImport(UIKit)
 import SwiftUI
 import Combine
 import Foundation
-#if canImport(UIKit)
 import UIKit
-#endif
 #if canImport(AppKit)
 import AppKit
 #endif
@@ -414,7 +413,7 @@ struct OnboardingView: View {
                 }
                 
                 if embedInstaller.state == .ready {
-                    Label("Downloaded", systemImage: "checkmark.circle.fill")
+                    Label(LocalizedStringKey("Downloaded"), systemImage: "checkmark.circle.fill")
                         .font(.body)
                         .foregroundColor(.green)
                 } else {
@@ -597,7 +596,7 @@ struct OnboardingView: View {
         if !isVision {
             switch quant.format {
             case .gguf:
-                isVision = ChatVM.guessLlamaVisionModel(from: url)
+                isVision = ModelVisionDetector.guessLlamaVisionModel(from: url)
             case .mlx:
                 isVision = MLXBridge.isVLMModel(at: url)
             case .slm:
@@ -613,12 +612,21 @@ struct OnboardingView: View {
             isToolCapable = ToolCapabilityDetector.isToolCapableLocal(url: url, format: quant.format)
         }
 
+        let moeInfo: MoEInfo?
+        switch quant.format {
+        case .gguf, .mlx:
+            moeInfo = ModelScanner.moeInfo(for: url, format: quant.format)
+        case .slm, .apple:
+            moeInfo = nil
+        }
+        let architectureLabels = LocalModel.architectureLabels(for: url, format: quant.format, modelID: detail.id)
         let local = LocalModel(
             modelID: detail.id,
             name: name,
             url: url,
             quant: quant.label,
-            architecture: detail.id,
+            architecture: architectureLabels.display,
+            architectureFamily: architectureLabels.family,
             format: quant.format,
             sizeGB: Double(effectiveSize) / 1_073_741_824.0,
             isMultimodal: isVision,
@@ -627,7 +635,8 @@ struct OnboardingView: View {
             downloadDate: Date(),
             lastUsedDate: nil,
             isFavourite: false,
-            totalLayers: ModelScanner.layerCount(for: url, format: quant.format)
+            totalLayers: ModelScanner.layerCount(for: url, format: quant.format),
+            moeInfo: moeInfo
         )
 
         var settings = modelManager.settings(for: local)
@@ -660,13 +669,15 @@ struct OnboardingView: View {
                 format: quant.format,
                 sizeBytes: usableSize,
                 contextLength: requestedContext,
-                layerCount: layerCount
+                layerCount: layerCount,
+                moeInfo: local.moeInfo
             )
             if !fits {
                 if let maxContext = ModelRAMAdvisor.maxContextUnderBudget(
                     format: quant.format,
                     sizeBytes: usableSize,
-                    layerCount: layerCount
+                    layerCount: layerCount,
+                    moeInfo: local.moeInfo
                 ) {
                     let safeContext = max(512, min(requestedContext, maxContext))
                     if Double(safeContext) < updated.contextLength {
@@ -721,7 +732,7 @@ struct OnboardingView: View {
 #if canImport(UIKit)
         for name in candidateAssetNames {
             if let ui = UIImage(named: name) {
-                return Image(uiImage: ui)
+                return Image(platformImage: ui)
             }
         }
         if let urls = Bundle.main.urls(forResourcesWithExtension: nil, subdirectory: "OnboardingImages") {
@@ -732,7 +743,7 @@ struct OnboardingView: View {
                 lowerKeywords.contains(where: { url.lastPathComponent.lowercased().contains($0) })
             }) {
                 if let img = UIImage(contentsOfFile: url.path) {
-                    return Image(uiImage: img)
+                    return Image(platformImage: img)
                 }
             }
         }
@@ -762,7 +773,7 @@ struct OnboardingView: View {
     private func fallbackOnboardingImage() -> Image {
 #if canImport(UIKit)
         if let ui = UIImage(named: "Noema") {
-            return Image(uiImage: ui)
+            return Image(platformImage: ui)
         }
 #endif
 #if canImport(AppKit)
@@ -881,7 +892,7 @@ struct OnboardingView: View {
         }
     }
 }
-
 #Preview {
     OnboardingView(showOnboarding: .constant(true))
 }
+#endif

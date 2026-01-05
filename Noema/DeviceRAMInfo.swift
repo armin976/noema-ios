@@ -1,5 +1,6 @@
 // DeviceRAMInfo.swift
 import Foundation
+import Darwin
 import os
 
 struct DeviceRAMInfo {
@@ -58,19 +59,28 @@ struct DeviceRAMInfo {
     }
 
     private static func hardwareIdentifier() -> String {
+#if os(macOS) || targetEnvironment(macCatalyst)
+        if let model = macModelIdentifier() {
+            return model
+        }
+#endif
         var sysinfo = utsname()
         uname(&sysinfo)
-        let machine = withUnsafePointer(to: &sysinfo.machine) {
+        return withUnsafePointer(to: &sysinfo.machine) {
             $0.withMemoryRebound(to: CChar.self, capacity: 1) { ptr in
                 String(cString: ptr)
             }
         }
-        return machine
     }
 
     private static func computeCurrent() -> DeviceRAMInfo {
         let identifier = Self.hardwareIdentifier()
         let storageTier = StorageTier.currentTier()
+#if os(macOS) || targetEnvironment(macCatalyst)
+        if identifier.lowercased().contains("mac") || identifier.lowercased().hasPrefix("j") {
+            return computeMacInfo(identifier: identifier)
+        }
+#endif
         if let entry = resolvedEntry(for: identifier, storageTier: storageTier) {
             return DeviceRAMInfo(modelIdentifier: identifier, modelName: entry.name, ram: entry.ram, limit: entry.limit, limitBytes: entry.limitBytes)
         } else {
@@ -78,6 +88,36 @@ struct DeviceRAMInfo {
             return DeviceRAMInfo(modelIdentifier: identifier, modelName: name, ram: "Unknown RAM", limit: "--", limitBytes: nil)
         }
     }
+
+#if os(macOS) || targetEnvironment(macCatalyst)
+    private static func macModelIdentifier() -> String? {
+        var size: size_t = 0
+        guard sysctlbyname("hw.model", nil, &size, nil, 0) == 0, size > 0 else {
+            return nil
+        }
+        var buffer = [CChar](repeating: 0, count: size)
+        guard sysctlbyname("hw.model", &buffer, &size, nil, 0) == 0 else {
+            return nil
+        }
+        return String(cString: buffer)
+    }
+
+    private static func computeMacInfo(identifier: String) -> DeviceRAMInfo {
+        let physicalBytes = Int64(ProcessInfo.processInfo.physicalMemory)
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .memory
+        formatter.allowedUnits = [.useGB]
+        let ramLabel = formatter.string(fromByteCount: physicalBytes)
+        let budgetBytes = max(physicalBytes - (1_073_741_824), 0)
+        let limitLabel = "~" + formatter.string(fromByteCount: budgetBytes)
+        let name = Host.current().localizedName ?? "Mac (\(identifier))"
+        return DeviceRAMInfo(modelIdentifier: identifier,
+                             modelName: name,
+                             ram: ramLabel,
+                             limit: limitLabel,
+                             limitBytes: budgetBytes)
+    }
+#endif
 
     private static func resolvedEntry(for identifier: String, storageTier: StorageTier?) -> (name: String, ram: String, limit: String, limitBytes: Int64?)? {
         guard let base = mapping[identifier] else { return nil }

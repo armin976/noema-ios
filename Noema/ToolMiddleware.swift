@@ -1,5 +1,33 @@
 // ToolMiddleware.swift
+#if os(iOS) || os(visionOS) || os(macOS)
 import Foundation
+
+// MARK: - Scan/Dispatch Guards (per-message)
+// Use an actor to synchronize access to per-message scan/dispatch state.
+actor ToolScanRegistry {
+    static let shared = ToolScanRegistry()
+    private var openTagLoggedForMessage: Set<Int> = []
+    private var dispatchedSignaturesByMessage: [Int: Set<String>] = [:]
+
+    func shouldLogOpenTagOnce(messageIndex: Int?) -> Bool {
+        guard let idx = messageIndex else { return false }
+        if openTagLoggedForMessage.contains(idx) { return false }
+        openTagLoggedForMessage.insert(idx)
+        return true
+    }
+
+    func hasDispatched(_ signature: String, for messageIndex: Int?) -> Bool {
+        guard let idx = messageIndex else { return false }
+        return dispatchedSignaturesByMessage[idx]?.contains(signature) ?? false
+    }
+
+    func markDispatched(_ signature: String, for messageIndex: Int?) {
+        guard let idx = messageIndex else { return }
+        var set = dispatchedSignaturesByMessage[idx] ?? []
+        set.insert(signature)
+        dispatchedSignaturesByMessage[idx] = set
+    }
+}
 
 private let toolPrefix = "TOOL_CALL:"
 
@@ -114,6 +142,11 @@ func interceptToolCallIfPresent(_ line: String, messageIndex: Int? = nil, chatVM
                     }
                 }
             }
+            // Guard against prompt-echo example calls like query: "..."
+            if let q = normalizedArgs["query"] as? String {
+                let tq = q.trimmingCharacters(in: .whitespacesAndNewlines)
+                if tq.isEmpty || tq == "..." { return nil }
+            }
         }
 
         // Prepare params for UI display as [String: AnyCodable]
@@ -190,6 +223,13 @@ func interceptToolCallIfPresent(_ line: String, messageIndex: Int? = nil, chatVM
                 clampedArgs["count"] = max(1, min(parsed, 5))
             }
         }
+        // De-dupe execution using a stable signature per message
+        if let sigData = try? JSONSerialization.data(withJSONObject: ["tool": canonicalTool, "args": clampedArgs], options: [.sortedKeys]),
+           let signature = String(data: sigData, encoding: .utf8) {
+            if await ToolScanRegistry.shared.hasDispatched(signature, for: messageIndex) {
+                return nil
+            }
+        }
         await logger.log("[Tool] Invoking \(canonicalTool) with args: \(clampedArgs)")
         let argsData = try JSONSerialization.data(withJSONObject: clampedArgs)
         
@@ -207,6 +247,11 @@ func interceptToolCallIfPresent(_ line: String, messageIndex: Int? = nil, chatVM
         let outString = String(data: outData, encoding: .utf8) ?? "{\"code\":\"ENCODE\",\"message\":\"Failed to encode\"}"
         let preview = outString.count > 400 ? String(outString.prefix(400)) + "…" : outString
         await logger.log("[Tool] Result from \(canonicalTool): \(preview)")
+        // Mark this tool+args as dispatched for this message to avoid re-execution on future scans
+        if let sigData = try? JSONSerialization.data(withJSONObject: ["tool": canonicalTool, "args": clampedArgs], options: [.sortedKeys]),
+           let signature = String(data: sigData, encoding: .utf8) {
+            await ToolScanRegistry.shared.markDispatched(signature, for: messageIndex)
+        }
         
         // Update tool call with result
         if let messageIndex = messageIndex, let chatVM = chatVM,
@@ -237,6 +282,8 @@ func interceptToolCallIfPresent(_ line: String, messageIndex: Int? = nil, chatVM
             if !isSLM {
                 await logger.log("[Tool][UI] Applying web search result to message state")
                 chatVM.streamMsgs[messageIndex].usedWebSearch = true
+                // Milestone: record web search usage for in‑app review gating
+                ReviewPrompter.shared.noteWebSearchUsed()
                 if let data = outString.data(using: .utf8) {
                     struct SimpleWebHit: Decodable {
                         let title: String
@@ -272,6 +319,8 @@ func interceptToolCallIfPresent(_ line: String, messageIndex: Int? = nil, chatVM
                         }
                     }
                 }
+                // Try prompting after success moments (guarded: never during active streaming)
+                ReviewPrompter.shared.safeMaybePromptIfEligible(chatVM: chatVM)
             }
         }
         
@@ -314,8 +363,34 @@ func interceptEmbeddedToolCallIfPresent(
     messageIndex: Int? = nil,
     chatVM: ChatVM? = nil
 ) async -> (token: String, cleanedText: String)? {
-    // 1) Try bare JSON around specific web tool name to quickly dispatch
-    if let webRange = textBuffer.range(of: "noema.web.retrieve"),
+    // Guard: Do NOT process tool calls if we're inside an unclosed <think> block.
+    // The model should only call tools OUTSIDE of thinking.
+    let lastThinkOpen = textBuffer.range(of: "<think>", options: .backwards)
+    let lastThinkClose = textBuffer.range(of: "</think>", options: .backwards)
+    let insideThink: Bool = {
+        if let open = lastThinkOpen {
+            if let close = lastThinkClose {
+                // Inside think if the last <think> comes AFTER the last </think>
+                return open.lowerBound > close.lowerBound
+            }
+            // Have <think> but no </think> means we're inside
+            return true
+        }
+        return false
+    }()
+    if insideThink {
+        await logger.log("[Tool][Scan] Skipping tool scan - inside unclosed <think> block")
+        return nil
+    }
+
+    // 1) Try bare JSON around specific web tool name (or aliases) to quickly dispatch
+    let webAliases = [
+        "noema.web.retrieve",
+        "noema_web_retrieve",
+        "Web_Search", "WEB_SEARCH",
+        "web_search", "web.search", "websearch", "web-search"
+    ]
+    if let webRange = webAliases.compactMap({ textBuffer.range(of: $0) }).sorted(by: { $0.lowerBound < $1.lowerBound }).first,
        let open = textBuffer[..<webRange.lowerBound].lastIndex(of: "{"),
        let close = findMatchingBrace(in: textBuffer, startingFrom: open) {
         let candidate = String(textBuffer[open...close])
@@ -412,7 +487,9 @@ func interceptEmbeddedToolCallIfPresent(
 
     // 3) Fallback: XML-style <tool_call>…</tool_call>
     if let start = textBuffer.range(of: "<tool_call>") {
-        await logger.log("[Tool][Scan] Found <tool_call> marker in buffer (len=\(textBuffer.count))")
+        if await ToolScanRegistry.shared.shouldLogOpenTagOnce(messageIndex: messageIndex) {
+            await logger.log("[Tool][Scan] Found <tool_call> marker in buffer (len=\(textBuffer.count))")
+        }
         if let end = textBuffer.range(of: "</tool_call>") {
             let rawInside = String(textBuffer[start.upperBound..<end.lowerBound])
             // Some models wrap JSON in code fences inside the tool_call tag; strip fences
@@ -605,15 +682,84 @@ private func dispatchParsedToolCallJSON(jsonString: String, messageIndex: Int? =
         let trimmed = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.hasPrefix("{") && trimmed.hasSuffix("}") {
             candidate = trimmed
-        } else if trimmed.contains("\"tool_name\"") || trimmed.contains("\"tool\"") {
+        } else if trimmed.contains("\"tool_name\"") || trimmed.contains("\"tool\"") || trimmed.contains("\"name\"") {
             await logger.log("[Tool][Scan] Incomplete tool JSON awaiting more tokens: \(trimmed.prefix(160))…")
             if jsonString.lowercased().contains("</tool_call") {
                 candidate = balancedJSONObject(from: trimmed)
             }
         }
     }
+    
+    // If we still don't have a syntactically complete object, attempt a best‑effort recovery
+    // from text that mentions the tool name/arguments but isn't valid JSON (common with SLMs
+    // that echo instructions like "wrapper with the tool call").
+    if candidate == nil {
+        // Try relaxed extraction on the cleaned string before giving up.
+        // This path mirrors the last‑chance logic below but runs even when no braces were found.
+        func extractBetween(_ s: String, start: String, end: String) -> String? {
+            guard let r1 = s.range(of: start) else { return nil }
+            guard let r2 = s.range(of: end, range: r1.upperBound..<s.endIndex) else { return nil }
+            return String(s[r1.upperBound..<r2.lowerBound])
+        }
+        func bestEffortToolNameNoJSON(_ s: String) -> String? {
+            // Prefer proper JSON key first
+            if let tn = extractStringValue(forKey: "tool_name", in: s) { return tn }
+            if let tn = extractStringValue(forKey: "name", in: s) { return tn }
+            if let tn = extractStringValue(forKey: "tool", in: s) { return tn }
+            // Tolerate curly quotes and bare identifiers
+            let squashed = s
+                .replacingOccurrences(of: "“", with: "\"")
+                .replacingOccurrences(of: "”", with: "\"")
+                .replacingOccurrences(of: "’", with: "'")
+            if let rough = extractBetween(squashed, start: "tool_name", end: ",") ?? extractBetween(squashed, start: "tool:", end: ",") {
+                if let q1 = rough.firstIndex(of: "\""), let q2 = rough[rough.index(after: q1)...].firstIndex(of: "\"") {
+                    return String(rough[rough.index(after: q1)..<q2])
+                }
+            }
+            // Directly search for known aliases
+            let aliases = ["noema.web.retrieve","noema_web_retrieve","Web_Search","WEB_SEARCH","web_search","web.search","websearch","web-search"]
+            for a in aliases { if s.contains(a) { return a } }
+            return nil
+        }
+        func bestEffortArgsFromText(_ s: String) -> String? {
+            // Find the object after arguments/args key and return a balanced {...}
+            for key in ["\"arguments\"", "\"args\"", "arguments", "args", "'arguments'", "'args'"] {
+                if let keyRange = s.range(of: key),
+                   let colon = s.range(of: ":", range: keyRange.upperBound..<s.endIndex)?.lowerBound,
+                   let open = s[colon..<s.endIndex].firstIndex(of: "{") {
+                    let tail = String(s[open...])
+                    if let close = findMatchingBrace(in: tail, startingFrom: tail.startIndex) {
+                        return String(tail[tail.startIndex...close])
+                    }
+                }
+            }
+            return nil
+        }
+        if let tn = bestEffortToolNameNoJSON(cleaned), let argsJSON = bestEffortArgsFromText(cleaned) {
+            let canonical = normalizeToolName(tn)
+            var argsObj: [String: Any] = [:]
+            if let data = argsJSON.data(using: .utf8),
+               let any = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                argsObj = any
+            }
+            // Reuse the canonical TOOL_CALL path to unify UI updates and execution
+            let payload: [String: Any] = ["tool": canonical, "args": argsObj]
+            if let payloadData = try? JSONSerialization.data(withJSONObject: payload),
+               let payloadString = String(data: payloadData, encoding: .utf8) {
+                if !(await ToolScanRegistry.shared.hasDispatched(payloadString, for: messageIndex)) {
+                    if let (token, _) = await interceptToolCallIfPresent("\(toolPrefix)\(payloadString)", messageIndex: messageIndex, chatVM: chatVM) {
+                        await ToolScanRegistry.shared.markDispatched(payloadString, for: messageIndex)
+                        return token
+                    }
+                }
+            }
+        }
+        // Still nothing recoverable; wait for more tokens.
+        return nil
+    }
+
     guard let complete = candidate else {
-        // Incomplete object; wait for more tokens without logging an error
+        // Should be unreachable due to early return above
         return nil
     }
 
@@ -651,6 +797,14 @@ private func dispatchParsedToolCallJSON(jsonString: String, messageIndex: Int? =
 
     // Try strict decode first
     if let data = complete.data(using: .utf8), let call = try? JSONDecoder().decode(XMLCall.self, from: data) {
+        // Skip obvious prompt-echo samples (e.g., query: "...") to avoid false tool triggers
+        let canonicalName = normalizeToolName(call.tool_name)
+        if canonicalName == "noema.web.retrieve" {
+            if let q = call.arguments["query"]?.value as? String {
+                let tq = q.trimmingCharacters(in: .whitespacesAndNewlines)
+                if tq.isEmpty || tq == "..." { return nil }
+            }
+        }
         // Reuse the canonical TOOL_CALL path to unify UI updates and execution
         let payload: [String: Any] = [
             "tool": call.tool_name,
@@ -658,8 +812,12 @@ private func dispatchParsedToolCallJSON(jsonString: String, messageIndex: Int? =
         ]
         if let payloadData = try? JSONSerialization.data(withJSONObject: payload),
            let payloadString = String(data: payloadData, encoding: .utf8) {
-            if let (token, _) = await interceptToolCallIfPresent("\(toolPrefix)\(payloadString)", messageIndex: messageIndex, chatVM: chatVM) {
-                return token
+            // Skip duplicate dispatch of the same tool+args within the same message
+            if !(await ToolScanRegistry.shared.hasDispatched(payloadString, for: messageIndex)) {
+                if let (token, _) = await interceptToolCallIfPresent("\(toolPrefix)\(payloadString)", messageIndex: messageIndex, chatVM: chatVM) {
+                    await ToolScanRegistry.shared.markDispatched(payloadString, for: messageIndex)
+                    return token
+                }
             }
         }
         return nil
@@ -667,14 +825,24 @@ private func dispatchParsedToolCallJSON(jsonString: String, messageIndex: Int? =
     // Retry after removing trailing commas which some models emit
     let relaxed = removeTrailingCommas(complete)
     if let data2 = relaxed.data(using: .utf8), let call2 = try? JSONDecoder().decode(XMLCall.self, from: data2) {
+        let canonicalName2 = normalizeToolName(call2.tool_name)
+        if canonicalName2 == "noema.web.retrieve" {
+            if let q = call2.arguments["query"]?.value as? String {
+                let tq = q.trimmingCharacters(in: .whitespacesAndNewlines)
+                if tq.isEmpty || tq == "..." { return nil }
+            }
+        }
         let payload: [String: Any] = [
             "tool": call2.tool_name,
             "args": call2.arguments.mapValues { $0.value }
         ]
         if let payloadData = try? JSONSerialization.data(withJSONObject: payload),
            let payloadString = String(data: payloadData, encoding: .utf8) {
-            if let (token, _) = await interceptToolCallIfPresent("\(toolPrefix)\(payloadString)", messageIndex: messageIndex, chatVM: chatVM) {
-                return token
+            if !(await ToolScanRegistry.shared.hasDispatched(payloadString, for: messageIndex)) {
+                if let (token, _) = await interceptToolCallIfPresent("\(toolPrefix)\(payloadString)", messageIndex: messageIndex, chatVM: chatVM) {
+                    await ToolScanRegistry.shared.markDispatched(payloadString, for: messageIndex)
+                    return token
+                }
             }
         }
         return nil
@@ -685,14 +853,24 @@ private func dispatchParsedToolCallJSON(jsonString: String, messageIndex: Int? =
     if singleQuoted != complete,
        let data3 = singleQuoted.data(using: .utf8),
        let call3 = try? JSONDecoder().decode(XMLCall.self, from: data3) {
+        let canonicalName3 = normalizeToolName(call3.tool_name)
+        if canonicalName3 == "noema.web.retrieve" {
+            if let q = call3.arguments["query"]?.value as? String {
+                let tq = q.trimmingCharacters(in: .whitespacesAndNewlines)
+                if tq.isEmpty || tq == "..." { return nil }
+            }
+        }
         let payload: [String: Any] = [
             "tool": call3.tool_name,
             "args": call3.arguments.mapValues { $0.value }
         ]
         if let payloadData = try? JSONSerialization.data(withJSONObject: payload),
            let payloadString = String(data: payloadData, encoding: .utf8) {
-            if let (token, _) = await interceptToolCallIfPresent("\(toolPrefix)\(payloadString)", messageIndex: messageIndex, chatVM: chatVM) {
-                return token
+            if !(await ToolScanRegistry.shared.hasDispatched(payloadString, for: messageIndex)) {
+                if let (token, _) = await interceptToolCallIfPresent("\(toolPrefix)\(payloadString)", messageIndex: messageIndex, chatVM: chatVM) {
+                    await ToolScanRegistry.shared.markDispatched(payloadString, for: messageIndex)
+                    return token
+                }
             }
         }
         return nil
@@ -745,8 +923,11 @@ private func dispatchParsedToolCallJSON(jsonString: String, messageIndex: Int? =
         let payload: [String: Any] = ["tool": canonical, "args": argsObj]
         if let payloadData = try? JSONSerialization.data(withJSONObject: payload),
            let payloadString = String(data: payloadData, encoding: .utf8) {
-            if let (token, _) = await interceptToolCallIfPresent("\(toolPrefix)\(payloadString)", messageIndex: messageIndex, chatVM: chatVM) {
-                return token
+            if !(await ToolScanRegistry.shared.hasDispatched(payloadString, for: messageIndex)) {
+                if let (token, _) = await interceptToolCallIfPresent("\(toolPrefix)\(payloadString)", messageIndex: messageIndex, chatVM: chatVM) {
+                    await ToolScanRegistry.shared.markDispatched(payloadString, for: messageIndex)
+                    return token
+                }
             }
         }
     }
@@ -843,3 +1024,5 @@ private func normalizeSingleQuotedJSON(_ s: String) -> String {
     }
     return result
 }
+
+#endif

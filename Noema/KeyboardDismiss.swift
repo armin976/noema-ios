@@ -6,4 +6,8 @@ extension View {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 }
+#else
+extension View {
+    func hideKeyboard() { }
+}
 #endif

@@ -7,11 +7,15 @@
 		<string>fetch</string>
 		<string>processing</string>
 	</array>
-	<key>BGTaskSchedulerPermittedIdentifiers</key>
-	<array>
-		<string>com.noema.download.maintenance</string>
-	</array>
-	<key>ITSAppUsesNonExemptEncryption</key>
-	<false/>
+        <key>BGTaskSchedulerPermittedIdentifiers</key>
+        <array>
+                <string>com.noema.download.maintenance</string>
+        </array>
+        <key>ITSAppUsesNonExemptEncryption</key>
+        <false/>
+        <key>NSBluetoothAlwaysUsageDescription</key>
+        <string>Noema uses Bluetooth to share relay setup details with your other devices.</string>
+        <key>NSBluetoothPeripheralUsageDescription</key>
+        <string>Noema uses Bluetooth to share relay setup details with your other devices.</string>
 </dict>
 </plist>

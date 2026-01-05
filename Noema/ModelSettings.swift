@@ -35,6 +35,21 @@ struct ModelSettings: Codable, Equatable {
     var repetitionPenalty: Float = 1.1
     var topK: Int = 40
     var topP: Double = 0.95
+    var minP: Double = 0.0
+    var repeatLastN: Int = 64
+    var presencePenalty: Float = 0.0
+    var frequencyPenalty: Float = 0.0
+    /// Optional stop sequences sourced from repo-provided params files (applied on first use)
+    var stopSequences: [String]? = nil
+    var speculativeDecoding: SpeculativeDecodingSettings = .init()
+    var ropeScaling: RopeScalingSettings? = nil
+    var logitBias: [Int: Double] = [:]
+    var promptCacheEnabled: Bool = false
+    var promptCachePath: String = ""
+    var promptCacheAll: Bool = false
+    var tensorOverride: TensorOverridePreset = .none
+    /// Optional override for the number of experts to use when running MoE models.
+    var moeActiveExperts: Int? = nil
 
     static func `default`(for format: ModelFormat) -> ModelSettings {
         var s = ModelSettings()
@@ -104,6 +119,119 @@ struct ModelSettings: Codable, Equatable {
             }
         }
 
+        // PRIORITY 5: Repo-specified sampling hints (params / params.json)
+        if let paramsURL = Self.locateParamsFile(in: dir),
+           let data = try? Data(contentsOf: paramsURL),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            s.applyParamsJSON(obj)
+        }
+
         return s
+    }
+}
+
+private extension ModelSettings {
+    /// Finds a params sidecar file (either `params` or `params.json`) in the given directory.
+    static func locateParamsFile(in dir: URL) -> URL? {
+        let fm = FileManager.default
+        for name in ["params.json", "params"] {
+            let cand = dir.appendingPathComponent(name)
+            if fm.fileExists(atPath: cand.path) { return cand }
+        }
+        return nil
+    }
+
+    /// Applies sampling defaults from a params JSON object. Unknown fields are ignored.
+    mutating func applyParamsJSON(_ obj: [String: Any]) {
+        func double(_ key: String) -> Double? {
+            if let n = obj[key] as? NSNumber { return n.doubleValue }
+            if let s = obj[key] as? String { return Double(s) }
+            return nil
+        }
+        func int(_ key: String) -> Int? {
+            if let n = obj[key] as? NSNumber { return n.intValue }
+            if let s = obj[key] as? String, let v = Int(s) { return v }
+            return nil
+        }
+
+        if let t = double("temperature") { temperature = t }
+        if let k = int("top_k") { topK = max(1, k) }
+        if let p = double("top_p") { topP = max(0.0, min(1.0, p)) }
+        if let mp = double("min_p") { minP = max(0.0, min(1.0, mp)) }
+        if let rp = double("repeat_penalty") { repetitionPenalty = Float(rp) }
+        if let rl = int("repeat_last_n") { repeatLastN = max(0, rl) }
+        if let pres = double("presence_penalty") { presencePenalty = Float(pres) }
+        if let freq = double("frequency_penalty") { frequencyPenalty = Float(freq) }
+
+        if let stop = obj["stop"] as? [String] {
+            stopSequences = stop
+        } else if let stopAny = obj["stop"] as? [Any] {
+            stopSequences = stopAny.compactMap { ($0 as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        } else if let stopSingle = obj["stop"] as? String, !stopSingle.isEmpty {
+            stopSequences = [stopSingle]
+        }
+    }
+}
+
+extension ModelSettings {
+    struct SpeculativeDecodingSettings: Codable, Equatable {
+        enum Mode: String, Codable, CaseIterable, Identifiable {
+            case tokens
+            case max
+
+            var id: String { rawValue }
+            var title: String {
+                switch self {
+                case .tokens: return "Draft Tokens"
+                case .max: return "Draft Window"
+                }
+            }
+        }
+
+        var helperModelID: String? = nil
+        var mode: Mode = .tokens
+        var value: Int = 64
+
+        var hasSelection: Bool { helperModelID != nil }
+    }
+
+    struct RopeScalingSettings: Codable, Equatable {
+        var factor: Double = 1.0
+        var originalContext: Int = 4096
+        var lowFrequency: Double = 1.0
+        var highFrequency: Double = 1.0
+    }
+
+    enum TensorOverridePreset: String, Codable, CaseIterable, Identifiable {
+        case none
+        case ffnCPU
+        case expertsCPU
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .none: return "Default placement"
+            case .ffnCPU: return "ffn=CPU (dense models)"
+            case .expertsCPU: return "exps=CPU (MoE)"
+            }
+        }
+
+        var overrideValue: String? {
+            switch self {
+            case .none: return nil
+            case .ffnCPU: return "ffn=CPU"
+            case .expertsCPU: return "exps=CPU"
+            }
+        }
+
+        var requiresWarning: Bool {
+            switch self {
+            case .none:
+                return false
+            case .ffnCPU, .expertsCPU:
+                return true
+            }
+        }
     }
 }

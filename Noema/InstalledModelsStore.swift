@@ -15,8 +15,9 @@ struct InstalledModel: Identifiable, Codable {
     var totalLayers: Int = 0
     var isMultimodal: Bool = false
     var isToolCapable: Bool = false
+    var moeInfo: MoEInfo? = nil
 
-    init(id: UUID = UUID(), modelID: String, quantLabel: String, url: URL, format: ModelFormat, sizeBytes: Int64, lastUsed: Date?, installDate: Date, checksum: String?, isFavourite: Bool, totalLayers: Int, isMultimodal: Bool = false, isToolCapable: Bool = false) {
+    init(id: UUID = UUID(), modelID: String, quantLabel: String, url: URL, format: ModelFormat, sizeBytes: Int64, lastUsed: Date?, installDate: Date, checksum: String?, isFavourite: Bool, totalLayers: Int, isMultimodal: Bool = false, isToolCapable: Bool = false, moeInfo: MoEInfo? = nil) {
         self.id = id
         self.modelID = modelID
         self.quantLabel = quantLabel
@@ -30,6 +31,7 @@ struct InstalledModel: Identifiable, Codable {
         self.totalLayers = totalLayers
         self.isMultimodal = isMultimodal
         self.isToolCapable = isToolCapable
+        self.moeInfo = moeInfo
     }
 }
 
@@ -75,7 +77,8 @@ final class InstalledModelsStore {
                                           isFavourite: m.isFavourite,
                                           totalLayers: m.totalLayers,
                                           isMultimodal: m.isMultimodal,
-                                          isToolCapable: m.isToolCapable)
+                                          isToolCapable: m.isToolCapable,
+                                          moeInfo: m.moeInfo)
             self.items.append(newModel)
             self.save()
         }
@@ -94,6 +97,9 @@ final class InstalledModelsStore {
         queue.sync {
             self.items.removeAll { $0.modelID == modelID && $0.quantLabel == quantLabel }
             self.save()
+        }
+        Task {
+            await MoEDetectionStore.shared.remove(modelID: modelID, quantLabel: quantLabel)
         }
     }
 
@@ -120,6 +126,15 @@ final class InstalledModelsStore {
             if let index = items.firstIndex(where: { $0.modelID == modelID && $0.quantLabel == quantLabel }) {
                 items[index].isMultimodal = isMultimodal
                 items[index].isToolCapable = isToolCapable
+                save()
+            }
+        }
+    }
+
+    func updateMoEInfo(modelID: String, quantLabel: String, info: MoEInfo?) {
+        queue.sync {
+            if let index = items.firstIndex(where: { $0.modelID == modelID && $0.quantLabel == quantLabel }) {
+                items[index].moeInfo = info
                 save()
             }
         }
@@ -169,7 +184,8 @@ final class InstalledModelsStore {
                                                isFavourite: it.isFavourite,
                                                totalLayers: it.totalLayers,
                                                isMultimodal: it.isMultimodal,
-                                               isToolCapable: it.isToolCapable)
+                                               isToolCapable: it.isToolCapable,
+                                               moeInfo: it.moeInfo)
                     changed = true
                 }
             }
@@ -202,13 +218,11 @@ final class InstalledModelsStore {
                                                isFavourite: item.isFavourite,
                                                totalLayers: item.totalLayers,
                                                isMultimodal: item.isMultimodal,
-                                               isToolCapable: item.isToolCapable)
-                    // Keep default model selection stable if path changed.
+                                               isToolCapable: item.isToolCapable,
+                                               moeInfo: item.moeInfo)
+                    // Keep startup preferences stable if path changed.
+                    StartupPreferencesStore.updateLocalPath(from: oldURL.path, to: canonical.path)
                     let defaults = UserDefaults.standard
-                    if let current = defaults.string(forKey: "defaultModelPath"), !current.isEmpty,
-                       current == oldURL.path {
-                        defaults.set(canonical.path, forKey: "defaultModelPath")
-                    }
                     // Migrate any saved per-model settings under old path key.
                     if let data = defaults.data(forKey: "modelSettings"),
                        var dict = try? JSONDecoder().decode([String: ModelSettings].self, from: data),
@@ -338,13 +352,11 @@ final class InstalledModelsStore {
                                                isFavourite: item.isFavourite,
                                                totalLayers: item.totalLayers,
                                                isMultimodal: item.isMultimodal,
-                                               isToolCapable: item.isToolCapable)
-                    // Preserve default model path across re-homing.
+                                               isToolCapable: item.isToolCapable,
+                                               moeInfo: item.moeInfo)
+                    // Preserve startup preferences across re-homing.
+                    StartupPreferencesStore.updateLocalPath(from: oldURL.path, to: newURL.path)
                     let defaults = UserDefaults.standard
-                    if let current = defaults.string(forKey: "defaultModelPath"), !current.isEmpty,
-                       current == oldURL.path {
-                        defaults.set(newURL.path, forKey: "defaultModelPath")
-                    }
                     // Migrate any saved per-model settings under old path key.
                     if let data = defaults.data(forKey: "modelSettings"),
                        var dict = try? JSONDecoder().decode([String: ModelSettings].self, from: data),
@@ -402,3 +414,6 @@ final class InstalledModelsStore {
         return nil
     }
 }
+
+// Access is serialized via an internal queue, so it's safe to treat as Sendable.
+extension InstalledModelsStore: @unchecked Sendable {}

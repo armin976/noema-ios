@@ -18,14 +18,18 @@ struct DatasetRecommendationSystem {
         case large = "Large"
         case veryLarge = "Very Large"
         case extreme = "Extreme"
-        
-        var description: String {
+
+        func title(locale: Locale) -> String {
+            String(localized: String.LocalizationValue(rawValue), locale: locale)
+        }
+
+        func description(locale: Locale) -> String {
             switch self {
-            case .small: return "Under 10 MB"
-            case .medium: return "10-50 MB"
-            case .large: return "50-200 MB"
-            case .veryLarge: return "200-500 MB"
-            case .extreme: return "Over 500 MB"
+            case .small: return String(localized: "Under 10 MB", locale: locale)
+            case .medium: return String(localized: "10–50 MB", locale: locale)
+            case .large: return String(localized: "50–200 MB", locale: locale)
+            case .veryLarge: return String(localized: "200–500 MB", locale: locale)
+            case .extreme: return String(localized: "Over 500 MB", locale: locale)
             }
         }
         
@@ -61,16 +65,14 @@ struct DatasetRecommendationSystem {
     private static let ramMultiplierPeak = 4.0 // Peak RAM during processing can be ~4x
     
     // MARK: - Public Methods
-    
-    static func recommendation(for sizeBytes: Int64) -> Recommendation {
-        let sizeMB = Double(sizeBytes) / 1_048_576.0
-        
+
+    static func recommendation(for sizeBytes: Int64, locale: Locale) -> Recommendation {
         let category = categorize(sizeBytes: sizeBytes)
         let estimatedTime = estimateEmbeddingTime(sizeBytes: sizeBytes)
         let estimatedRAM = estimateRAMUsage(sizeBytes: sizeBytes)
         
-        let performanceNote = generatePerformanceNote(category: category, sizeMB: sizeMB)
-        let suggestion = generateSuggestion(category: category, sizeMB: sizeMB)
+        let performanceNote = generatePerformanceNote(category: category, locale: locale)
+        let suggestion = generateSuggestion(category: category, locale: locale)
         
         return Recommendation(
             sizeCategory: category,
@@ -126,56 +128,59 @@ struct DatasetRecommendationSystem {
         return Int64(Double(sizeBytes) * ramMultiplierPeak)
     }
     
-    private static func generatePerformanceNote(category: SizeCategory, sizeMB: Double) -> String {
+    private static func generatePerformanceNote(category: SizeCategory, locale: Locale) -> String {
         switch category {
         case .small:
-            return "This dataset should embed quickly with minimal resource usage. Perfect for testing and quick experiments."
+            return String(localized: "This dataset should embed quickly with minimal resource usage. Perfect for testing and quick experiments.", locale: locale)
         case .medium:
-            return "This dataset is a reasonable size for most systems. Embedding should complete in a few minutes."
+            return String(localized: "This dataset is a reasonable size for most systems. Embedding should complete in a few minutes.", locale: locale)
         case .large:
-            return "This is a substantial dataset. Ensure you have adequate RAM and expect embedding to take 10-30 minutes."
+            return String(localized: "This is a substantial dataset. Ensure you have adequate RAM and expect embedding to take 10–30 minutes.", locale: locale)
         case .veryLarge:
-            return "This is a very large dataset. Embedding may take 30-60 minutes and requires significant RAM."
+            return String(localized: "This is a very large dataset. Embedding may take 30–60 minutes and requires significant RAM.", locale: locale)
         case .extreme:
-            return "This is an extremely large dataset. Consider splitting it into smaller parts for better performance."
+            return String(localized: "This is an extremely large dataset. Consider splitting it into smaller parts for better performance.", locale: locale)
         }
     }
     
-    private static func generateSuggestion(category: SizeCategory, sizeMB: Double) -> String {
+    private static func generateSuggestion(category: SizeCategory, locale: Locale) -> String {
         switch category {
         case .small:
-            return "Go ahead and download! This size works well on all systems."
+            return String(localized: "Go ahead and download! This size works well on all systems.", locale: locale)
         case .medium:
-            return "Recommended for most users. Make sure you have at least 4GB of free RAM."
+            return String(localized: "Recommended for most users. Make sure you have at least 4GB of free RAM.", locale: locale)
         case .large:
-            return "Recommended only if you have 8GB+ RAM available. Close other applications before embedding."
+            return String(localized: "Recommended only if you have 8GB+ RAM available. Close other applications before embedding.", locale: locale)
         case .veryLarge:
-            return "Recommended only for systems with 16GB+ RAM. Consider processing during off-hours."
+            return String(localized: "Recommended only for systems with 16GB+ RAM. Consider processing during off-hours.", locale: locale)
         case .extreme:
-            return "Not recommended for typical systems. Consider finding a smaller version or subset of this dataset."
+            return String(localized: "Not recommended for typical systems. Consider finding a smaller version or subset of this dataset.", locale: locale)
         }
     }
     
     // MARK: - Formatting Helpers
     
-    static func formatTime(_ seconds: TimeInterval) -> String {
+    static func formatTime(_ seconds: TimeInterval, locale: Locale) -> String {
         if seconds < 60 {
-            return "< 1 minute"
-        } else if seconds < 3600 {
-            let minutes = Int(seconds / 60)
-            return "\(minutes) minute\(minutes == 1 ? "" : "s")"
-        } else {
-            let hours = Int(seconds / 3600)
-            let remainingMinutes = Int((seconds.truncatingRemainder(dividingBy: 3600)) / 60)
-            if remainingMinutes > 0 {
-                return "\(hours) hour\(hours == 1 ? "" : "s") \(remainingMinutes) min"
-            } else {
-                return "\(hours) hour\(hours == 1 ? "" : "s")"
-            }
+            return String(localized: "< 1 minute", locale: locale)
         }
+        let formatter = DateComponentsFormatter()
+        formatter.unitsStyle = .full
+        formatter.allowedUnits = seconds < 3600 ? [.minute] : [.hour, .minute]
+        formatter.maximumUnitCount = seconds < 3600 ? 1 : 2
+        formatter.collapsesLargestUnit = false
+        formatter.zeroFormattingBehavior = .default
+        var cal = Calendar.current
+        cal.locale = locale
+        formatter.calendar = cal
+        if let formatted = formatter.string(from: seconds) {
+            return formatted
+        }
+        let minutesFallback = Int(seconds / 60)
+        return String.localizedStringWithFormat(String(localized: "%d minutes", locale: locale), minutesFallback)
     }
     
-    static func formatRAM(_ bytes: Int64) -> String {
+    static func formatRAM(_ bytes: Int64, locale: Locale) -> String {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .memory
         formatter.zeroPadsFractionDigits = false

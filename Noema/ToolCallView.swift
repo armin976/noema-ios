@@ -1,4 +1,5 @@
 // ToolCallView.swift
+#if canImport(UIKit)
 import SwiftUI
 
 struct ToolCallView: View {
@@ -481,6 +482,7 @@ struct ToolCallDetailSheet: View {
             }
             .navigationTitle("Tool Call Details")
             .navigationBarTitleDisplayMode(.inline)
+            #if !os(macOS)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") {
@@ -488,7 +490,8 @@ struct ToolCallDetailSheet: View {
                     }
                 }
             }
-            .onChange(of: toolCall.result) { _, newValue in
+            #endif
+            .onChangeCompat(of: toolCall.result) { _, newValue in
                 guard let newValue else { return }
                 if resultDisplayMode == .formatted,
                    Self.parseWebResults(from: newValue).isEmpty {
@@ -660,3 +663,602 @@ fileprivate extension String {
     .frame(maxWidth: .infinity)
     .background(Color(.systemBackground))
 }
+
+#endif
+
+#if os(macOS)
+import SwiftUI
+import AppKit
+
+struct ToolCallView: View {
+    let toolCall: ChatVM.Msg.ToolCall
+    @State private var isExpanded: Bool
+    @State private var resultDisplayMode: ResultDisplayMode
+
+    init(toolCall: ChatVM.Msg.ToolCall) {
+        self.toolCall = toolCall
+        _isExpanded = State(initialValue: false)
+        let defaultMode: ResultDisplayMode
+        if let result = toolCall.result,
+           !Self.parseWebResults(from: result).isEmpty {
+            defaultMode = .formatted
+        } else {
+            defaultMode = .raw
+        }
+        _resultDisplayMode = State(initialValue: defaultMode)
+    }
+
+    private enum ResultDisplayMode: String, CaseIterable, Hashable {
+        case formatted
+        case raw
+
+        var title: String { rawValue.capitalized }
+    }
+
+    private struct WebSearchResultItem: Identifiable {
+        let id = UUID()
+        let title: String
+        let url: String
+        let snippet: String
+        let engine: String?
+        let score: String?
+
+        init?(dictionary: [String: Any]) {
+            let rawTitle = (dictionary["title"] as? String) ?? (dictionary["name"] as? String) ?? ""
+            let rawURL = (dictionary["url"] as? String) ?? (dictionary["link"] as? String) ?? ""
+            let rawSnippet = (dictionary["snippet"] as? String)
+                ?? (dictionary["summary"] as? String)
+                ?? (dictionary["description"] as? String)
+                ?? ""
+
+            let normalizedTitle = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalizedURL = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalizedSnippet = rawSnippet.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if normalizedTitle.isEmpty && normalizedURL.isEmpty && normalizedSnippet.isEmpty {
+                return nil
+            }
+
+            title = normalizedTitle
+            url = normalizedURL
+            snippet = normalizedSnippet
+            engine = (dictionary["engine"] as? String) ?? (dictionary["source"] as? String)
+
+            if let s = dictionary["score"] as? String {
+                score = s
+            } else if let n = dictionary["score"] as? NSNumber {
+                score = n.stringValue
+            } else if let b = dictionary["score"] as? Bool {
+                score = b ? "true" : "false"
+            } else if let s = dictionary["rank"] as? String {
+                score = s
+            } else if let n = dictionary["rank"] as? NSNumber {
+                score = n.stringValue
+            } else if let b = dictionary["rank"] as? Bool {
+                score = b ? "true" : "false"
+            } else {
+                score = nil
+            }
+        }
+
+        var displayTitle: String {
+            title.isEmpty ? url : title
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            header
+
+            if !toolCall.requestParams.isEmpty {
+                parameterSummary
+            }
+
+            if isExpanded {
+                Divider().padding(.vertical, 4)
+                detailSection
+            }
+        }
+        .padding(12)
+        .background(backgroundColor)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(borderColor, lineWidth: 1)
+        )
+        .cornerRadius(12)
+        .overlay {
+            if !isExpanded {
+                Color.clear
+                    .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() }
+                    }
+            }
+        }
+        .onChangeCompat(of: toolCall.result) { _, newValue in
+            guard let newValue else { return }
+            if resultDisplayMode == .formatted,
+               Self.parseWebResults(from: newValue).isEmpty {
+                resultDisplayMode = .raw
+            }
+        }
+    }
+
+    private var header: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() }
+        } label: {
+            HStack(spacing: 12) {
+                HStack(spacing: 8) {
+                    Image(systemName: toolCall.iconName)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(iconColor)
+                        .frame(width: 20, height: 20)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(toolCall.displayName)
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.primary)
+                        Text(toolCall.toolName)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Spacer()
+
+                statusIndicator
+
+                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(6)
+                    .background(Color(nsColor: .controlAccentColor).opacity(0.07))
+                    .clipShape(Circle())
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isExpanded ? "Hide tool call details" : "Show tool call details")
+    }
+
+    private var parameterSummary: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(toolCall.requestParams.keys.sorted().prefix(2)), id: \.self) { key in
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("\(key):")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(abbreviatedValue(for: toolCall.requestParams[key]?.value))
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            if toolCall.requestParams.count > 2 {
+                Text("…and \(toolCall.requestParams.count - 2) more parameter\(toolCall.requestParams.count - 2 == 1 ? "" : "s")")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .italic()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var detailSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "clock")
+                    .foregroundColor(.secondary)
+                    .font(.system(size: 12, weight: .regular))
+                Text(toolCall.timestamp, style: .time)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            if !toolCall.requestParams.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Request Parameters")
+                        .font(.caption.weight(.semibold))
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(toolCall.requestParams.keys.sorted()), id: \.self) { key in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(key)
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                Text(formatParameterValue(toolCall.requestParams[key]?.value))
+                                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(8)
+                                    .background(Color(nsColor: .textBackgroundColor))
+                                    .cornerRadius(6)
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let error = toolCall.error {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.orange)
+                        Text("Error")
+                            .font(.headline)
+                            .foregroundColor(.orange)
+                    }
+                    Text(error)
+                        .font(.caption)
+                        .textSelection(.enabled)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(nsColor: NSColor.systemOrange.withAlphaComponent(0.08)))
+                        .cornerRadius(8)
+                }
+            } else if let result = toolCall.result {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        HStack(spacing: 6) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                            Text("Result")
+                                .font(.headline)
+                                .foregroundColor(.green)
+                        }
+                        Spacer()
+                        Picker("Result format", selection: $resultDisplayMode) {
+                            ForEach(ResultDisplayMode.allCases, id: \.self) { mode in
+                                Text(mode.title).tag(mode)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .frame(maxWidth: 200)
+                    }
+
+                    Group {
+                        if resultDisplayMode == .formatted {
+                            formattedResultView(for: result)
+                        } else {
+                            rawResultView(for: result)
+                        }
+                    }
+                    .animation(.default, value: resultDisplayMode)
+                }
+            } else {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                    Text("Waiting for tool response…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var iconColor: Color {
+        if toolCall.error != nil {
+            return Color(nsColor: .systemOrange)
+        } else if toolCall.result != nil {
+            return Color(nsColor: .systemGreen)
+        } else {
+            return Color(nsColor: .controlAccentColor)
+        }
+    }
+
+    @ViewBuilder
+    private var statusIndicator: some View {
+        if toolCall.error != nil {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.orange)
+        } else if toolCall.result != nil {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.green)
+        } else {
+            ProgressView()
+                .scaleEffect(0.6)
+        }
+    }
+
+    private var backgroundColor: Color {
+        if toolCall.error != nil {
+            return Color(nsColor: NSColor.systemOrange.withAlphaComponent(0.08))
+        } else if toolCall.result != nil {
+            return Color(nsColor: NSColor.systemGreen.withAlphaComponent(0.08))
+        } else {
+            return Color(nsColor: .controlBackgroundColor)
+        }
+    }
+
+    private var borderColor: Color {
+        if toolCall.error != nil {
+            return Color(nsColor: .systemOrange).opacity(0.4)
+        } else if toolCall.result != nil {
+            return Color(nsColor: .systemGreen).opacity(0.35)
+        } else {
+            return Color(nsColor: .separatorColor).opacity(0.4)
+        }
+    }
+
+    private func abbreviatedValue(for value: Any?) -> String {
+        let full = formatParameterValue(value)
+        if full.count <= 50 {
+            return full
+        }
+        let prefix = full.prefix(47)
+        return prefix + "…"
+    }
+
+    private func formatParameterValue(_ value: Any?) -> String {
+        guard let value else { return "null" }
+
+        if let string = value as? String {
+            return string
+        } else if let dict = value as? [String: Any],
+                  let data = try? JSONSerialization.data(withJSONObject: dict, options: .prettyPrinted),
+                  let pretty = String(data: data, encoding: .utf8) {
+            return pretty
+        } else if let array = value as? [Any],
+                  let data = try? JSONSerialization.data(withJSONObject: array, options: .prettyPrinted),
+                  let pretty = String(data: data, encoding: .utf8) {
+            return pretty
+        }
+
+        return String(describing: value)
+    }
+
+    private func formattedResultView(for result: String) -> some View {
+        let hits = Self.parseWebResults(from: result)
+        return Group {
+            if hits.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Formatted view unavailable")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Switch to Raw to inspect the original response.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .modifier(ResultBoxStyle())
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(Array(hits.enumerated()), id: \.offset) { index, item in
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 8) {
+                                    Text("\(index + 1).")
+                                        .font(.headline.weight(.semibold))
+                                    Text(item.displayTitle.isEmpty ? "Untitled Result" : item.displayTitle)
+                                        .font(.headline)
+                                        .foregroundColor(.primary)
+                                }
+
+                                if !item.snippet.isEmpty {
+                                    Text(item.snippet.strippingHTMLTags())
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
+                                        .textSelection(.enabled)
+                                }
+
+                                if !item.url.isEmpty {
+                                    if let dest = URL(string: item.url) ?? URL(string: "https://" + item.url) {
+                                        Link(item.url, destination: dest)
+                                            .font(.caption)
+                                            .foregroundColor(.blue)
+                                            .lineLimit(2)
+                                    } else {
+                                        Text(item.url)
+                                            .font(.caption)
+                                            .foregroundColor(.blue)
+                                            .lineLimit(2)
+                                            .textSelection(.enabled)
+                                    }
+                                }
+
+                                if let engine = item.engine, !engine.isEmpty {
+                                    Text(engine)
+                                        .font(.caption2.weight(.semibold))
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(Color(nsColor: .windowBackgroundColor))
+                                        .clipShape(Capsule())
+                                }
+                                if let score = item.score, !score.isEmpty {
+                                    Text("Score: \(score)")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding()
+                            .background(Color(nsColor: NSColor.systemGreen.withAlphaComponent(0.08)))
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 2)
+                }
+                .modifier(ResultBoxStyle())
+            }
+        }
+    }
+
+    private func rawResultView(for result: String) -> some View {
+        ScrollView {
+            Text(formatResult(result))
+                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .modifier(ResultBoxStyle())
+    }
+
+    private func formatResult(_ result: String) -> String {
+        if let data = result.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data),
+           let prettyData = try? JSONSerialization.data(withJSONObject: json, options: .prettyPrinted),
+           let prettyString = String(data: prettyData, encoding: .utf8) {
+            return prettyString
+        }
+        return result
+    }
+
+    private struct ResultBoxStyle: ViewModifier {
+        func body(content: Content) -> some View {
+            content
+                .frame(maxHeight: 320)
+                .padding()
+                .background(Color(nsColor: NSColor.systemGreen.withAlphaComponent(0.05)))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color(nsColor: NSColor.systemGreen.withAlphaComponent(0.3)), lineWidth: 1)
+                )
+                .cornerRadius(8)
+        }
+    }
+
+    private static func parseWebResults(from result: String) -> [WebSearchResultItem] {
+        guard let data = result.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) else {
+            return []
+        }
+
+        var rawItems: [[String: Any]] = []
+
+        if let array = json as? [[String: Any]] {
+            rawItems = array
+        } else if let dict = json as? [String: Any] {
+            let candidateKeys = ["results", "items", "data", "hits", "entries"]
+            for key in candidateKeys {
+                if let arr = dict[key] as? [[String: Any]] {
+                    rawItems = arr
+                    break
+                }
+            }
+            if rawItems.isEmpty, let arr = dict["result"] as? [[String: Any]] {
+                rawItems = arr
+            }
+        }
+
+        return rawItems.compactMap { WebSearchResultItem(dictionary: $0) }
+    }
+}
+
+private enum HTMLStripper {
+    static let newlineRegex = try? NSRegularExpression(
+        pattern: "<\\s*(br|/?p)\\b[^>]*>",
+        options: [.caseInsensitive]
+    )
+    static let tagRegex = try? NSRegularExpression(
+        pattern: "<[^>]+>",
+        options: [.caseInsensitive]
+    )
+}
+
+fileprivate extension String {
+    func strippingHTMLTags() -> String {
+        guard !isEmpty else { return self }
+
+        var working = self
+
+        if let newlineRegex = HTMLStripper.newlineRegex {
+            let range = NSRange(location: 0, length: working.utf16.count)
+            working = newlineRegex.stringByReplacingMatches(
+                in: working,
+                options: [],
+                range: range,
+                withTemplate: "\n"
+            )
+        }
+
+        if let tagRegex = HTMLStripper.tagRegex {
+            let range = NSRange(location: 0, length: working.utf16.count)
+            working = tagRegex.stringByReplacingMatches(
+                in: working,
+                options: [],
+                range: range,
+                withTemplate: ""
+            )
+        }
+
+        working = working.replacingOccurrences(
+            of: "\n{3,}",
+            with: "\n\n",
+            options: .regularExpression
+        )
+
+        working = working.replacingOccurrences(
+            of: " {2,}",
+            with: " ",
+            options: .regularExpression
+        )
+
+        working = working.decodingHTMLEntities()
+        working = working.replacingOccurrences(of: "\u{00A0}", with: " ")
+
+        return working.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func decodingHTMLEntities() -> String {
+        var decoded = self
+        let namedEntities: [String: String] = [
+            "&amp;": "&",
+            "&lt;": "<",
+            "&gt;": ">",
+            "&quot;": "\"",
+            "&#39;": "'",
+            "&apos;": "'",
+            "&nbsp;": "\u{00A0}"
+        ]
+
+        for (entity, replacement) in namedEntities {
+            decoded = decoded.replacingOccurrences(of: entity, with: replacement)
+        }
+
+        func replacingMatches(pattern: String, transformer: (NSTextCheckingResult, String) -> String) -> String {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return decoded }
+            let nsString = decoded as NSString
+            let matches = regex.matches(in: decoded, options: [], range: NSRange(location: 0, length: nsString.length))
+            var result = decoded
+            for match in matches.reversed() {
+                let replacement = transformer(match, decoded)
+                let range = match.range
+                let startIndex = result.index(result.startIndex, offsetBy: range.location)
+                let endIndex = result.index(startIndex, offsetBy: range.length)
+                result.replaceSubrange(startIndex..<endIndex, with: replacement)
+            }
+            return result
+        }
+
+        decoded = replacingMatches(pattern: "&#(\\d+);") { match, source in
+            let nsSource = source as NSString
+            let numberRange = match.range(at: 1)
+            let numberString = nsSource.substring(with: numberRange)
+            if let codePoint = Int(numberString), let scalar = UnicodeScalar(codePoint) {
+                return String(scalar)
+            } else {
+                return nsSource.substring(with: match.range)
+            }
+        }
+
+        decoded = replacingMatches(pattern: "&#x([0-9A-Fa-f]+);") { match, source in
+            let nsSource = source as NSString
+            let hexRange = match.range(at: 1)
+            let hexString = nsSource.substring(with: hexRange)
+            if let codePoint = Int(hexString, radix: 16), let scalar = UnicodeScalar(codePoint) {
+                return String(scalar)
+            } else {
+                return nsSource.substring(with: match.range)
+            }
+        }
+
+        return decoded
+    }
+}
+
+#endif

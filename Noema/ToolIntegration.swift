@@ -62,7 +62,6 @@ final class ToolEnabledBackendRouter {
         return toolBackend
     }
 }
-
 // Wrapper for different backend types with tool support
 enum ToolEnabledBackend {
     case llama(EnhancedLlamaBackend)
@@ -113,6 +112,7 @@ enum ToolEnabledBackend {
 
 private typealias APIToolCall = ToolCall
 
+#if os(iOS) || os(visionOS)
 extension ChatVM {
 
     // Enhanced message structure for tool calls
@@ -183,6 +183,7 @@ extension ChatVM {
         }
     }
 }
+#endif
 
 // MARK: - Usage Example
 

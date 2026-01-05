@@ -1,6 +1,14 @@
+#if os(iOS) || os(visionOS) || os(macOS)
 import SwiftUI
 import Foundation
 import Combine
+import RelayKit
+#if os(macOS)
+import AppKit
+#endif
+#if canImport(UIKit)
+import UIKit
+#endif
 
 struct RemoteBackendDetailView: View {
     let backendID: RemoteBackend.ID
@@ -9,6 +17,10 @@ struct RemoteBackendDetailView: View {
     @EnvironmentObject var vm: ChatVM
     @EnvironmentObject var tabRouter: TabRouter
     @Environment(\.dismiss) private var dismiss
+#if os(macOS)
+    @Environment(\.macModalDismiss) private var macModalDismiss
+    @EnvironmentObject private var macModalPresenter: MacModalPresenter
+#endif
     @AppStorage("offGrid") private var offGrid = false
 
     @State private var actionMessage: RemoteBackendActionMessage?
@@ -24,10 +36,14 @@ struct RemoteBackendDetailView: View {
     @State private var isShowingConnectionSummary = false
     @State private var isAuthExpanded = false
     @State private var authExpansionBackendID: RemoteBackend.ID?
+    @State private var localSSID: String?
+#if os(iOS) || os(visionOS)
+    @State private var showLANOverrideConfirmation = false
+#endif
     @FocusState private var focusedField: EditableField?
 
     private enum EditableField: Hashable {
-        case name, baseURL, chatPath, modelsPath, auth
+        case name, baseURL, hostID, chatPath, modelsPath, auth
         case customModel(Int)
     }
 
@@ -44,271 +60,616 @@ struct RemoteBackendDetailView: View {
     var body: some View {
         Group {
             if let backend {
-                List {
-                    connectionSection(for: backend)
-                    modelsSection(for: backend)
-                    serverTypeSection(for: backend)
-                    authenticationSection(for: backend)
-                    modelIdentifiersSection(for: backend)
-                }
-                .navigationTitle(backend.name)
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar { toolbarContent(for: backend) }
-                .refreshable { await refreshModelsIfPossible() }
-                .onAppear { syncAuthExpansion(with: backend) }
-                .onChange(of: backend.id) { _ in syncAuthExpansion(with: backend) }
-                .onChange(of: backend.authHeader ?? "") { newValue in
-                    if !newValue.isEmpty {
-                        isAuthExpanded = true
-                    }
-                }
-                .onChange(of: isEditing) { editing in
-                    if editing {
-                        isAuthExpanded = true
-                    }
-                }
+                detailContent(for: backend)
             } else {
-                ContentUnavailableView("Backend not found", systemImage: "exclamationmark.triangle")
+                if #available(iOS 17.0, macOS 14.0, visionOS 1.0, *) {
+                    ContentUnavailableView("Backend not found", systemImage: "exclamationmark.triangle")
+                } else {
+                    VStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.largeTitle)
+                            .foregroundStyle(.secondary)
+                        Text(LocalizedStringKey("Backend not found"))
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
         }
         .alert(item: $actionMessage) { message in
             Alert(
-                title: Text(message.isError ? "Error" : "Success"),
+                title: Text(message.isError ? LocalizedStringKey("Error") : LocalizedStringKey("Success")),
                 message: Text(message.message),
-                dismissButton: .default(Text("OK"))
+                dismissButton: .default(Text(LocalizedStringKey("OK")))
             )
         }
+    }
+
+    @ViewBuilder
+    private func detailContent(for backend: RemoteBackend) -> some View {
+        detailBaseContent(for: backend)
+            .navigationTitle(backend.name)
+#if !os(macOS)
+            .toolbar { toolbarContent(for: backend) }
+#endif
+            .onAppear {
+                syncAuthExpansion(with: backend)
+#if os(macOS)
+                updateMacModalTitle(using: backend)
+#endif
+            }
+            .onChange(of: backend.id) { _ in
+                syncAuthExpansion(with: backend)
+#if os(macOS)
+                updateMacModalTitle(using: backend)
+#endif
+            }
+            .onChange(of: backend.authHeader ?? "") { newValue in
+                if !newValue.isEmpty {
+                    isAuthExpanded = true
+                }
+            }
+            .onChange(of: isEditing) { editing in
+                if editing {
+                    isAuthExpanded = true
+                }
+            }
+#if os(iOS) || os(visionOS)
+            .task {
+                await refreshLocalSSID()
+            }
+#if canImport(UIKit)
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+                Task { await refreshLocalSSID() }
+            }
+#endif
+#endif
+#if os(macOS)
+            .onChange(of: backend.name) { _ in
+                updateMacModalTitle(using: backend)
+            }
+            .onChange(of: editedDraft?.name ?? "") { _ in
+                updateMacModalTitle(using: backend)
+            }
+#endif
+    }
+
+    @ViewBuilder
+    private func detailBaseContent(for backend: RemoteBackend) -> some View {
+#if os(macOS)
+        ScrollView {
+            // Inline action row to avoid spawning a window toolbar on macOS
+            LazyVStack(alignment: .leading, spacing: 24) {
+                connectionSection(for: backend)
+                modelsSection(for: backend)
+                serverTypeSection(for: backend)
+                authenticationSection(for: backend)
+                modelIdentifiersSection(for: backend)
+            }
+            .padding(.horizontal, 28)
+            .padding(.vertical, 24)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .refreshable { @MainActor in
+            await refreshModelsIfPossible()
+        }
+        // Keep action buttons visually aligned with the header close control
+        .overlay(alignment: .topTrailing) {
+            macInlineActions(for: backend)
+                .padding(.top, 14)
+                .padding(.trailing, 22)
+        }
+#else
+        List {
+            connectionSection(for: backend)
+            modelsSection(for: backend)
+            serverTypeSection(for: backend)
+            authenticationSection(for: backend)
+            modelIdentifiersSection(for: backend)
+        }
+        .navigationBarTitleDisplayMode(.inline)
+        .refreshable { @MainActor in
+            await refreshModelsIfPossible()
+        }
+        // Present primary actions at the bottom instead of in the chrome
+#if os(iOS) || os(visionOS)
+        .safeAreaInset(edge: .bottom) {
+            bottomActionBar(for: backend)
+        }
+#endif
+#endif
     }
 
     // MARK: - Sections
 
     @ViewBuilder
     private func connectionSection(for backend: RemoteBackend) -> some View {
-        Section("Connection") {
-            connectionStatusRow(for: backend)
-            editableRow(
-                title: "Name",
-                systemImage: "textformat",
-                value: backend.name,
-                field: .name,
-                backend: backend
-            ) { binding in
-                TextField("Backend Name", text: binding)
-                    .textInputAutocapitalization(.words)
-                    .focused($focusedField, equals: .name)
+#if os(macOS)
+        MacSection(LocalizedStringKey("Connection")) {
+            VStack(alignment: .leading, spacing: 16) {
+                connectionSectionContent(for: backend)
             }
+        }
+#else
+        Section(LocalizedStringKey("Connection")) {
+            connectionSectionContent(for: backend)
+        }
+#endif
+    }
+
+    @ViewBuilder
+    private func connectionSectionContent(for backend: RemoteBackend) -> some View {
+        let status = connectionStatus(for: backend)
+        connectionStatusRow(for: backend, cachedStatus: status)
+#if os(iOS) || os(visionOS)
+        if let summary = connectionModeSummary(for: backend, isConnected: status.isConnected) {
+            connectionModeBanner(for: summary, backend: backend)
+                .padding(.top, 8)
+        }
+        relayContainerRow(for: backend)
+#endif
+#if !(os(iOS) || os(visionOS))
+        let endpoints = restEndpointItems(for: backend)
+        if !endpoints.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(LocalizedStringKey("REST Endpoints"))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ForEach(endpoints) { item in
+                    endpointRow(for: item)
+                }
+            }
+            .padding(.top, 6)
+        }
+#endif
+        editableRow(
+            title: LocalizedStringKey("Name"),
+            systemImage: "textformat",
+            value: backend.name,
+            field: .name,
+            backend: backend
+        ) { binding in
+            TextField(LocalizedStringKey("Backend Name"), text: binding)
+                .platformAutocapitalization(.words)
+                .focused($focusedField, equals: .name)
+        }
+        editableRow(
+            title: backend.isCloudRelay ? LocalizedStringKey("Container") : LocalizedStringKey("Base URL"),
+            systemImage: backend.isCloudRelay ? "icloud" : "link",
+            value: backend.baseURLString,
+            field: .baseURL,
+            backend: backend
+        ) { binding in
+            baseURLEditingField(binding: binding, backend: backend)
+        }
+        if backend.isCloudRelay {
             editableRow(
-                title: "Base URL",
-                systemImage: "link",
-                value: backend.baseURLString,
-                field: .baseURL,
-                backend: backend
+                title: LocalizedStringKey("Host Device ID"),
+                systemImage: "laptopcomputer.and.iphone",
+                value: backend.relayHostDeviceID ?? "",
+                field: .hostID,
+                backend: backend,
+                emptyPlaceholder: String(localized: "Not set")
             ) { binding in
-                TextField("https://example.com", text: binding)
-                    .keyboardType(.URL)
-                    .textInputAutocapitalization(.never)
+                TextField(LocalizedStringKey("Host device ID"), text: binding)
+                    .platformAutocapitalization(.never)
                     .autocorrectionDisabled(true)
-                    .focused($focusedField, equals: .baseURL)
+                    .focused($focusedField, equals: .hostID)
             }
+            Label(LocalizedStringKey("Messages are synced through CloudKit and processed by the macOS relay server."), systemImage: "arrow.triangle.2.circlepath")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
+        } else {
             editableRow(
-                title: "Chat Path",
+                title: LocalizedStringKey("Chat Path"),
                 systemImage: "bubble.left.and.text.bubble.right",
                 value: backend.chatPath,
                 field: .chatPath,
                 backend: backend
             ) { binding in
                 TextField((editedDraft?.endpointType ?? backend.endpointType).defaultChatPath, text: binding)
-                    .textInputAutocapitalization(.never)
+                    .platformAutocapitalization(.never)
                     .autocorrectionDisabled(true)
                     .focused($focusedField, equals: .chatPath)
             }
             editableRow(
-                title: "Models Path",
+                title: LocalizedStringKey("Models Path"),
                 systemImage: "tray.and.arrow.down",
                 value: backend.modelsPath,
                 field: .modelsPath,
                 backend: backend
             ) { binding in
                 TextField((editedDraft?.endpointType ?? backend.endpointType).defaultModelsPath, text: binding)
-                    .textInputAutocapitalization(.never)
+                    .platformAutocapitalization(.never)
                     .autocorrectionDisabled(true)
                     .focused($focusedField, equals: .modelsPath)
             }
-            if backend.usesLoopbackHost {
-                Label(loopbackWarningText(for: backend), systemImage: "exclamationmark.triangle")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 4)
+        }
+        if backend.usesLoopbackHost {
+            Label(loopbackWarningText(for: backend), systemImage: "exclamationmark.triangle")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
+        }
+        if offGrid {
+            Label(LocalizedStringKey("Off-Grid mode blocks remote connections."), systemImage: "wifi.slash")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
+        }
+    }
+
+    private struct EndpointItem: Identifiable {
+        let id = UUID()
+        let title: String
+        let value: String
+        let icon: String
+    }
+
+    private func restEndpointItems(for backend: RemoteBackend) -> [EndpointItem] {
+        var items: [EndpointItem] = []
+        switch backend.endpointType {
+        case .noemaRelay:
+            if let base = backend.relayLANBaseURL?.absoluteString {
+                items.append(EndpointItem(title: String(localized: "LAN Base"), value: base, icon: "wifi.router"))
             }
-            if offGrid {
-                Label("Off-Grid mode blocks remote connections.", systemImage: "wifi.slash")
-                    .font(.footnote)
+            if let chat = backend.relayLANChatEndpointURL?.absoluteString {
+                items.append(EndpointItem(title: String(localized: "LAN Chat"), value: chat, icon: "bubble.left.and.bubble.right"))
+            }
+            if let models = backend.relayLANModelsEndpointURL?.absoluteString {
+                items.append(EndpointItem(title: String(localized: "LAN Models"), value: models, icon: "square.stack.3d.up"))
+            }
+            if let responses = backend.relayAbsoluteURL(for: "/api/v0/responses")?.absoluteString {
+                items.append(EndpointItem(title: String(localized: "LAN Responses"), value: responses, icon: "arrow.uturn.forward"))
+            }
+        case .cloudRelay:
+            let container = backend.baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !container.isEmpty {
+                items.append(EndpointItem(title: String(localized: "CloudKit Container"), value: container, icon: "icloud"))
+            }
+        default:
+            if let chat = backend.chatEndpointURL?.absoluteString {
+                items.append(EndpointItem(title: String(localized: "Chat Endpoint"), value: chat, icon: "bubble.left.and.bubble.right"))
+            }
+            if backend.endpointType == .openAI,
+               let completions = backend.absoluteURL(for: "/v1/completions")?.absoluteString {
+                items.append(EndpointItem(title: String(localized: "Completions Endpoint"), value: completions, icon: "text.quote"))
+            }
+            if let models = backend.modelsEndpointURL?.absoluteString {
+                items.append(EndpointItem(title: String(localized: "Models Endpoint"), value: models, icon: "square.stack.3d.up"))
+            }
+        }
+        return items
+    }
+
+    @ViewBuilder
+    private func endpointRow(for item: EndpointItem) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: item.icon)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.title)
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .padding(.top, 4)
+                Text(item.value)
+                    .font(.system(.caption2, design: .monospaced))
+                    .textSelection(.enabled)
+                    .foregroundStyle(.primary)
             }
         }
     }
 
     @ViewBuilder
     private func serverTypeSection(for backend: RemoteBackend) -> some View {
-        Section("Endpoint Type") {
-            if isEditing, let binding = draftBinding(for: \RemoteBackendDraft.endpointType, backend: backend) {
-                Picker("Endpoint", selection: binding) {
-                    ForEach(RemoteBackend.EndpointType.allCases) { type in
-                        Text(type.displayName).tag(type)
-                    }
+        #if os(macOS)
+        MacSection(LocalizedStringKey("Endpoint Type")) {
+            VStack(alignment: .leading, spacing: 12) {
+                serverTypeSectionContent(for: backend)
+            }
+        }
+        #else
+        Section(LocalizedStringKey("Endpoint Type")) {
+            serverTypeSectionContent(for: backend)
+        }
+        #endif
+    }
+
+    @ViewBuilder
+    private func serverTypeSectionContent(for backend: RemoteBackend) -> some View {
+        if isEditing, let binding = draftBinding(for: \RemoteBackendDraft.endpointType, backend: backend) {
+            #if os(macOS)
+            Picker("Endpoint", selection: binding) {
+                ForEach(RemoteBackend.EndpointType.allCases) { type in
+                    Text(type.displayName).tag(type)
                 }
-                .pickerStyle(.segmented)
-            } else {
-                LabeledContent("Type") {
-                    Text(backend.endpointType.displayName)
-                        .font(.callout)
-                        .foregroundStyle(.primary)
-                }
+            }
+            .pickerStyle(.segmented)
+            #else
+            EndpointTypeSelectionBoxes(selection: binding)
+            #endif
+        } else {
+            LabeledContent(LocalizedStringKey("Type")) {
+                Text(backend.endpointType.displayName)
+                    .font(.callout)
+                    .foregroundStyle(.primary)
             }
         }
     }
 
     @ViewBuilder
     private func authenticationSection(for backend: RemoteBackend) -> some View {
-        Section {
-            DisclosureGroup(isExpanded: $isAuthExpanded) {
-                VStack(alignment: .leading, spacing: 6) {
-                    if isEditing, let binding = draftBinding(for: \RemoteBackendDraft.authHeader, backend: backend) {
-                        editingFieldContainer {
-                            TextField("Bearer ...", text: binding, axis: .vertical)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled(true)
-                                .focused($focusedField, equals: .auth)
-                        }
-                    } else {
-                        let value = backend.authHeader?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                        if value.isEmpty {
-                            Text("Not provided")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                                .italic()
-                        } else {
-                            Text(value)
-                                .font(.callout)
-                                .foregroundStyle(.primary)
-                                .textSelection(.enabled)
-                        }
-                    }
-                }
-                .padding(.top, 6)
-            } label: {
-                Label("Authentication", systemImage: "key")
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(.secondary)
+        if backend.isCloudRelay {
+            EmptyView()
+        } else {
+            #if os(macOS)
+            MacSection(LocalizedStringKey("Authentication")) {
+                authenticationSectionContent(for: backend)
             }
+            #else
+            Section {
+                authenticationSectionContent(for: backend)
+            }
+            #endif
         }
     }
 
     @ViewBuilder
-    private func modelIdentifiersSection(for backend: RemoteBackend) -> some View {
-        Section("Model Identifiers") {
-            if isEditing {
-                let draft = editedDraft ?? backendDraftSnapshot(from: backend)
-                ForEach(Array(draft.customModelIDs.enumerated()), id: \.offset) { index, _ in
-                    HStack(alignment: .top, spacing: 8) {
-                        editingFieldContainer {
-                            TextField("Model identifier", text: customModelBinding(for: index, backend: backend), axis: .vertical)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled(true)
-                                .focused($focusedField, equals: .customModel(index))
-                        }
-                        if draft.customModelIDs.count > 1 {
-                            Button {
-                                removeCustomModel(at: index, backend: backend)
-                            } label: {
-                                Image(systemName: "minus.circle.fill")
-                                    .font(.title3)
-                                    .foregroundStyle(.red)
-                            }
-                            .buttonStyle(.borderless)
-                            .accessibilityLabel("Remove identifier")
-                        }
+    private func authenticationSectionContent(for backend: RemoteBackend) -> some View {
+        DisclosureGroup(isExpanded: $isAuthExpanded) {
+            VStack(alignment: .leading, spacing: 6) {
+                if isEditing, let binding = draftBinding(for: \RemoteBackendDraft.authHeader, backend: backend) {
+                    editingFieldContainer {
+                        TextField(LocalizedStringKey("Bearer ..."), text: binding, axis: .vertical)
+                            .platformAutocapitalization(.never)
+                            .autocorrectionDisabled(true)
+                            .focused($focusedField, equals: .auth)
                     }
-                }
-                Button {
-                    addCustomModel(for: backend)
-                } label: {
-                    Label("Add Identifier", systemImage: "plus.circle")
-                }
-                .buttonStyle(.borderless)
-                .padding(.top, 4)
-            } else {
-                if backend.customModelIDs.isEmpty {
-                    Text("Using server catalog")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .italic()
                 } else {
-                    ForEach(backend.customModelIDs, id: \.self) { identifier in
-                        Text(identifier)
+                    let value = backend.authHeader?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    if value.isEmpty {
+                        Text(LocalizedStringKey("Not provided"))
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .italic()
+                    } else {
+                        Text(value)
                             .font(.callout)
                             .foregroundStyle(.primary)
                             .textSelection(.enabled)
                     }
                 }
             }
-            Text("Specify identifiers for models that are not listed by the server. Leave blank to rely on the server's catalog.")
-                .font(.footnote)
+            .padding(.top, 6)
+        } label: {
+            Label(LocalizedStringKey("Authentication"), systemImage: "key")
+                .font(.footnote.weight(.medium))
                 .foregroundStyle(.secondary)
         }
     }
 
     @ViewBuilder
-    private func modelsSection(for backend: RemoteBackend) -> some View {
-        Section("Models") {
-            let models = backend.cachedModels.filter { !$0.isEmbedding }
-            if models.isEmpty {
-                VStack(spacing: 8) {
-                    Text(offGrid ? "Remote access is disabled." : "No compatible models available")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                    if !offGrid {
+    private func modelIdentifiersSection(for backend: RemoteBackend) -> some View {
+        #if os(macOS)
+        MacSection(LocalizedStringKey("Model Identifiers")) {
+            VStack(alignment: .leading, spacing: 12) {
+                modelIdentifiersSectionContent(for: backend)
+            }
+        }
+        #else
+        Section(LocalizedStringKey("Model Identifiers")) {
+            modelIdentifiersSectionContent(for: backend)
+        }
+        #endif
+    }
+
+    @ViewBuilder
+    private func modelIdentifiersSectionContent(for backend: RemoteBackend) -> some View {
+        if isEditing {
+            let draft = editedDraft ?? backendDraftSnapshot(from: backend)
+            ForEach(Array(draft.customModelIDs.enumerated()), id: \.offset) { index, _ in
+                HStack(alignment: .top, spacing: 8) {
+                    editingFieldContainer {
+                        TextField(LocalizedStringKey("Model identifier"), text: customModelBinding(for: index, backend: backend), axis: .vertical)
+                            .platformAutocapitalization(.never)
+                            .autocorrectionDisabled(true)
+                            .focused($focusedField, equals: .customModel(index))
+                    }
+                    if draft.customModelIDs.count > 1 {
                         Button {
-                            triggerManualRefresh()
+                            removeCustomModel(at: index, backend: backend)
                         } label: {
-                            Label("Reload Models", systemImage: "arrow.clockwise")
+                            Image(systemName: "minus.circle.fill")
+                                .font(.title3)
+                                .foregroundStyle(.red)
                         }
-                        .disabled(refreshTask != nil)
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Remove identifier")
                     }
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
+            }
+            Button {
+                addCustomModel(for: backend)
+            } label: {
+                Label(LocalizedStringKey("Add Identifier"), systemImage: "plus.circle")
+            }
+            .buttonStyle(.borderless)
+            .padding(.top, 4)
+        } else {
+            if backend.customModelIDs.isEmpty {
+                Text(LocalizedStringKey("Using server catalog"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .italic()
             } else {
-                ForEach(models, id: \.id) { model in
-                    RemoteModelRow(
-                        model: model,
-                        endpointType: backend.endpointType,
-                        availability: modelAvailability(for: backend),
-                        isActivating: activatingModelID == model.id,
-                        isActive: activeRemoteModelID == model.id,
-                        useAction: { use(model: model, in: backend) }
-                    )
+                ForEach(backend.customModelIDs, id: \.self) { identifier in
+                    Text(identifier)
+                        .font(.callout)
+                        .foregroundStyle(.primary)
+                        .textSelection(.enabled)
                 }
             }
         }
+        Text(LocalizedStringKey("Specify identifiers for models that are not listed by the server. Leave blank to rely on the server's catalog."))
+            .font(.footnote)
+            .foregroundStyle(.secondary)
     }
+
+    @ViewBuilder
+    private func modelsSection(for backend: RemoteBackend) -> some View {
+        #if os(macOS)
+        MacSection(LocalizedStringKey("Models")) {
+            VStack(alignment: .leading, spacing: 16) {
+                modelsSectionContent(for: backend)
+            }
+        }
+        #else
+        Section(LocalizedStringKey("Models")) {
+            modelsSectionContent(for: backend)
+        }
+        #endif
+    }
+
+    @ViewBuilder
+    private func modelsSectionContent(for backend: RemoteBackend) -> some View {
+        let models = backend.cachedModels.filter { !$0.isEmbedding }
+        let decoratedModels = models.enumerated().map { index, model in
+            (index: index, model: model, isLoaded: model.isLoadedOnBackend)
+        }
+        let sortedModels = decoratedModels.sorted { lhs, rhs in
+            if lhs.isLoaded != rhs.isLoaded {
+                return lhs.isLoaded && !rhs.isLoaded
+            }
+            return lhs.index < rhs.index
+        }
+        if backend.isCloudRelay {
+            Text(LocalizedStringKey("Responses are generated by the macOS relay server. Configure the provider (LM Studio or Ollama) on the Mac app."))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .padding(.bottom, 4)
+        } else if backend.endpointType == .noemaRelay {
+            Text(LocalizedStringKey("Models shown here are exposed by the Mac relay. Manage sources in the Relay tab on macOS to share more models."))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .padding(.bottom, 4)
+        }
+        if sortedModels.isEmpty {
+            VStack(spacing: 8) {
+                Text(offGrid ? LocalizedStringKey("Remote access is disabled.") : LocalizedStringKey("No compatible models available"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                if !offGrid {
+                    Button {
+                        triggerManualRefresh()
+                    } label: {
+                        Label(LocalizedStringKey("Reload Models"), systemImage: "arrow.clockwise")
+                    }
+                    .disabled(refreshTask != nil)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+        } else {
+            ForEach(sortedModels, id: \.model.id) { entry in
+                RemoteModelRow(
+                    model: entry.model,
+                    endpointType: backend.endpointType,
+                    availability: modelAvailability(for: backend),
+                    isActivating: activatingModelID == entry.model.id,
+                    isActive: activeRemoteModelID == entry.model.id,
+                    isBackendLoaded: entry.isLoaded,
+                    useAction: { use(model: entry.model, in: backend) }
+                )
+            }
+        }
+    }
+
+#if os(macOS)
+    private struct MacSection<Content: View>: View {
+        let title: LocalizedStringKey
+        let content: Content
+
+        init(_ title: LocalizedStringKey, @ViewBuilder content: () -> Content) {
+            self.title = title
+            self.content = content()
+        }
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(title)
+                    .font(FontTheme.subheadline)
+                    .foregroundStyle(AppTheme.secondaryText)
+                    .textCase(.uppercase)
+                    .padding(.leading, 4)
+                content
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(20)
+                    .background(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(AppTheme.cardFill)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .stroke(AppTheme.cardStroke, lineWidth: 1)
+                    )
+            }
+        }
+    }
+#endif
 
     // MARK: - Toolbar
 
     @ToolbarContentBuilder
     private func toolbarContent(for backend: RemoteBackend) -> some ToolbarContent {
+#if os(macOS)
+        ToolbarItemGroup(placement: .automatic) {
+            Button(LocalizedStringKey("Close")) { close() }
+            trailingToolbarItems(for: backend)
+        }
+#else
+        ToolbarItem(placement: .cancellationAction) {
+            Button(LocalizedStringKey("Close")) { close() }
+        }
         ToolbarItemGroup(placement: .navigationBarTrailing) {
+            trailingToolbarItems(for: backend)
+        }
+#endif
+    }
+
+    @ViewBuilder
+    private func trailingToolbarItems(for backend: RemoteBackend) -> some View {
+        #if os(macOS)
+        macInlineActions(for: backend)
+        #else
+        touchToolbarActions(for: backend)
+        #endif
+    }
+
+#if os(macOS)
+    @ViewBuilder
+    private func macInlineActions(for backend: RemoteBackend) -> some View {
+        HStack(spacing: 8) {
             if isEditing {
+                Button(LocalizedStringKey("Cancel")) {
+                    cancelEditingChanges()
+                }
+                .controlSize(.small)
+                .buttonStyle(.bordered)
+
                 Button {
                     Task { await finishEditing(for: backend) }
                 } label: {
                     if isPersistingDraft {
                         ProgressView()
                     } else {
-                        Text("Done")
+                        Text(LocalizedStringKey("Save"))
                     }
                 }
+                .controlSize(.small)
+                .buttonStyle(.borderedProminent)
                 .disabled(isPersistingDraft)
             } else {
                 if let task = activationTask, !task.isCancelled {
@@ -317,6 +678,8 @@ struct RemoteBackendDetailView: View {
                     } label: {
                         Image(systemName: "xmark.circle")
                     }
+                    .controlSize(.small)
+                    .buttonStyle(.borderless)
                     .accessibilityLabel("Cancel remote load")
                 }
                 if let task = refreshTask, !task.isCancelled {
@@ -325,41 +688,180 @@ struct RemoteBackendDetailView: View {
                     } label: {
                         Image(systemName: "xmark.circle")
                     }
+                    .controlSize(.small)
+                    .buttonStyle(.borderless)
                     .accessibilityLabel("Cancel reload")
                     ProgressView()
                 } else if modelManager.remoteBackendsFetching.contains(backendID) {
                     ProgressView()
                 } else if !offGrid {
-                    Button { triggerManualRefresh() } label: {
+                    Button {
+                        triggerManualRefresh()
+                    } label: {
                         Image(systemName: "arrow.clockwise")
                     }
+                    .controlSize(.small)
+                    .buttonStyle(.borderless)
                     .accessibilityLabel("Reload models")
                     .disabled(refreshTask != nil)
                 }
 
-                Menu {
-                    Button {
-                        startEditing(with: backend)
-                    } label: {
-                        Label("Edit", systemImage: "pencil")
-                    }
+                Divider()
+                    .frame(height: 16)
+                    .padding(.horizontal, 2)
 
-                    Button(role: .destructive) {
-                        deleteBackend()
-                    } label: {
-                        Label("Delete Backend", systemImage: "trash")
-                    }
+                Button {
+                    startEditing(with: backend)
                 } label: {
-                    Image(systemName: "ellipsis.circle")
+                    Label(LocalizedStringKey("Edit"), systemImage: "pencil")
+                        .labelStyle(.iconOnly)
                 }
+                .controlSize(.small)
+                .buttonStyle(.bordered)
+
+                Button(role: .destructive) {
+                    deleteBackend()
+                } label: {
+                    Label(LocalizedStringKey("Delete"), systemImage: "trash")
+                        .labelStyle(.iconOnly)
+                }
+                .controlSize(.small)
+                .buttonStyle(.bordered)
+                .tint(.red)
             }
         }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.9))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.08), radius: 6, x: 0, y: 4)
+    }
+#else
+    @ViewBuilder
+    private func touchToolbarActions(for backend: RemoteBackend) -> some View {
+        if isEditing {
+            Button {
+                Task { await finishEditing(for: backend) }
+            } label: {
+                if isPersistingDraft {
+                    ProgressView()
+                } else {
+                    Text(LocalizedStringKey("Done"))
+                }
+            }
+            .disabled(isPersistingDraft)
+        } else {
+            if let task = activationTask, !task.isCancelled {
+                Button {
+                    cancelActivation()
+                } label: {
+                    Image(systemName: "xmark.circle")
+                }
+                .accessibilityLabel("Cancel remote load")
+            }
+            if let task = refreshTask, !task.isCancelled {
+                Button {
+                    cancelRefresh()
+                } label: {
+                    Image(systemName: "xmark.circle")
+                }
+                .accessibilityLabel("Cancel reload")
+                ProgressView()
+            } else if modelManager.remoteBackendsFetching.contains(backendID) {
+                ProgressView()
+            } else if !offGrid {
+                Button { triggerManualRefresh() } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .accessibilityLabel("Reload models")
+                .disabled(refreshTask != nil)
+            }
+
+            Menu {
+                Button {
+                    startEditing(with: backend)
+                } label: {
+                    Label(LocalizedStringKey("Edit"), systemImage: "pencil")
+                }
+
+                Button(role: .destructive) {
+                    deleteBackend()
+                } label: {
+                    Label(LocalizedStringKey("Delete Backend"), systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+        }
+    }
+#endif
+
+#if os(iOS) || os(visionOS)
+    // MARK: - Bottom Action Bar (iOS / visionOS)
+
+    @ViewBuilder
+    private func bottomActionBar(for backend: RemoteBackend) -> some View {
+        VStack(spacing: 8) {
+            Divider()
+            if isEditing {
+                HStack(spacing: 12) {
+                    Button(role: .cancel) {
+                        cancelEditingChanges()
+                    } label: {
+                        Text("Cancel")
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button {
+                        Task { await finishEditing(for: backend) }
+                    } label: {
+                        if isPersistingDraft {
+                            HStack(spacing: 6) {
+                                ProgressView()
+                                Text("Saving…")
+                            }
+                        } else {
+                            Label("Save Changes", systemImage: "checkmark")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isPersistingDraft)
+                }
+                .frame(maxWidth: .infinity)
+            } else {
+                Button {
+                    startEditing(with: backend)
+                } label: {
+                    Label("Edit Remote Endpoint", systemImage: "pencil")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(.horizontal)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
+        .background(.thinMaterial)
+    }
+#endif
+
+    private func cancelEditingChanges() {
+        focusedField = nil
+        editedDraft = nil
+        hasDraftChanges = false
+        isEditing = false
     }
 
     // MARK: - Helpers
 
-    private func connectionStatusRow(for backend: RemoteBackend) -> some View {
-        let status = connectionStatus(for: backend)
+    private func connectionStatusRow(for backend: RemoteBackend, cachedStatus: (text: String, color: Color, symbol: String, isConnected: Bool)? = nil) -> some View {
+        let status = cachedStatus ?? connectionStatus(for: backend)
         return VStack(alignment: .leading, spacing: 6) {
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
@@ -389,6 +891,43 @@ struct RemoteBackendDetailView: View {
             .accessibilityLabel(Text("Connection Status: \(status.text)"))
             .accessibilityHint(Text("Shows the last server response."))
 
+            if status.isConnected, let active = activeTransportIndicator(for: backend) {
+                HStack(spacing: 8) {
+                    Image(systemName: active.symbol)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(active.color)
+                    Text(active.text)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(active.color)
+                    if active.streaming {
+                        Label("Streaming", systemImage: "waveform")
+                            .labelStyle(.iconOnly)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(active.color)
+                            .accessibilityLabel("Token streaming enabled")
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(active.color.opacity(0.12), in: Capsule())
+                .accessibilityLabel(Text("Active connection via \(active.text)"))
+            }
+
+            if let lanIndicator = lanIndicator(for: backend) {
+                HStack(spacing: 8) {
+                    Image(systemName: lanIndicator.symbol)
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(lanIndicator.color)
+                    Text(lanIndicator.text)
+                        .font(.caption2)
+                        .foregroundStyle(lanIndicator.color)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(lanIndicator.color.opacity(0.12), in: Capsule())
+                .accessibilityLabel(Text(lanIndicator.accessibilityLabel))
+            }
+
             if isShowingConnectionSummary {
                 connectionSummaryDetails(for: backend, statusColor: status.color)
                     .padding(.top, 4)
@@ -401,6 +940,210 @@ struct RemoteBackendDetailView: View {
             }
         }
     }
+
+    private func activeTransportIndicator(for backend: RemoteBackend) -> (symbol: String, text: String, color: Color, streaming: Bool)? {
+        guard let session = modelManager.activeRemoteSession,
+              session.backendID == backend.id else { return nil }
+        switch session.transport {
+        case .cloudRelay:
+            return ("icloud", "Cloud Relay", .teal, session.streamingEnabled)
+        case .lan:
+            // Present a neutral LAN label without transport medium/SSID details
+            let label = "Local Network"
+            return ("wifi.router", label, .green, session.streamingEnabled)
+        case .direct:
+            return ("bolt.horizontal", "Direct", .blue, session.streamingEnabled)
+        }
+    }
+
+#if os(iOS) || os(visionOS)
+    private struct ConnectionModeSummary {
+        let title: String
+        let subtitle: String
+        let icon: String
+        let tint: Color
+        let lanURL: String?
+        let relaySSID: String?
+        let allowOverride: Bool
+        let matchingNote: String
+    }
+
+    private func connectionModeSummary(for backend: RemoteBackend, isConnected: Bool) -> ConnectionModeSummary? {
+        guard backend.endpointType == .noemaRelay else { return nil }
+        if offGrid {
+            return ConnectionModeSummary(
+                title: "Remote connections blocked",
+                subtitle: "Off-Grid mode keeps both LAN and Cloud Relay offline until you disable it.",
+                icon: "wifi.slash",
+                tint: .orange,
+                lanURL: nil,
+                relaySSID: nil,
+                allowOverride: false,
+                matchingNote: "Turn off Off-Grid to let the app compare Wi‑Fi names and switch to LAN automatically."
+            )
+        }
+        let lanURL = backend.relayLANURLString?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let relaySSID = backend.relayWiFiSSID?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let session = modelManager.activeRemoteSession,
+           session.backendID == backend.id {
+            switch session.transport {
+            case .lan:
+                return ConnectionModeSummary(
+                    title: "Local Network active",
+                    subtitle: "Streaming on the Local Network. We'll fall back to Cloud Relay if the network changes.",
+                    icon: "wifi.router",
+                    tint: .green,
+                    lanURL: lanURL,
+                    relaySSID: relaySSID,
+                    allowOverride: false,
+                    matchingNote: ""
+                )
+            case .cloudRelay:
+                // Keep this simple: connection selection is automatic.
+                return ConnectionModeSummary(
+                    title: "Connected via Cloud Relay",
+                    subtitle: "Noema will switch to Local Network automatically when it’s faster and available.",
+                    icon: "icloud",
+                    tint: .teal,
+                    lanURL: nil,
+                    relaySSID: nil,
+                    allowOverride: false,
+                    matchingNote: ""
+                )
+            case .direct:
+                return ConnectionModeSummary(
+                    title: "Direct connection",
+                    subtitle: "Streaming through the configured REST endpoint for this backend.",
+                    icon: "bolt.horizontal",
+                    tint: .blue,
+                    lanURL: nil,
+                    relaySSID: nil,
+                    allowOverride: false,
+                    matchingNote: ""
+                )
+            }
+        }
+
+        // Simplify pre-connection guidance: users just pick a model and
+        // Noema will choose the best path (LAN when available, otherwise Cloud Relay).
+        return ConnectionModeSummary(
+            title: "Connection handled automatically",
+            subtitle: "Select a model. Noema will choose the fastest path to your relay (Local Network when available, otherwise Cloud Relay).",
+            icon: "sparkles",
+            tint: .blue,
+            lanURL: nil,
+            relaySSID: nil,
+            allowOverride: false,
+            matchingNote: ""
+        )
+    }
+
+    @ViewBuilder
+    private func connectionModeBanner(for summary: ConnectionModeSummary, backend: RemoteBackend) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: summary.icon)
+                    .font(.headline.weight(.semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(summary.tint)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(summary.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text(summary.subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+
+            if let lanURL = summary.lanURL, !lanURL.isEmpty {
+                Text(lanURL)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+            }
+
+            if let ssid = summary.relaySSID, !ssid.isEmpty {
+                Label("Relay Wi‑Fi: \(ssid)", systemImage: "wifi")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if !summary.matchingNote.isEmpty {
+                Text(summary.matchingNote)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            if summary.allowOverride {
+                Button {
+                    showLANOverrideConfirmation = true
+                } label: {
+                    Text("Force Local Network")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+                .tint(summary.tint)
+
+                Text("Forces chat traffic through the last LAN host even if Wi‑Fi names don't match yet.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(.ultraThinMaterial)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(summary.tint.opacity(0.18), lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
+        .confirmationDialog("Force Local Network?", isPresented: $showLANOverrideConfirmation) {
+            Button("Force Local Network", role: .destructive) {
+                forceLANOverride(for: backend)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("We'll route new conversations through \(summary.lanURL ?? "the last LAN host") even if Wi‑Fi names differ. You can switch back by reloading the backend.")
+        }
+    }
+
+    @ViewBuilder
+    private func relayContainerRow(for backend: RemoteBackend) -> some View {
+#if os(iOS)
+        EmptyView()
+#else
+        if backend.endpointType != .noemaRelay {
+            EmptyView()
+        } else {
+            let container = backend.baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+            if container.isEmpty {
+                EmptyView()
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "icloud")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Cloud Relay Container")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(container)
+                            .font(.system(.caption2, design: .monospaced))
+                            .textSelection(.enabled)
+                            .foregroundStyle(.primary)
+                    }
+                }
+                .padding(.top, 6)
+            }
+        }
+#endif
+    }
+#endif
 
     @ViewBuilder
     private func connectionSummaryDetails(for backend: RemoteBackend, statusColor: Color) -> some View {
@@ -452,14 +1195,40 @@ struct RemoteBackendDetailView: View {
         return message == summary.displayLine ? nil : message
     }
 
+#if os(iOS) || os(visionOS)
+    private func forceLANOverride(for backend: RemoteBackend) {
+        guard backend.endpointType == .noemaRelay else { return }
+        // If a chat session is active for this backend, push the override through
+        // the live RemoteChatService so the transport toggles immediately.
+        if let session = modelManager.activeRemoteSession, session.backendID == backend.id {
+            vm.forceLANOverride(reason: "user-force-lan")
+            vm.requestImmediateLANCheck(reason: "user-force-lan")
+            actionMessage = RemoteBackendActionMessage(message: "Switching to Local Network…", isError: false)
+            return
+        }
+        // Otherwise, request a LAN metadata refresh via Cloud Relay so the
+        // banner and connection details update, then evaluate adoption.
+        Task { @MainActor in
+            actionMessage = RemoteBackendActionMessage(message: "Checking Local Network for this relay…", isError: false)
+        }
+        Task {
+            await modelManager.requestRelayLANRefresh(for: backendID,
+                                                      reason: "user-force-lan",
+                                                      force: true)
+            await modelManager.fetchRemoteModels(for: backendID)
+            await evaluateLANAdoptionAfterRefresh()
+        }
+    }
+#endif
+
     private func editableRow<Content: View>(
-        title: String,
+        title: LocalizedStringKey,
         systemImage: String,
         value: String,
         field: EditableField,
         backend: RemoteBackend,
         emptyPlaceholder: String? = nil,
-        content: (Binding<String>) -> Content
+        @ViewBuilder content: (Binding<String>) -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Label(title, systemImage: systemImage)
@@ -488,6 +1257,12 @@ struct RemoteBackendDetailView: View {
 
     @ViewBuilder
     private func editingFieldContainer<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        #if os(macOS)
+        content()
+            .font(.callout)
+            .textFieldStyle(RoundedBorderTextFieldStyle())
+            .padding(.vertical, 2)
+        #else
         content()
             .font(.callout)
             .padding(10)
@@ -499,6 +1274,60 @@ struct RemoteBackendDetailView: View {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .stroke(Color.secondary.opacity(0.25))
             )
+        #endif
+    }
+
+    @ViewBuilder
+    private func baseURLEditingField(binding: Binding<String>, backend: RemoteBackend) -> some View {
+        HStack(spacing: 8) {
+            Group {
+                if backend.isCloudRelay {
+                    TextField("iCloud.arminproducts.Noema", text: binding)
+                        .platformAutocapitalization(.never)
+                        .autocorrectionDisabled(true)
+                        .focused($focusedField, equals: .baseURL)
+                } else {
+                    TextField("https://example.com", text: binding)
+                        .platformKeyboardType(.url)
+                        .platformAutocapitalization(.never)
+                        .autocorrectionDisabled(true)
+                        .focused($focusedField, equals: .baseURL)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button(binding.wrappedValue.isEmpty ? "Paste" : "Clear & Paste") {
+                pasteBaseURL(into: binding, clearExisting: !binding.wrappedValue.isEmpty)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .font(.footnote.weight(.semibold))
+        }
+    }
+
+    private func pasteBaseURL(into binding: Binding<String>, clearExisting: Bool) {
+        if clearExisting {
+            binding.wrappedValue = ""
+        }
+        if let pasted = currentPasteboardString()?.trimmingCharacters(in: .whitespacesAndNewlines), !pasted.isEmpty {
+            binding.wrappedValue = pasted
+        } else if clearExisting {
+            binding.wrappedValue = ""
+        }
+        focusedField = .baseURL
+    }
+
+    private func currentPasteboardString() -> String? {
+#if canImport(UIKit)
+        UIPasteboard.general.string
+#elseif os(macOS)
+        if let item = NSPasteboard.general.pasteboardItems?.first,
+           let value = item.string(forType: .string) {
+            return value
+        }
+        return NSPasteboard.general.string(forType: .string)
+#else
+        nil
+#endif
     }
 
     private func draftBinding(for keyPath: WritableKeyPath<RemoteBackendDraft, String>, backend: RemoteBackend) -> Binding<String>? {
@@ -578,6 +1407,7 @@ struct RemoteBackendDetailView: View {
         switch field {
         case .name: return \RemoteBackendDraft.name
         case .baseURL: return \RemoteBackendDraft.baseURL
+        case .hostID: return \RemoteBackendDraft.relayHostDeviceID
         case .chatPath: return \RemoteBackendDraft.chatPath
         case .modelsPath: return \RemoteBackendDraft.modelsPath
         case .auth: return \RemoteBackendDraft.authHeader
@@ -590,21 +1420,46 @@ struct RemoteBackendDetailView: View {
         RemoteBackendDraft(from: backend)
     }
 
-    private func connectionStatus(for backend: RemoteBackend) -> (text: String, color: Color, symbol: String) {
+    private func connectionStatus(for backend: RemoteBackend) -> (text: String, color: Color, symbol: String, isConnected: Bool) {
         if offGrid {
-            return ("Connection blocked", .orange, "wifi.slash")
+            return ("Connection blocked", .orange, "wifi.slash", false)
         }
         if modelManager.remoteBackendsFetching.contains(backendID) {
-            return ("Trying to connect", .yellow, "clock.arrow.2.circlepath")
+            return ("Trying to connect", .yellow, "clock.arrow.2.circlepath", false)
         }
         if let error = backend.lastError, !error.isEmpty {
-            return ("Disconnected", .red, "exclamationmark.octagon")
+            return ("Disconnected", .red, "exclamationmark.octagon", false)
         }
         if backend.lastFetched != nil {
-            return ("Connected", .green, "checkmark.circle")
+            return ("Connected", .green, "checkmark.circle", true)
         }
-        return ("Never connected", .secondary, "questionmark.circle")
+        return ("Never connected", .secondary, "questionmark.circle", false)
     }
+
+#if os(iOS) || os(visionOS)
+    private func lanIndicator(for backend: RemoteBackend) -> (text: String, color: Color, symbol: String, accessibilityLabel: String)? {
+        // Hide pre-connection "reachable"/"ready" badges. Only surface a
+        // lightweight indicator when LAN is actually in use.
+        guard backend.endpointType == .noemaRelay else { return nil }
+        guard let session = modelManager.activeRemoteSession,
+              session.backendID == backend.id else { return nil }
+        guard case .lan = session.transport else { return nil }
+
+        let local = localSSID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = local.flatMap { "Local Network in use (\($0))" } ?? "Local Network in use"
+        return (text, .green, "arrow.triangle.2.circlepath.circle.fill", "Streaming on the Local Area Network")
+    }
+#else
+    private func lanIndicator(for backend: RemoteBackend) -> (text: String, color: Color, symbol: String, accessibilityLabel: String)? {
+        // macOS: only show an indicator when LAN is actively being used.
+        guard backend.endpointType == .noemaRelay else { return nil }
+        guard let session = modelManager.activeRemoteSession,
+              session.backendID == backend.id else { return nil }
+        guard case .lan = session.transport else { return nil }
+        let text = "Local Network in use"
+        return (text, .green, "arrow.triangle.2.circlepath.circle.fill", "Streaming on the Local Area Network")
+    }
+#endif
 
     private func startEditing(with backend: RemoteBackend) {
         editedDraft = RemoteBackendDraft(from: backend)
@@ -614,8 +1469,145 @@ struct RemoteBackendDetailView: View {
 
     private func deleteBackend() {
         modelManager.deleteRemoteBackend(id: backendID)
-        dismiss()
+        close()
     }
+
+#if os(iOS) || os(visionOS)
+    private func requestLANStatusRefreshIfNeeded() async {
+        guard let backend = modelManager.remoteBackend(withID: backendID),
+              backend.endpointType == .noemaRelay else { return }
+        await modelManager.requestRelayLANRefresh(for: backendID,
+                                                  reason: "detail-view",
+                                                  force: true)
+    }
+
+    @MainActor
+    private func evaluateLANAdoptionAfterRefresh() async {
+        guard let updatedBackend = modelManager.remoteBackend(withID: backendID) else { return }
+        guard updatedBackend.endpointType == .noemaRelay else { return }
+
+        var lanURLString = updatedBackend.relayLANURLString?.trimmingCharacters(in: .whitespacesAndNewlines)
+        var hostSSID = updatedBackend.relayWiFiSSID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let localSSIDRaw = await WiFiSSIDProvider.shared.currentSSID()
+        let localSSIDTrimmed = localSSIDRaw?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let interfaceDescription = updatedBackend.relayLANInterface?.rawValue ?? "nil"
+        await logger.log("[RemoteBackendDetail] [LAN] Reloaded metadata for '\(updatedBackend.name)' – hostSSID=\(hostSSID ?? "nil"), lanURL=\(lanURLString ?? "nil"), localSSID=\(localSSIDTrimmed ?? "nil"), interface=\(interfaceDescription)")
+
+        if lanURLString?.isEmpty ?? true {
+            await logger.log("[RemoteBackendDetail] [LAN] No LAN URL advertised for '\(updatedBackend.name)' after reload; retrying once after delay.")
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            await modelManager.fetchRemoteModels(for: backendID)
+            guard let retryBackend = modelManager.remoteBackend(withID: backendID) else { return }
+            lanURLString = retryBackend.relayLANURLString?.trimmingCharacters(in: .whitespacesAndNewlines)
+            hostSSID = retryBackend.relayWiFiSSID?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let retryInterface = retryBackend.relayLANInterface?.rawValue ?? "nil"
+            await logger.log("[RemoteBackendDetail] [LAN] Retry metadata for '\(retryBackend.name)' – hostSSID=\(hostSSID ?? "nil"), lanURL=\(lanURLString ?? "nil"), interface=\(retryInterface)")
+            if lanURLString?.isEmpty ?? true {
+                await logger.log("[RemoteBackendDetail] [LAN] No LAN URL advertised for '\(retryBackend.name)' after retry.")
+                return
+            }
+        }
+
+        guard let lanURLString else { return }
+
+        let ssidMatches: Bool = {
+            guard let hostSSID, !hostSSID.isEmpty,
+                  let localSSIDTrimmed, !localSSIDTrimmed.isEmpty else {
+                return false
+            }
+            return LANSubnet.ssidsMatch(hostSSID, localSSIDTrimmed)
+        }()
+
+        var shouldAdoptLAN = ssidMatches
+
+        // If the Mac is on Ethernet (no SSID), detect same subnet as an alternative signal.
+        if !shouldAdoptLAN,
+           hostSSID?.isEmpty != false,
+           let host = updatedBackend.relayLANChatEndpointURL?.host,
+           LANSubnet.isSameSubnet(host: host) {
+            shouldAdoptLAN = true
+            await logger.log("[RemoteBackendDetail] [LAN] Same-subnet match for '\(updatedBackend.name)' (host=\(host)); adopting LAN.")
+        }
+
+        if !shouldAdoptLAN {
+            let reachable = await probeLANReachability(for: updatedBackend)
+            if reachable {
+                shouldAdoptLAN = true
+                await logger.log("[RemoteBackendDetail] [LAN] LAN endpoint reachable for '\(updatedBackend.name)' despite SSID mismatch; proceeding with LAN adoption.")
+            } else {
+                await logger.log("[RemoteBackendDetail] [LAN] LAN endpoint not reachable for '\(updatedBackend.name)'; staying on Cloud Relay.")
+            }
+        } else {
+            await logger.log("[RemoteBackendDetail] [LAN] Local SSID matches host (\(hostSSID ?? "<unknown>")); adopting LAN for '\(updatedBackend.name)'.")
+        }
+
+        if shouldAdoptLAN {
+            if let localSSIDTrimmed, !localSSIDTrimmed.isEmpty {
+                localSSID = localSSIDTrimmed
+            }
+            if let activeID = activeRemoteModelID {
+                do {
+                    try await vm.refreshActiveRemoteBackendIfNeeded(updatedBackendID: backendID, activeModelID: activeID)
+                    await logger.log("[RemoteBackendDetail] [LAN] Active remote session refreshed with latest LAN metadata for '\(updatedBackend.name)'.")
+                } catch {
+                    await logger.log("[RemoteBackendDetail] [LAN] Failed to refresh active session for '\(updatedBackend.name)': \(error.localizedDescription)")
+                }
+            }
+        }
+#if os(iOS) || os(visionOS)
+        vm.requestImmediateLANCheck(reason: "metadata-update")
+#endif
+    }
+
+    private func probeLANReachability(for backend: RemoteBackend) async -> Bool {
+        // Try GET /v1/health first (no auth), fall back to HEAD on chat.
+        if let healthURL = backend.relayLANHealthEndpointURL {
+            var req = URLRequest(url: healthURL)
+            req.httpMethod = "GET"
+            req.timeoutInterval = 3
+            let cfg = URLSessionConfiguration.ephemeral
+            cfg.timeoutIntervalForRequest = 3
+            cfg.timeoutIntervalForResource = 3
+            cfg.waitsForConnectivity = false
+            let session = URLSession(configuration: cfg)
+            defer { session.invalidateAndCancel() }
+            do {
+                let (_, resp) = try await session.data(for: req)
+                if let http = resp as? HTTPURLResponse { return (200...299).contains(http.statusCode) }
+            } catch { /* fall through */ }
+        }
+
+        guard let url = backend.relayLANChatEndpointURL else { return false }
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        request.timeoutInterval = 4
+        if let auth = backend.relayAuthorizationHeader {
+            request.setValue(auth, forHTTPHeaderField: "Authorization")
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 4
+        configuration.timeoutIntervalForResource = 4
+        configuration.waitsForConnectivity = false
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        do {
+            let (_, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else { return false }
+            return (200...499).contains(http.statusCode)
+        } catch {
+            await logger.log("[RemoteBackendDetail] [LAN] LAN probe failed for '\(backend.name)': \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    private func refreshLocalSSID() async {
+        let ssid = await WiFiSSIDProvider.shared.currentSSID()
+        await MainActor.run {
+            localSSID = ssid
+        }
+    }
+#endif
 
     private func use(model: RemoteModel, in backend: RemoteBackend) {
         let availability = modelAvailability(for: backend)
@@ -679,6 +1671,21 @@ struct RemoteBackendDetailView: View {
         if let error = backend.lastError?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
             return .unreachable(message: error)
         }
+        if backend.endpointType.isRelay {
+            if let status = backend.relayHostStatus,
+               let message = relayHostStatusMessage(for: backend, status: status) {
+                return .unreachable(message: message)
+            }
+            // Avoid flicker: if we're already connected once (have lastFetched),
+            // keep models available while a background fetch runs.
+            if backend.lastFetched == nil,
+               modelManager.remoteBackendsFetching.contains(backend.id) {
+                return .unreachable(message: relayPendingConnectionMessage(for: backend, activelyConnecting: true))
+            }
+            if backend.lastFetched == nil {
+                return .unreachable(message: relayPendingConnectionMessage(for: backend, activelyConnecting: false))
+            }
+        }
         return .available
     }
 
@@ -704,6 +1711,35 @@ struct RemoteBackendDetailView: View {
         return "Unable to reach the remote server."
     }
 
+    private func relayPendingConnectionMessage(for backend: RemoteBackend, activelyConnecting: Bool) -> String {
+        let prefix: String
+        switch backend.endpointType {
+        case .noemaRelay:
+            prefix = activelyConnecting ? "Connecting to your Mac relay…" : "Waiting for the Mac relay to finish connecting."
+        case .cloudRelay:
+            prefix = activelyConnecting ? "Connecting to Cloud Relay…" : "Waiting for Cloud Relay to finish connecting."
+        default:
+            prefix = activelyConnecting ? "Connecting to relay…" : "Waiting for relay connection."
+        }
+        return prefix + " Keep the relay app running on your Mac until the status indicator turns green."
+    }
+
+    private func relayHostStatusMessage(for backend: RemoteBackend, status: RelayHostStatus) -> String? {
+        switch status {
+        case .running:
+            return nil
+        case .loading:
+            return relayPendingConnectionMessage(for: backend, activelyConnecting: true)
+        case .idle:
+            if backend.endpointType == .noemaRelay {
+                return "Mac relay is offline. Start it on your Mac to use these models."
+            }
+            return "Relay is offline. Start it from the Mac app to use these models."
+        case .error:
+            return "The relay reported an error. Check the Mac relay status before trying again."
+        }
+    }
+
     private func cancelActivation() {
         activationTask?.cancel()
         activationTask = nil
@@ -713,7 +1749,7 @@ struct RemoteBackendDetailView: View {
     }
 
     private func triggerManualRefresh() {
-        Task { await refreshModelsIfPossible(forceRestart: true) }
+        Task { await refreshModelsIfPossible(forceRestart: true, includeLANRefresh: true) }
     }
 
     @MainActor
@@ -724,7 +1760,8 @@ struct RemoteBackendDetailView: View {
     }
 
     @MainActor
-    private func refreshModelsIfPossible(forceRestart: Bool = false) async {
+    private func refreshModelsIfPossible(forceRestart: Bool = false,
+                                         includeLANRefresh: Bool = false) async {
         guard !offGrid else { return }
         if !forceRestart, let existing = refreshTask {
             await existing.value
@@ -733,6 +1770,16 @@ struct RemoteBackendDetailView: View {
         refreshTask?.cancel()
         let token = UUID()
         refreshToken = token
+#if os(iOS) || os(visionOS)
+        if includeLANRefresh {
+            if let target = modelManager.remoteBackend(withID: backendID)?.name {
+                await logger.log("[RemoteBackendDetail] [LAN] Requesting Cloud Relay metadata refresh for '\(target)'.")
+            } else {
+                await logger.log("[RemoteBackendDetail] [LAN] Requesting Cloud Relay metadata refresh for backend \(backendID).")
+            }
+            await requestLANStatusRefreshIfNeeded()
+        }
+#endif
         let task = Task { @MainActor in
             await modelManager.fetchRemoteModels(for: backendID)
         }
@@ -741,6 +1788,9 @@ struct RemoteBackendDetailView: View {
         if refreshToken == token {
             refreshTask = nil
             refreshToken = nil
+#if os(iOS) || os(visionOS)
+            await evaluateLANAdoptionAfterRefresh()
+#endif
         }
     }
 
@@ -782,6 +1832,30 @@ struct RemoteBackendDetailView: View {
             isAuthExpanded = backend.hasAuth
             authExpansionBackendID = backend.id
         }
+    }
+
+#if os(macOS)
+    @MainActor
+    private func updateMacModalTitle(using backend: RemoteBackend) {
+        let title = macModalTitle(for: backend)
+        macModalPresenter.update(title: title)
+    }
+
+    private func macModalTitle(for backend: RemoteBackend) -> String {
+        if let draftName = editedDraft?.name.trimmingCharacters(in: .whitespacesAndNewlines), !draftName.isEmpty {
+            return draftName
+        }
+        let backendName = backend.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return backendName.isEmpty ? "Remote Endpoint" : backendName
+    }
+#endif
+
+    private func close() {
+#if os(macOS)
+        macModalDismiss()
+#else
+        dismiss()
+#endif
     }
 }
 
@@ -890,6 +1964,7 @@ struct RemoteModelRow: View {
     let availability: Availability
     let isActivating: Bool
     let isActive: Bool
+    let isBackendLoaded: Bool
     let useAction: () -> Void
 
     var body: some View {
@@ -902,6 +1977,11 @@ struct RemoteModelRow: View {
                     if model.isCustom {
                         chip(text: "Custom", color: .gray)
                     }
+                }
+                if isBackendLoaded {
+                    Label("Loaded on server", systemImage: "bolt.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.green)
                 }
                 if shouldShowAuthor, let author = sanitizedAuthor {
                     Text(author)
@@ -1014,13 +2094,13 @@ struct RemoteModelRow: View {
                     .clipShape(Capsule())
                     .foregroundColor(.white)
             }
-            ForEach(model.displayFamilies, id: \.self) { family in
+            ForEach(familyBadges, id: \.self) { family in
                 chip(text: family, color: .teal)
             }
             if shouldShowExtendedChips, let parameter = model.formattedParameterCount {
                 chip(text: parameter, color: .orange)
             }
-            if shouldShowExtendedChips, let size = model.formattedFileSize {
+            if shouldShowExtendedChips, endpointType.isRelay == false, let size = model.formattedFileSize {
                 chip(text: size, color: .blue)
             }
         }
@@ -1045,6 +2125,21 @@ struct RemoteModelRow: View {
         return trimmed
     }
 
+    private var familyBadges: [String] {
+        guard endpointType.isRelay else { return model.displayFamilies }
+        let quantLower = model.quantization?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let identifierLower = model.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return model.displayFamilies.filter { family in
+            let trimmed = family.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return false }
+            let lower = trimmed.lowercased()
+            if lower == identifierLower { return false }
+            if let quantLower, lower == quantLower { return false }
+            if lower == "tools" { return false }
+            return true
+        }
+    }
+
     private var shouldShowAuthor: Bool {
         guard sanitizedAuthor != nil else { return false }
         return !isOllama
@@ -1058,3 +2153,5 @@ struct RemoteModelRow: View {
         !isOllama
     }
 }
+
+#endif

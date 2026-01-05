@@ -3,9 +3,25 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <math.h>
 #include <mach/mach.h>
 #include <os/proc.h>
+#include <TargetConditionals.h>
 
+#if __has_include(<llama/gguf.h>)
+#include <llama/gguf.h>
+#define GGUF_SCANNER_HAS_GGUF_HEADER 1
+#elif __has_include(<LlamaFramework/gguf.h>)
+#include <LlamaFramework/gguf.h>
+#define GGUF_SCANNER_HAS_GGUF_HEADER 1
+#elif __has_include("gguf.h")
+#include "gguf.h"
+#define GGUF_SCANNER_HAS_GGUF_HEADER 1
+#endif
+
+#ifndef GGUF_SCANNER_HAS_GGUF_HEADER
 enum gguf_type {
     GGUF_TYPE_UINT8   = 0,
     GGUF_TYPE_INT8    = 1,
@@ -20,6 +36,19 @@ enum gguf_type {
     GGUF_TYPE_UINT64  = 10,
     GGUF_TYPE_INT64   = 11,
     GGUF_TYPE_FLOAT64 = 12,
+};
+#endif
+
+struct gguf_moe_scan_result {
+    int32_t status;
+    int32_t is_moe;
+    int32_t expert_count;
+    int32_t expert_used_count;
+    int32_t total_layer_count;
+    int32_t moe_layer_count;
+    int32_t hidden_size;
+    int32_t feed_forward_size;
+    int32_t vocab_size;
 };
 
 static uint32_t read_u32(FILE *f) {
@@ -47,6 +76,169 @@ static uint64_t read_u64(FILE *f) {
     }
     return v;
 }
+
+#if defined(GGUF_TYPE_COUNT)
+static int has_suffix(const char *value, const char *suffix) {
+    if (value == NULL || suffix == NULL) { return 0; }
+    size_t value_len = strlen(value);
+    size_t suffix_len = strlen(suffix);
+    if (suffix_len == 0 || value_len < suffix_len) { return 0; }
+    return strcmp(value + (value_len - suffix_len), suffix) == 0;
+}
+
+static int32_t gguf_read_i32_flexible(const struct gguf_context *ctx, int64_t key) {
+    if (key < 0) { return 0; }
+    switch (gguf_get_kv_type(ctx, key)) {
+        case GGUF_TYPE_INT8:
+            return (int32_t)gguf_get_val_i8(ctx, key);
+        case GGUF_TYPE_UINT8:
+            return (int32_t)gguf_get_val_u8(ctx, key);
+        case GGUF_TYPE_INT16:
+            return (int32_t)gguf_get_val_i16(ctx, key);
+        case GGUF_TYPE_UINT16:
+            return (int32_t)gguf_get_val_u16(ctx, key);
+        case GGUF_TYPE_INT32:
+            return gguf_get_val_i32(ctx, key);
+        case GGUF_TYPE_UINT32:
+            return (int32_t)gguf_get_val_u32(ctx, key);
+        case GGUF_TYPE_INT64:
+            return (int32_t)gguf_get_val_i64(ctx, key);
+        case GGUF_TYPE_UINT64:
+            return (int32_t)gguf_get_val_u64(ctx, key);
+        case GGUF_TYPE_FLOAT32: {
+            float value = gguf_get_val_f32(ctx, key);
+            if (!isfinite(value)) { return 0; }
+            return (int32_t)llroundf(value);
+        }
+        case GGUF_TYPE_FLOAT64: {
+            double value = gguf_get_val_f64(ctx, key);
+            if (!isfinite(value)) { return 0; }
+            return (int32_t)llround(value);
+        }
+        case GGUF_TYPE_BOOL:
+            return gguf_get_val_bool(ctx, key) ? 1 : 0;
+        case GGUF_TYPE_ARRAY: {
+            enum gguf_type element_type = gguf_get_arr_type(ctx, key);
+            size_t count = gguf_get_arr_n(ctx, key);
+            const void *data = gguf_get_arr_data(ctx, key);
+            if (data == NULL || count == 0) { return 0; }
+            int64_t max_value = 0;
+            int found = 0;
+            size_t i;
+            switch (element_type) {
+                case GGUF_TYPE_INT8: {
+                    const int8_t *arr = (const int8_t *)data;
+                    for (i = 0; i < count; ++i) {
+                        int64_t v = arr[i];
+                        if (!found || v > max_value) { max_value = v; found = 1; }
+                    }
+                    break;
+                }
+                case GGUF_TYPE_UINT8: {
+                    const uint8_t *arr = (const uint8_t *)data;
+                    for (i = 0; i < count; ++i) {
+                        int64_t v = arr[i];
+                        if (!found || v > max_value) { max_value = v; found = 1; }
+                    }
+                    break;
+                }
+                case GGUF_TYPE_INT16: {
+                    const int16_t *arr = (const int16_t *)data;
+                    for (i = 0; i < count; ++i) {
+                        int64_t v = arr[i];
+                        if (!found || v > max_value) { max_value = v; found = 1; }
+                    }
+                    break;
+                }
+                case GGUF_TYPE_UINT16: {
+                    const uint16_t *arr = (const uint16_t *)data;
+                    for (i = 0; i < count; ++i) {
+                        int64_t v = arr[i];
+                        if (!found || v > max_value) { max_value = v; found = 1; }
+                    }
+                    break;
+                }
+                case GGUF_TYPE_INT32: {
+                    const int32_t *arr = (const int32_t *)data;
+                    for (i = 0; i < count; ++i) {
+                        int64_t v = arr[i];
+                        if (!found || v > max_value) { max_value = v; found = 1; }
+                    }
+                    break;
+                }
+                case GGUF_TYPE_UINT32: {
+                    const uint32_t *arr = (const uint32_t *)data;
+                    for (i = 0; i < count; ++i) {
+                        int64_t v = arr[i];
+                        if (!found || v > max_value) { max_value = v; found = 1; }
+                    }
+                    break;
+                }
+                case GGUF_TYPE_INT64: {
+                    const int64_t *arr = (const int64_t *)data;
+                    for (i = 0; i < count; ++i) {
+                        int64_t v = arr[i];
+                        if (!found || v > max_value) { max_value = v; found = 1; }
+                    }
+                    break;
+                }
+                case GGUF_TYPE_UINT64: {
+                    const uint64_t *arr = (const uint64_t *)data;
+                    for (i = 0; i < count; ++i) {
+                        int64_t v = (int64_t)arr[i];
+                        if (!found || v > max_value) { max_value = v; found = 1; }
+                    }
+                    break;
+                }
+                case GGUF_TYPE_FLOAT32: {
+                    const float *arr = (const float *)data;
+                    for (i = 0; i < count; ++i) {
+                        float value = arr[i];
+                        if (!isfinite(value)) { continue; }
+                        int64_t v = (int64_t)llroundf(value);
+                        if (!found || v > max_value) { max_value = v; found = 1; }
+                    }
+                    break;
+                }
+                case GGUF_TYPE_FLOAT64: {
+                    const double *arr = (const double *)data;
+                    for (i = 0; i < count; ++i) {
+                        double value = arr[i];
+                        if (!isfinite(value)) { continue; }
+                        int64_t v = (int64_t)llround(value);
+                        if (!found || v > max_value) { max_value = v; found = 1; }
+                    }
+                    break;
+                }
+                case GGUF_TYPE_BOOL: {
+                    const int8_t *arr = (const int8_t *)data;
+                    for (i = 0; i < count; ++i) {
+                        int64_t v = arr[i] ? 1 : 0;
+                        if (!found || v > max_value) { max_value = v; found = 1; }
+                    }
+                    break;
+                }
+                default:
+                    return 0;
+            }
+            if (!found) { return 0; }
+            return (int32_t)max_value;
+        }
+        default:
+            return 0;
+    }
+}
+
+static int parse_block_index(const char *name) {
+    if (name == NULL) { return -1; }
+    if (strncmp(name, "blk.", 4) != 0) { return -1; }
+    const char *cursor = name + 4;
+    char *endptr = NULL;
+    long value = strtol(cursor, &endptr, 10);
+    if (endptr == cursor || value < 0) { return -1; }
+    return (int)value;
+}
+#endif
 
 int32_t gguf_layer_count(const char *path) {
     FILE *f = fopen(path, "rb");
@@ -140,6 +332,148 @@ int32_t gguf_layer_count(const char *path) {
     return 0;
 }
 
+#if defined(GGUF_TYPE_COUNT)
+int gguf_moe_scan(const char *path, struct gguf_moe_scan_result *out_result) {
+    if (out_result == NULL || path == NULL) {
+        return -1;
+    }
+
+    struct gguf_moe_scan_result result = {0};
+    struct gguf_init_params params;
+    params.no_alloc = true;
+    params.ctx = NULL;
+
+    struct gguf_context *ctx = gguf_init_from_file(path, params);
+    if (ctx == NULL) {
+        result.status = -1;
+        *out_result = result;
+        return -1;
+    }
+
+    result.status = 0;
+
+    int64_t key = gguf_find_key(ctx, "llama.expert_count");
+    if (key >= 0) {
+        int32_t value = gguf_read_i32_flexible(ctx, key);
+        if (value > 0) {
+            result.is_moe = 1;
+            result.expert_count = value;
+        }
+    } else {
+        result.is_moe = 0;
+    }
+
+    key = gguf_find_key(ctx, "llama.expert_used_count");
+    if (key >= 0) {
+        int32_t value = gguf_read_i32_flexible(ctx, key);
+        if (value > 0) {
+            result.expert_used_count = value;
+        }
+    }
+
+    if (result.expert_count <= 0 || result.expert_used_count <= 0) {
+        const int64_t kv_total = gguf_get_n_kv(ctx);
+        for (int64_t i = 0; i < kv_total; ++i) {
+            const char *name = gguf_get_key(ctx, i);
+            if (!name) { continue; }
+            if (result.expert_count <= 0 && (has_suffix(name, "expert_count") || strstr(name, "num_experts") != NULL)) {
+                int32_t value = gguf_read_i32_flexible(ctx, i);
+                if (value > result.expert_count) {
+                    result.expert_count = value;
+                }
+                if (value > 0) {
+                    result.is_moe = 1;
+                }
+            }
+            if (result.expert_used_count <= 0 && (has_suffix(name, "expert_used_count") || strstr(name, "active_experts") != NULL)) {
+                int32_t value = gguf_read_i32_flexible(ctx, i);
+                if (value > 0) {
+                    result.expert_used_count = value;
+                    if (value > 0) {
+                        result.is_moe = 1;
+                    }
+                }
+            }
+        }
+    }
+
+    int32_t total_layers = 0;
+    const char *layerKeys[] = {
+        "llama.block_count",
+        "llama.n_layer",
+        "hparams.n_layer",
+    };
+    for (size_t i = 0; i < sizeof(layerKeys) / sizeof(layerKeys[0]); ++i) {
+        key = gguf_find_key(ctx, layerKeys[i]);
+        if (key >= 0) {
+            total_layers = gguf_read_i32_flexible(ctx, key);
+            if (total_layers > 0) { break; }
+        }
+    }
+
+    if (total_layers > 0) {
+        result.total_layer_count = total_layers;
+    }
+
+    key = gguf_find_key(ctx, "llama.embedding_length");
+    if (key >= 0) {
+        result.hidden_size = gguf_read_i32_flexible(ctx, key);
+    }
+
+    key = gguf_find_key(ctx, "llama.feed_forward_length");
+    if (key >= 0) {
+        result.feed_forward_size = gguf_read_i32_flexible(ctx, key);
+    }
+
+    key = gguf_find_key(ctx, "llama.vocab_size");
+    if (key >= 0) {
+        result.vocab_size = gguf_read_i32_flexible(ctx, key);
+    }
+
+    int moe_layers = 0;
+    int max_block_index = -1;
+    const int64_t tensor_count = gguf_get_n_tensors(ctx);
+    for (int64_t i = 0; i < tensor_count; ++i) {
+        const char *name = gguf_get_tensor_name(ctx, i);
+        if (!name) { continue; }
+
+        int block_index = parse_block_index(name);
+        if (block_index >= 0 && block_index > max_block_index) {
+            max_block_index = block_index;
+        }
+
+        if (block_index >= 0) {
+            const char *suffix = strstr(name, ".ffn_gate_inp.weight");
+            if (suffix != NULL && strcmp(suffix, ".ffn_gate_inp.weight") == 0) {
+                ++moe_layers;
+            }
+        }
+    }
+
+    if (result.total_layer_count <= 0 && max_block_index >= 0) {
+        result.total_layer_count = max_block_index + 1;
+    }
+
+    if (moe_layers > 0) {
+        result.moe_layer_count = moe_layers;
+    }
+
+    gguf_free(ctx);
+    *out_result = result;
+    return 0;
+}
+#else
+int gguf_moe_scan(const char *path, struct gguf_moe_scan_result *out_result) {
+    if (out_result) {
+        struct gguf_moe_scan_result result = {0};
+        result.status = -1;
+        *out_result = result;
+    }
+    (void)path;
+    return -1;
+}
+#endif
+
 size_t app_memory_footprint(void) {
     task_vm_info_data_t info;
     mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
@@ -150,7 +484,27 @@ size_t app_memory_footprint(void) {
 }
 
 size_t app_available_memory(void) {
+#if defined(TARGET_OS_OSX) && TARGET_OS_OSX
+    mach_port_t host = mach_host_self();
+    vm_size_t page_size = 0;
+    kern_return_t kr = host_page_size(host, &page_size);
+    size_t avail = 0;
+
+    if (kr == KERN_SUCCESS) {
+        vm_statistics64_data_t vm_stat = {0};
+        mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+        kr = host_statistics64(host, HOST_VM_INFO64, (host_info64_t)&vm_stat, &count);
+        if (kr == KERN_SUCCESS) {
+            uint64_t free_mem = (uint64_t)vm_stat.free_count * page_size;
+            uint64_t inactive_mem = (uint64_t)vm_stat.inactive_count * page_size;
+            avail = (size_t)(free_mem + inactive_mem);
+        }
+    }
+
+    mach_port_deallocate(mach_task_self(), host);
+#else
     size_t avail = os_proc_available_memory();
+#endif
     // Always print available memory to the console for diagnostics.
     // Use fprintf to stderr to ensure it appears in console logs.
     fprintf(stderr, "[GGUFScanner] app_available_memory: %zu bytes\n", avail);

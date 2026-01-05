@@ -1,0 +1,3 @@
+/* Auto-generated localization file for Info.plist */
+"NSBluetoothAlwaysUsageDescription" = "Noema는 Bluetooth를 사용하여 릴레이 설정 세부 정보를 다른 장치와 공유합니다.";
+"NSBluetoothPeripheralUsageDescription" = "Noema는 Bluetooth를 사용하여 릴레이 설정 세부 정보를 다른 장치와 공유합니다.";

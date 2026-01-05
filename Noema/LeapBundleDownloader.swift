@@ -25,6 +25,25 @@ final class LeapBundleDownloader: NSObject, @unchecked Sendable {
 
     private override init() { super.init() }
 
+    // Network error classifier for retry/backoff decisions
+    private func isNetworkError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        let codes: Set<Int> = [
+            NSURLErrorNotConnectedToInternet,
+            NSURLErrorTimedOut,
+            NSURLErrorCannotConnectToHost,
+            NSURLErrorNetworkConnectionLost,
+            NSURLErrorDNSLookupFailed,
+            NSURLErrorCannotFindHost,
+            NSURLErrorInternationalRoamingOff,
+            NSURLErrorCallIsActive,
+            NSURLErrorDataNotAllowed
+        ]
+        if nsError.domain == NSURLErrorDomain && codes.contains(nsError.code) { return true }
+        if let http = nsError.userInfo["NSHTTPURLResponse"] as? HTTPURLResponse, http.statusCode >= 500 { return true }
+        return false
+    }
+
     /// Async status using local file presence or in-memory progress.
     func statusAsync(for entry: LeapCatalogEntry) async -> State {
         let slug = entry.slug
@@ -136,7 +155,8 @@ final class LeapBundleDownloader: NSObject, @unchecked Sendable {
                     isFavourite: false,
                     totalLayers: 0,
                     isMultimodal: LeapCatalogService.isVisionQuantizationSlug(slug),
-                    isToolCapable: false
+                    isToolCapable: false,
+                    moeInfo: nil
                 )
                 continuation.yield(.finished(installed))
                 continuation.finish()
@@ -162,7 +182,12 @@ final class LeapBundleDownloader: NSObject, @unchecked Sendable {
             do {
                 sibling = try await fetchSibling(for: slug, token: token)
             } catch {
-                continuation.yield(.failed(error))
+                // Classify network errors distinctly so controller can back off and retry
+                if self.isNetworkError(error) {
+                    continuation.yield(.networkError(error, 0))
+                } else {
+                    continuation.yield(.failed(error))
+                }
                 continuation.finish()
                 queue.sync { continuations.removeValue(forKey: slug); progressMap.removeValue(forKey: slug) }
                 return
@@ -171,7 +196,7 @@ final class LeapBundleDownloader: NSObject, @unchecked Sendable {
             let expectedBytes: Int64 = sibling.size > 0 ? sibling.size : (entry.sizeBytes > 0 ? entry.sizeBytes : 0)
             let resolveURL = URL(string: "https://huggingface.co/LiquidAI/LeapBundles/resolve/main/\(sibling.name)?download=1")!
 
-            final class Delegate: NSObject, URLSessionDataDelegate {
+            final class Delegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
                 let handle: FileHandle
                 var hasher: SHA256?
                 var expected: Int64
@@ -228,7 +253,7 @@ final class LeapBundleDownloader: NSObject, @unchecked Sendable {
                 let start = Date()
                 if !FileManager.default.fileExists(atPath: tmpURL.path) { FileManager.default.createFile(atPath: tmpURL.path, contents: nil) }
                 let handle = try FileHandle(forWritingTo: tmpURL)
-                try? handle.seekToEnd()
+                _ = try? handle.seekToEnd()
                 let delegate = Delegate(handle: handle, expected: expectedBytes, sha: (entry.sha256 ?? sibling.sha256) != nil, start: start) { p, b, s in
                     self.queue.sync { self.progressMap[slug] = p }
                     continuation.yield(.progress(p, b, expectedBytes, s))
@@ -271,13 +296,20 @@ final class LeapBundleDownloader: NSObject, @unchecked Sendable {
                     isFavourite: false,
                     totalLayers: 0,
                     isMultimodal: isVision,
-                    isToolCapable: false
+                    isToolCapable: false,
+                    moeInfo: nil
                 )
                 continuation.yield(.finished(installed))
                 continuation.finish()
                 queue.sync { continuations.removeValue(forKey: slug); progressMap.removeValue(forKey: slug) }
             } catch {
-                continuation.yield(.failed(error))
+                if self.isNetworkError(error) {
+                    // Report last known progress so controller can preserve UI state
+                    let p = queue.sync { progressMap[slug] } ?? 0
+                    continuation.yield(.networkError(error, p))
+                } else {
+                    continuation.yield(.failed(error))
+                }
                 continuation.finish()
                 queue.sync {
                     continuations.removeValue(forKey: slug)
@@ -321,13 +353,9 @@ final class LeapBundleDownloader: NSObject, @unchecked Sendable {
             preferred = fixed
         }
 
-        // If the path changed and the old selection matches defaults, update it.
+        // If the path changed and the old selection matches startup preferences, update it.
         if preferred != fixed {
-            let defaults = UserDefaults.standard
-            if let current = defaults.string(forKey: "defaultModelPath"), !current.isEmpty,
-               current == fixed.path {
-                defaults.set(preferred.path, forKey: "defaultModelPath")
-            }
+            StartupPreferencesStore.updateLocalPath(from: fixed.path, to: preferred.path)
         }
 
         // If the preferred is a bundle but exists as a file while a directory with the same
@@ -343,4 +371,3 @@ final class LeapBundleDownloader: NSObject, @unchecked Sendable {
         }
     }
 }
-

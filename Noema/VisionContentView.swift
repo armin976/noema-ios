@@ -16,15 +16,18 @@ struct MainView: View {
     @EnvironmentObject private var datasetManager: DatasetManager
     @EnvironmentObject private var downloadController: DownloadController
     @EnvironmentObject private var walkthrough: GuidedWalkthroughManager
+    @AppStorage("appearance") private var appearance = "system"
     @AppStorage("offGrid") private var offGrid = false
     @AppStorage("visionVerticalPanelLayout") private var useVerticalPanelLayout = true
-    @AppStorage("defaultModelPath") private var defaultModelPath = ""
     @AppStorage("storedPanelWindowActive") private var storedPanelWindowActive = false
+    @AppStorage("storedPanelWindowCount") private var storedPanelWindowCount = 0
     @State private var didAutoLoad = false
     @State private var storedPanelLaunchInFlight = false // Legacy flag kept for state compatibility; now mirrors pending reopen work items.
     @State private var storedPanelRefreshWorkItem: DispatchWorkItem?
 
     private let storedPanelPlacementDelay: TimeInterval = 0.2
+
+    private var colorScheme: ColorScheme? { VisionAppearance.forcedScheme(for: appearance) }
 
     private let mainGuideSteps: Set<GuidedWalkthroughManager.Step> = [
         .chatIntro,
@@ -49,17 +52,30 @@ struct MainView: View {
     ]
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            Group {
-                if useVerticalPanelLayout {
-                    tabLayout(includeStored: false)
-                } else {
-                    tabLayout(includeStored: true)
-                }
+        Group {
+            if useVerticalPanelLayout {
+                tabLayout(includeStored: false)
+            } else {
+                tabLayout(includeStored: true)
             }
-
+        }
+        .visionAppearance(colorScheme)
+        .ornament(attachmentAnchor: .scene(.bottomLeading)) {
             DownloadOverlay()
                 .environmentObject(downloadController)
+        }
+        .ornament(attachmentAnchor: .scene(.bottom)) {
+            if useVerticalPanelLayout {
+                Button {
+                    reopenStoredPanel()
+                } label: {
+                    Label(LocalizedStringKey("Open Stored"), systemImage: "externaldrive")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .padding(.bottom, 12)
+            }
         }
         .onPreferenceChange(GuidedHighlightPreferenceKey.self) { anchors in
             walkthrough.updateAnchors(anchors)
@@ -79,17 +95,14 @@ struct MainView: View {
             GuidedWalkthroughOverlay(allowedSteps: mainGuideSteps)
                 .environmentObject(walkthrough)
         }
-        .sheet(isPresented: $downloadController.showPopup) {
-            DownloadListPopup()
-                .environmentObject(downloadController)
-        }
-        .task { await autoLoad() }
+        .overlay { DownloadPopupOverlay() }
         .onAppear {
             modelManager.bind(datasetManager: datasetManager)
             downloadController.configure(modelManager: modelManager, datasetManager: datasetManager)
             datasetManager.bind(downloadController: downloadController)
             chatVM.modelManager = modelManager
             chatVM.datasetManager = datasetManager
+            Task { await autoLoad() }
             let sanitized = sanitizedSelection(tabRouter.selection)
             if sanitized != tabRouter.selection {
                 tabRouter.selection = sanitized
@@ -105,6 +118,9 @@ struct MainView: View {
                         chatVM.rollingThoughtViewModels[key] = vm
                     }
                 }
+            }
+            if !storedPanelWindowActive && storedPanelWindowCount > 0 {
+                storedPanelWindowCount = 0
             }
             updateStoredPanelWindow(forceRecreation: true)
         }
@@ -122,7 +138,7 @@ struct MainView: View {
             }
             updateStoredPanelWindow(forceRecreation: true)
         }
-        .onChange(of: tabRouter.selection) { _, newValue in
+        .onChangeCompat(of: tabRouter.selection) { _, newValue in
             let sanitized = sanitizedSelection(newValue)
             if sanitized != newValue {
                 tabRouter.selection = sanitized
@@ -139,7 +155,7 @@ struct MainView: View {
                 updateStoredPanelWindow(forceRecreation: true)
             }
         }
-        .onChange(of: storedPanelWindowActive) { _, isActive in
+        .onChangeCompat(of: storedPanelWindowActive) { _, isActive in
             storedPanelRefreshWorkItem?.cancel()
             storedPanelRefreshWorkItem = nil
 
@@ -147,9 +163,14 @@ struct MainView: View {
                 storedPanelLaunchInFlight = false
             } else {
                 storedPanelLaunchInFlight = false
-                if useVerticalPanelLayout {
+                if useVerticalPanelLayout && storedPanelWindowCount == 0 {
                     scheduleStoredPanelOpen()
                 }
+            }
+        }
+        .onChangeCompat(of: storedPanelWindowCount) { _, count in
+            if count == 0 {
+                storedPanelWindowActive = false
             }
         }
     }
@@ -217,7 +238,7 @@ struct MainView: View {
         }
     }
 
-    private func tabTitle(for tab: MainTab) -> String {
+    private func tabTitle(for tab: MainTab) -> LocalizedStringKey {
         switch tab {
         case .chat:
             return "Chat"
@@ -254,15 +275,18 @@ struct MainView: View {
     }
 
     private func updateStoredPanelWindow(forceRecreation: Bool = false) {
-        storedPanelRefreshWorkItem?.cancel()
-        storedPanelLaunchInFlight = false
+        if let workItem = storedPanelRefreshWorkItem {
+            workItem.cancel()
+            storedPanelRefreshWorkItem = nil
+            storedPanelLaunchInFlight = false
+        }
 
         guard useVerticalPanelLayout else {
             dismissWindow(id: VisionSceneID.storedPanelWindow)
             return
         }
 
-        if storedPanelWindowActive {
+        if storedPanelWindowActive || storedPanelWindowCount > 0 {
             if forceRecreation {
                 dismissWindow(id: VisionSceneID.storedPanelWindow)
                 scheduleStoredPanelOpen(after: storedPanelPlacementDelay)
@@ -270,17 +294,29 @@ struct MainView: View {
             return
         }
 
+        if storedPanelLaunchInFlight {
+            return
+        }
+
         scheduleStoredPanelOpen()
     }
 
     private func scheduleStoredPanelOpen(after delay: TimeInterval? = nil) {
-        storedPanelRefreshWorkItem?.cancel()
-        storedPanelLaunchInFlight = false
-
-        let reopen = DispatchWorkItem {
-            openWindow(id: VisionSceneID.storedPanelWindow)
+        if let workItem = storedPanelRefreshWorkItem {
+            workItem.cancel()
             storedPanelRefreshWorkItem = nil
             storedPanelLaunchInFlight = false
+        }
+
+        guard storedPanelWindowCount == 0, !storedPanelLaunchInFlight else { return }
+
+        let reopen = DispatchWorkItem {
+            guard storedPanelWindowCount == 0 else {
+                storedPanelRefreshWorkItem = nil
+                return
+            }
+            openWindow(id: VisionSceneID.storedPanelWindow)
+            storedPanelRefreshWorkItem = nil
         }
         storedPanelRefreshWorkItem = reopen
         storedPanelLaunchInFlight = true
@@ -288,34 +324,29 @@ struct MainView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + openDelay, execute: reopen)
     }
 
+    private func reopenStoredPanel() {
+        guard useVerticalPanelLayout else { return }
+
+        storedPanelRefreshWorkItem?.cancel()
+        storedPanelRefreshWorkItem = nil
+
+        if storedPanelWindowActive || storedPanelWindowCount > 0 {
+            dismissWindow(id: VisionSceneID.storedPanelWindow)
+        }
+
+        storedPanelWindowCount = 0
+        storedPanelWindowActive = false
+        storedPanelLaunchInFlight = false
+
+        scheduleStoredPanelOpen(after: storedPanelPlacementDelay)
+    }
+
     @MainActor
     private func autoLoad() async {
         guard !didAutoLoad else { return }
         didAutoLoad = true
 
-        if UserDefaults.standard.bool(forKey: "bypassRAMLoadPending") {
-            UserDefaults.standard.set(false, forKey: "bypassRAMLoadPending")
-            modelManager.refresh()
-            chatVM.loadError = "Previous model failed to load because it likely exceeded memory. Lower context size or choose a smaller model."
-            return
-        }
-
-        guard !chatVM.modelLoaded, !chatVM.loading else { return }
-        modelManager.refresh()
-
-        guard !defaultModelPath.isEmpty,
-              let model = modelManager.downloadedModels.first(where: { $0.url.path == defaultModelPath }) else { return }
-
-        let settings = modelManager.settings(for: model)
-        UserDefaults.standard.set(true, forKey: "bypassRAMLoadPending")
-        await chatVM.unload()
-        if await chatVM.load(url: model.url, settings: settings, format: model.format) {
-            modelManager.updateSettings(settings, for: model)
-            modelManager.markModelUsed(model)
-        } else {
-            modelManager.loadedModel = nil
-        }
-        UserDefaults.standard.set(false, forKey: "bypassRAMLoadPending")
+        await StartupLoader.performStartupLoad(chatVM: chatVM, modelManager: modelManager, offGrid: offGrid)
     }
 }
 
@@ -435,13 +466,69 @@ private struct SplashView: View {
 
 struct StoredPanelWindow: View {
     @AppStorage("storedPanelWindowActive") private var storedPanelWindowActive = false
+    @AppStorage("storedPanelWindowCount") private var storedPanelWindowCount = 0
+    @AppStorage("appearance") private var appearance = "system"
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var hasRegisteredWindow = false
+
+    private var colorScheme: ColorScheme? { VisionAppearance.forcedScheme(for: appearance) }
 
     var body: some View {
         VisionStoredPanel()
-            .frame(width: 420)
+            .frame(width: 520, height: 620)
             .glassBackgroundEffect()
-            .onAppear { storedPanelWindowActive = true }
-            .onDisappear { storedPanelWindowActive = false }
+            .visionAppearance(colorScheme)
+            .onAppear {
+                guard !hasRegisteredWindow else { return }
+                if storedPanelWindowCount > 0 {
+                    DispatchQueue.main.async {
+                        dismiss()
+                    }
+                    return
+                }
+                hasRegisteredWindow = true
+                storedPanelWindowCount = 1
+                storedPanelWindowActive = true
+            }
+            .onDisappear {
+                guard hasRegisteredWindow else { return }
+                hasRegisteredWindow = false
+                storedPanelWindowCount = max(0, storedPanelWindowCount - 1)
+                storedPanelWindowActive = storedPanelWindowCount > 0
+            }
+    }
+}
+
+private struct DownloadPopupOverlay: View {
+    @EnvironmentObject private var downloadController: DownloadController
+
+    var body: some View {
+        Group {
+            if downloadController.showPopup {
+                ZStack {
+                    Color.black.opacity(0.2)
+                        .contentShape(Rectangle())
+                        .ignoresSafeArea()
+                        .transition(.opacity)
+                        .onTapGesture { downloadController.closeList() }
+
+                    DownloadListPopup(onClose: { downloadController.closeList() })
+                        .environmentObject(downloadController)
+                        .frame(maxWidth: 520)
+                        .padding(32)
+                        .background(
+                            RoundedRectangle(cornerRadius: 32, style: .continuous)
+                                .fill(.thinMaterial)
+                        )
+                        .glassBackgroundEffect()
+                        .shadow(radius: 24)
+                }
+                .zIndex(1)
+                .transition(.scale(scale: 0.95).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: downloadController.showPopup)
     }
 }
 

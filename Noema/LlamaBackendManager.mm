@@ -6,6 +6,7 @@
 #import "llama.h"
 #endif
 #import <Foundation/Foundation.h>
+#import <TargetConditionals.h>
 #include <atomic>
 
 static void noema_llama_log_forward(enum ggml_log_level level, const char * text, void * user_data) {
@@ -40,6 +41,14 @@ void noema_llama_backend_release(void) {
     int prev = s_refcount.fetch_sub(1, std::memory_order_acq_rel);
     if (prev == 1) {
         llama_log_set(nullptr, nullptr);
+#if TARGET_OS_IPHONE
+        // NOTE: Newer iOS builds of llama.cpp tear down the Metal backend as part of
+        // llama_free()/llama_model_free(). Invoking llama_backend_free() again triggers
+        // a double-free inside ggml_metal_free, crashing with “pointer being freed was not allocated”.
+        // Keep the backend initialized on iOS and let process teardown reclaim it instead.
+        // This avoids the crash when unloading models while still allowing macOS to fully release.
+        return;
+#endif
         llama_backend_free();
     }
 }
