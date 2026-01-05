@@ -5,149 +5,223 @@ struct DatasetRecommendationView: View {
     let datasetName: String
     let totalSizeBytes: Int64
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
     
     private var recommendation: DatasetRecommendationSystem.Recommendation {
-        DatasetRecommendationSystem.recommendation(for: totalSizeBytes)
+        DatasetRecommendationSystem.recommendation(for: totalSizeBytes, locale: locale)
     }
     
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 24) {
+                VStack(spacing: 32) {
                     // Header with icon and category
-                    VStack(spacing: 12) {
+                    VStack(spacing: 16) {
                         Image(systemName: recommendation.sizeCategory.iconName)
-                            .font(.system(size: 60))
-                            .foregroundColor(Color(recommendation.sizeCategory.iconColor))
+                            .font(.system(size: 72))
+                            .foregroundStyle(Color(recommendation.sizeCategory.iconColor).gradient)
+                            .shadow(color: Color(recommendation.sizeCategory.iconColor).opacity(0.3), radius: 10, x: 0, y: 5)
                         
-                        Text(recommendation.sizeCategory.rawValue)
-                            .font(.largeTitle)
-                            .fontWeight(.bold)
-                        
-                        Text(recommendation.sizeCategory.description)
-                            .font(.headline)
-                            .foregroundStyle(.secondary)
+                        VStack(spacing: 8) {
+                            Text(recommendation.sizeCategory.title(locale: locale))
+                                .font(.system(.largeTitle, design: .serif))
+                                .fontWeight(.bold)
+                                .multilineTextAlignment(.center)
+                            
+                            Text(recommendation.sizeCategory.description(locale: locale))
+                                .font(.title3)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
                     }
-                    .padding(.top)
+                    .padding(.top, 20)
+                    .padding(.horizontal)
                     
                     // Performance metrics
-                    VStack(spacing: 16) {
-                        MetricRow(
+                    HStack(spacing: 16) {
+                        MetricCard(
                             icon: "clock.fill",
-                            title: "Estimated Embedding Time",
-                            value: DatasetRecommendationSystem.formatTime(recommendation.estimatedEmbeddingTime),
+                            title: LocalizedStringKey("Est. Time"),
+                            value: DatasetRecommendationSystem.formatTime(recommendation.estimatedEmbeddingTime, locale: locale),
                             color: .blue
                         )
                         
-                        MetricRow(
+                        MetricCard(
                             icon: "memorychip.fill",
-                            title: "Peak RAM Usage",
-                            value: DatasetRecommendationSystem.formatRAM(recommendation.estimatedRAMUsage),
+                            title: LocalizedStringKey("Peak RAM"),
+                            value: DatasetRecommendationSystem.formatRAM(recommendation.estimatedRAMUsage, locale: locale),
                             color: .purple
                         )
                         
-                        MetricRow(
+                        MetricCard(
                             icon: "doc.fill",
-                            title: "Dataset Size",
-                            value: ByteCountFormatter.string(fromByteCount: totalSizeBytes, countStyle: .file),
+                            title: LocalizedStringKey("Size"),
+                            value: {
+                                let formatter = ByteCountFormatter()
+                                formatter.countStyle = .file
+                                return formatter.string(fromByteCount: totalSizeBytes)
+                            }(),
                             color: .gray
                         )
                     }
                     .padding(.horizontal)
                     
-                    // Performance note
-                    VStack(alignment: .leading, spacing: 12) {
-                        Label("Performance Note", systemImage: "info.circle.fill")
-                            .font(.headline)
-                            .foregroundColor(.blue)
+                    // Suggestion & Note
+                    VStack(spacing: 16) {
+                        InfoCard(
+                            icon: "lightbulb.fill",
+                            title: LocalizedStringKey("Recommendation"),
+                            content: recommendation.suggestion,
+                            color: .orange
+                        )
                         
-                        Text(recommendation.performanceNote)
-                            .font(.body)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        InfoCard(
+                            icon: "info.circle.fill",
+                            title: LocalizedStringKey("Performance Note"),
+                            content: recommendation.performanceNote,
+                            color: .blue
+                        )
                     }
-                    .padding()
-                    .background(Color.blue.opacity(0.1))
-                    .cornerRadius(12)
-                    .padding(.horizontal)
-                    
-                    // Suggestion
-                    VStack(alignment: .leading, spacing: 12) {
-                        Label("Recommendation", systemImage: "lightbulb.fill")
-                            .font(.headline)
-                            .foregroundColor(.orange)
-                        
-                        Text(recommendation.suggestion)
-                            .font(.body)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding()
-                    .background(Color.orange.opacity(0.1))
-                    .cornerRadius(12)
                     .padding(.horizontal)
                     
                     // System requirements reminder
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Remember:")
-                            .font(.caption)
-                            .fontWeight(.semibold)
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(LocalizedStringKey("Things to keep in mind"))
+                            .font(.headline)
+                            .foregroundStyle(.primary)
                         
-                        Text("• Close other applications to free up RAM")
-                            .font(.caption)
-                        Text("• Embedding happens locally on your device")
-                            .font(.caption)
-                        Text("• Larger datasets take exponentially more time")
-                            .font(.caption)
-                        Text("• You can pause and resume downloads if needed")
-                            .font(.caption)
+                        VStack(alignment: .leading, spacing: 8) {
+                            RequirementRow(text: LocalizedStringKey("Close other applications to free up RAM"))
+                            RequirementRow(text: LocalizedStringKey("Embedding happens locally on your device"))
+                            RequirementRow(text: LocalizedStringKey("Larger datasets take exponentially more time"))
+                            RequirementRow(text: LocalizedStringKey("You can pause and resume downloads if needed"))
+                        }
                     }
-                    .foregroundStyle(.secondary)
-                    .padding()
+                    .padding(20)
+                    .background(Color.secondary.opacity(0.05))
+                    .cornerRadius(16)
+                    .padding(.horizontal)
                     .padding(.bottom)
                 }
             }
-            .navigationTitle("Dataset Requirements")
+            .navigationTitle(LocalizedStringKey("Dataset Requirements"))
+#if os(iOS) || os(tvOS)
             .navigationBarTitleDisplayMode(.inline)
+#endif
+            #if !os(macOS)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Got it") {
+                    Button(LocalizedStringKey("Got it")) {
                         dismiss()
                     }
                     .fontWeight(.semibold)
                 }
             }
+            #endif
+            #if os(macOS)
+            .overlay(alignment: .bottom) {
+                VStack(spacing: 0) {
+                    Divider()
+                    HStack {
+                        Spacer()
+                        Button(LocalizedStringKey("Got it")) { dismiss() }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.large)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 16)
+                    .background(.ultraThinMaterial)
+                }
+            }
+            #endif
         }
     }
 }
 
-private struct MetricRow: View {
+private struct MetricCard: View {
     let icon: String
-    let title: String
+    let title: LocalizedStringKey
     let value: String
     let color: Color
     
     var body: some View {
-        HStack(spacing: 16) {
+        VStack(spacing: 12) {
             Image(systemName: icon)
                 .font(.title2)
-                .foregroundColor(color)
-                .frame(width: 30)
+                .foregroundStyle(color.gradient)
+                .frame(height: 24)
             
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(spacing: 4) {
+                Text(value)
+                    .font(.headline)
+                    .fontWeight(.bold)
+                    .minimumScaleFactor(0.8)
+                    .lineLimit(1)
+                
                 Text(title)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                
-                Text(value)
-                    .font(.headline)
-                    .fontWeight(.semibold)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(1)
             }
-            
-            Spacer()
         }
-        .padding()
-        .background(Color.gray.opacity(0.1))
-        .cornerRadius(10)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 16)
+        .padding(.horizontal, 8)
+        .background(Color.secondary.opacity(0.05))
+        .cornerRadius(16)
+    }
+}
+
+private struct InfoCard: View {
+    let icon: String
+    let title: LocalizedStringKey
+    let content: String
+    let color: Color
+    
+    var body: some View {
+        HStack(alignment: .top, spacing: 16) {
+            Image(systemName: icon)
+                .font(.title3)
+                .foregroundStyle(color)
+                .frame(width: 24, height: 24)
+                .padding(10)
+                .background(color.opacity(0.1))
+                .clipShape(Circle())
+            
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(.headline)
+                
+                Text(content)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.top, 2)
+            
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .background(Color.secondary.opacity(0.05))
+        .cornerRadius(16)
+    }
+}
+
+private struct RequirementRow: View {
+    let text: LocalizedStringKey
+    
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "circle.fill")
+                .font(.system(size: 6))
+                .foregroundStyle(.secondary)
+                .padding(.top, 7)
+            
+            Text(text)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -158,4 +232,5 @@ private struct MetricRow: View {
         datasetName: "Sample Textbook",
         totalSizeBytes: 104_857_600 // 100 MB
     )
+    .frame(width: 500, height: 700)
 }

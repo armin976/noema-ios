@@ -34,6 +34,11 @@ enum ArchitectureTemplates {
             return Templates.lfm2
         }
 
+        // Granite Hybrid / IBM Granite
+        if ident.contains("granitehybrid") || ident.contains("granite-hybrid") || ident.contains("granite") {
+            return Templates.graniteHybrid
+        }
+
         // Gemma 3n vs Gemma 3
         if ident.contains("gemma-3n") || ident.contains("gemma3n") {
             return Templates.gemma3n
@@ -153,6 +158,123 @@ Qwen3:{%- if tools %}
 
         static let lfm2: String = """
 LFM2: {{bos_token}}{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}
+"""
+
+        static let graniteHybrid: String = """
+{%- set tools_system_message_prefix = 'You are a helpful assistant with access to the following tools. You may call one or more tools to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>'  %}
+{%- set tools_system_message_suffix = '\n</tools>\n\nFor each tool call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{"name": <function-name>, "arguments": <args-json-object>}\n</tool_call>.\n\n## How to call tools:\nWhen you call a tool call, the value of "arguments" must be a valid, parsed JSON object. It must NEVER be stringified JSON. Do NOT EVER escape JSON yourself. Always provide raw, valid JSON.\n\nIf a tool does not exist in the provided list of tools, notify the user that you do not have the ability to fulfill the request.\n\nFor example, your tool call SHOULD look like this\n<tool_call>\n{"name": "get_current_weather", "arguments": {"city": "Boston"}}\n</tool_call>\n\nIt should NEVER look like this\n<tool_call>\n{"name": "get_current_weather", "arguments": "{\n  \"city\": \"Boston\"\n}"}\n</tool_call>' %}
+{%- set documents_system_message_prefix = 'You are a helpful assistant with access to the following documents. You may use one or more documents to assist with the user query.\n\nYou are given a list of documents within <documents></documents> XML tags:\n<documents>' %}
+{%- set documents_system_message_suffix = '\n</documents>\n\nWrite the response to the user\'s input by strictly aligning with the facts in the provided documents. If the information needed to answer the question is not available in the documents, inform the user that the question cannot be answered based on the available data.' %}
+{%- if available_tools is defined and available_tools %}
+    {%- set tools = available_tools %}
+{%- endif %}
+{%- set ns = namespace(tools_system_message=tools_system_message_prefix,
+                      documents_system_message=documents_system_message_prefix,
+                      system_message=''
+                      ) %}
+{%- if tools %}
+    {%- for tool in tools %}
+        {%- set ns.tools_system_message = ns.tools_system_message + '\n' + (tool | tojson) %}
+    {%- endfor %}
+    {%- set ns.tools_system_message = ns.tools_system_message + tools_system_message_suffix %}
+{%- else %}
+    {%- set ns.tools_system_message = '' %}
+{%- endif %}
+{%- if documents %}
+    {%- for document in documents %}
+        {%- set ns.documents_system_message = ns.documents_system_message + '\n' + (document | tojson) %}
+    {%- endfor %}
+    {%- set ns.documents_system_message = ns.documents_system_message + documents_system_message_suffix %}
+{%- else %}
+    {%- set ns.documents_system_message = '' %}
+{%- endif %}
+{%- if messages[0].role == 'system' %}
+    {%- if messages[0].content is string %}
+        {%- set ns.system_message = messages[0].content %}
+    {%- elif messages[0].content is iterable %}
+        {%- for entry in messages[0].content %}
+            {%- if entry.type== 'text' %}
+                {%- if ns.system_message != '' %}
+                    {%- set ns.system_message = ns.system_message + '\n' %}
+                {%- endif %}
+                {%- set ns.system_message = ns.system_message + entry.text %}
+            {%- endif %}
+        {%- endfor %}
+    {%- endif %}
+    {%- if tools and documents %}
+        {%- set ns.system_message = ns.system_message + '\n\n' +  ns.tools_system_message + '\n\n' + ns.documents_system_message %}
+    {%- elif tools %}
+        {%- set ns.system_message = ns.system_message + '\n\n' + ns.tools_system_message %}
+    {%- elif documents %}
+        {%- set ns.system_message = ns.system_message + '\n\n' + ns.documents_system_message %}
+    {%- endif %}
+{%- else %}
+    {%- if tools and documents %}
+        {%- set ns.system_message = ns.tools_system_message + '\n\n' + ns.documents_system_message  %}
+    {%- elif tools %}
+        {%- set ns.system_message = ns.tools_system_message %}
+    {%- elif documents %}
+        {%- set ns.system_message = ns.documents_system_message %}
+    {%- endif %}
+{%- endif %}
+{%- if ns.system_message %}
+    {{- '<|start_of_role|>system<|end_of_role|>' + ns.system_message + '<|end_of_text|>\n' }}
+{%- endif %}
+{%- for message in messages %}
+    {%- set content = namespace(val='') %}
+    {%- if message.content is string %}
+        {%- set content.val = message.content %}
+    {%- else %}
+        {%- if message.content is iterable %}
+            {%- for entry in message.content %}
+                {%- if entry.type== 'text' %}
+                    {%- if content.val != '' %}
+                        {%- set content.val = content.val + '\n' %}
+                    {%- endif %}
+                    {%- set content.val = content.val + entry.text %}
+                {%- endif %}
+            {%- endfor %}
+        {%- endif %}
+    {%- endif %}
+    {%- if (message.role == 'user') or (message.role == 'system' and not loop.first) %}
+        {{- '<|start_of_role|>' + message.role + '<|end_of_role|>' + content.val + '<|end_of_text|>\n' }}
+    {%- elif message.role == 'assistant' %}
+        {{- '<|start_of_role|>' + message.role + '<|end_of_role|>' + content.val }}
+        {%- if message.tool_calls %}
+            {%- for tool_call in message.tool_calls %}
+                {%- if (loop.first and content.val) or (not loop.first) %}
+                    {{- '\n' }}
+                {%- endif %}
+                {%- if tool_call.function %}
+                    {%- set tool_call = tool_call.function %}
+                {%- endif %}
+                {{- '<tool_call>\n{"name": "' }}
+                {{- tool_call.name }}
+                {{- '", "arguments": ' }}
+                {%- if tool_call.arguments is string %}
+                    {{- tool_call.arguments }}
+                {%- else %}
+                    {{- tool_call.arguments | tojson }}
+                {%- endif %}
+                {{- '}\n</tool_call>' }}
+            {%- endfor %}
+        {%- endif %}
+        {{- '<|end_of_text|>\n' }}
+    {%- elif message.role == 'tool' %}
+        {%- if loop.first or (messages[loop.index0 - 1].role != 'tool') %}
+            {{- '<|start_of_role|>user<|end_of_role|>' }}
+        {%- endif %}
+        {{- '\n<tool_response>\n' }}
+        {{- content.val }}
+        {{- '\n</tool_response>' }}
+        {%- if loop.last or (messages[loop.index0 + 1].role != 'tool') %}
+            {{- '<|end_of_text|>\n' }}
+        {%- endif %}
+    {%- endif %}
+{%- endfor %}
+{%- if add_generation_prompt %}
+    {{- '<|start_of_role|>assistant<|end_of_role|>' }}
+{%- endif %}
 """
 
         static let gemma3n: String = """

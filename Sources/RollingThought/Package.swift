@@ -3,7 +3,12 @@ import PackageDescription
 
 let package = Package(
     name: "RollingThought",
-    platforms: [.iOS(.v15)],
+    platforms: [
+        .iOS(.v15),
+        .visionOS(.v1),
+        .macOS(.v12),
+        .macCatalyst(.v13)
+    ],
     products: [
         .library(name: "RollingThought", targets: ["RollingThought"]),
     ],
@@ -12,7 +17,8 @@ let package = Package(
         .target(
             name: "RollingThought",
             dependencies: [],
-            path: "."
+            path: ".",
+            sources: ["RollingThought.swift"]
         )
     ]
 )

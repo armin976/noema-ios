@@ -1,4 +1,5 @@
 // ToolCapableLlamaClient.swift
+#if os(iOS) || os(macOS) || os(visionOS)
 import Foundation
 
 // MARK: - Tool-capable llama.cpp client with server mode support
@@ -199,16 +200,8 @@ public final class ToolCapableLlamaClient: ToolCapableLLM, @unchecked Sendable {
             systemContent += "\n\n" + usage
         }
 
-        // Serialize via PromptBuilder so Jinja/ChatML templates are honored and the
-        // tool guidance is placed inside the system role for the selected family.
-        let family = ModelKind.detect(id: modelName)
-        let history: [ChatVM.Msg] = messages.compactMap { m in
-            let text = m.content ?? ""
-            if m.role == "system" { return nil }
-            return ChatVM.Msg(role: m.role, text: text)
-        }
-        let (builtPrompt, _, _) = PromptBuilder.build(template: nil, family: family, history: history, system: systemContent)
-        return builtPrompt
+        let sanitizedMessages = messages.filter { $0.role != "system" }
+        return renderPromptWithSystemContent(systemContent, messages: sanitizedMessages)
     }
 
     private func generateJSONGrammarToolCatalog(_ tools: [ToolSpec]) -> String {
@@ -368,3 +361,40 @@ private actor _TokenEventFeeder {
         continuation.finish(throwing: error)
     }
 }
+
+extension ToolCapableLlamaClient {
+    private func renderPromptWithSystemContent(_ system: String, messages: [ToolChatMessage]) -> String {
+#if canImport(UIKit) || os(visionOS)
+        let family = ModelKind.detect(id: modelName)
+        let history: [ChatVM.Msg] = messages.map { message in
+            let text = message.content ?? ""
+            return ChatVM.Msg(role: message.role, text: text)
+        }
+        let (prompt, _, _) = PromptBuilder.build(template: nil, family: family, history: history, system: system)
+        return prompt
+#else
+        return renderFallbackPrompt(system: system, messages: messages)
+#endif
+    }
+
+    private func renderFallbackPrompt(system: String, messages: [ToolChatMessage]) -> String {
+        var lines: [String] = []
+        let trimmedSystem = system.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedSystem.isEmpty {
+            lines.append("System: \(trimmedSystem)")
+        }
+        for message in messages {
+            let role = message.role.capitalized
+            let content = message.content?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if content.isEmpty {
+                lines.append("\(role):")
+            } else {
+                lines.append("\(role): \(content)")
+            }
+        }
+        lines.append("Assistant: ")
+        return lines.joined(separator: "\n")
+    }
+}
+
+#endif

@@ -9,6 +9,8 @@ struct VisionStoredPanel: View {
     @EnvironmentObject private var datasetManager: DatasetManager
     @EnvironmentObject private var tabRouter: TabRouter
     @EnvironmentObject private var walkthrough: GuidedWalkthroughManager
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.locale) private var locale
     @AppStorage("offGrid") private var offGrid = false
     @AppStorage("hideGGUFOffloadWarning") private var hideGGUFOffloadWarning = false
 
@@ -28,7 +30,7 @@ struct VisionStoredPanel: View {
     @State private var pendingLoad: (LocalModel, ModelSettings)?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 24) {
             header
 
             ScrollView {
@@ -44,7 +46,7 @@ struct VisionStoredPanel: View {
                 .padding(.vertical, 6)
             }
         }
-        .padding(24)
+        .padding(32)
         .background(
             RoundedRectangle(cornerRadius: 32, style: .continuous)
                 .fill(.ultraThinMaterial)
@@ -54,7 +56,7 @@ struct VisionStoredPanel: View {
             modelManager.refresh()
             modelManager.refreshRemoteBackends(offGrid: offGrid)
         }
-        .onChange(of: offGrid) { _, newValue in
+        .onChangeCompat(of: offGrid) { _, newValue in
             if !newValue {
                 modelManager.refreshRemoteBackends(offGrid: false)
             }
@@ -100,70 +102,58 @@ struct VisionStoredPanel: View {
                 let filtered = urls.filter { allowedExtensions().contains($0.pathExtension.lowercased()) }
                 guard !filtered.isEmpty else { return }
                 pendingPickedURLs = filtered
-                datasetName = suggestName(from: filtered) ?? "Imported Dataset"
+                datasetName = suggestName(from: filtered) ?? String(localized: "Imported Dataset")
                 showNameSheet = true
             case .failure:
                 break
             }
         }
         .sheet(isPresented: $showNameSheet) {
-            NavigationStack {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Name your dataset")
-                        .font(.headline)
-                    TextField("Dataset name", text: $datasetName)
-                        .textFieldStyle(.roundedBorder)
-                    Spacer()
-                    HStack {
-                        Button("Cancel") { showNameSheet = false }
-                        Spacer()
-                        Button("Import") { Task { await performImport() } }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(datasetName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }
-                }
-                .padding()
-                .navigationTitle("Import Dataset")
-            }
-            .presentationDetents([.fraction(0.35)])
+            DatasetImportNamePromptView(
+                datasetName: $datasetName,
+                onCancel: { showNameSheet = false },
+                onImport: { await performImport() }
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
         }
         .confirmationDialog(
-            "Model doesn't support GPU offload",
+            String(localized: "Model doesn't support GPU offload"),
             isPresented: $showOffloadWarning,
             titleVisibility: .visible
         ) {
-            Button("Load") {
+            Button(LocalizedStringKey("Load")) {
                 if let (model, settings) = pendingLoad {
                     load(model, settings: settings, bypassWarning: true)
                     pendingLoad = nil
                 }
             }
-            Button("Don't show again") {
+            Button(LocalizedStringKey("Don't show again")) {
                 hideGGUFOffloadWarning = true
                 if let (model, settings) = pendingLoad {
                     load(model, settings: settings, bypassWarning: true)
                     pendingLoad = nil
                 }
             }
-            Button("Cancel", role: .cancel) {
+            Button(LocalizedStringKey("Cancel"), role: .cancel) {
                 pendingLoad = nil
             }
         } message: {
             if DeviceGPUInfo.supportsGPUOffload {
-                Text("This model doesn't support GPU offload and generation speed will be significantly slower. Consider switching to an MLX model.")
+                Text(LocalizedStringKey("This model doesn't support GPU offload and generation speed will be significantly slower. Consider switching to an MLX model."))
             } else {
-                Text("This model doesn't support GPU offload and generation speed will be significantly slower. Fastest option on this device: use an SLM (Leap) model.")
+                Text(LocalizedStringKey("This model doesn't support GPU offload and generation speed will be significantly slower. Fastest option on this device: use an SLM (Leap) model."))
             }
         }
-        .confirmationDialog("Start indexing now?", isPresented: $askStartIndexing, titleVisibility: .visible) {
-            Button("Start") {
+        .confirmationDialog(LocalizedStringKey("Start indexing now?"), isPresented: $askStartIndexing, titleVisibility: .visible) {
+            Button(LocalizedStringKey("Start")) {
                 if let ds = datasetToIndex {
                     datasetManager.startIndexing(dataset: ds)
                 }
             }
-            Button("Later", role: .cancel) {}
+            Button(LocalizedStringKey("Later"), role: .cancel) {}
         } message: {
-            Text("We'll extract text and prepare embeddings. You can also start later from the dataset details.")
+            Text(LocalizedStringKey("We'll extract text and prepare embeddings. You can also start later from the dataset details."))
         }
     }
 
@@ -181,12 +171,12 @@ struct VisionStoredPanel: View {
                 Button {
                     showRemoteBackendForm = true
                 } label: {
-                    Label("Remote", systemImage: "antenna.radiowaves.left.and.right")
+                    Label("Add Remote", systemImage: "plus")
                         .labelStyle(.iconOnly)
                         .font(.title3.weight(.semibold))
                 }
                 .buttonStyle(.borderless)
-                .help("+ Add remote endpoint")
+                .help("Add remote endpoint")
 
                 Button {
                     showImporter = true
@@ -209,15 +199,32 @@ struct VisionStoredPanel: View {
     }
 
     private var modelsSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Models")
-                .font(.headline)
+        sectionContainer {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Your Models")
+                    .font(.title3.weight(.semibold))
+                Spacer()
+            }
+        } content: {
             if modelManager.downloadedModels.isEmpty {
                 emptyLibraryPrompt
             } else {
                 VStack(spacing: 12) {
                     ForEach(modelManager.downloadedModels, id: \.id) { model in
                         modelCard(for: model)
+                            .contextMenu {
+                                Button("Open Settings") {
+                                    selectedModel = model
+                                }
+                                Button("Delete", role: .destructive) {
+                                    Task { @MainActor in
+                                        if modelManager.loadedModel?.id == model.id {
+                                            await vm.unload()
+                                        }
+                                        modelManager.delete(model)
+                                    }
+                                }
+                            }
                     }
                 }
             }
@@ -225,27 +232,106 @@ struct VisionStoredPanel: View {
     }
 
     private var remoteSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Remote Endpoints")
-                .font(.headline)
-            VStack(spacing: 12) {
-                ForEach(modelManager.remoteBackends, id: \.id) { backend in
-                    remoteCard(for: backend)
+        sectionContainer {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Remote Backends")
+                    .font(.title3.weight(.semibold))
+                Spacer()
+            }
+        } content: {
+            if modelManager.remoteBackends.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("No remote endpoints configured yet.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button {
+                        showRemoteBackendForm = true
+                    } label: {
+                        Label("Add Remote Endpoint", systemImage: "plus")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 8)
+            } else {
+                VStack(spacing: 12) {
+                    ForEach(modelManager.remoteBackends, id: \.id) { backend in
+                        remoteCard(for: backend)
+                            .contextMenu {
+                                Button("Open Details") {
+                                    selectedRemoteID = IdentifiableBackendID(id: backend.id)
+                                }
+                                Button("Delete", role: .destructive) {
+                                    modelManager.deleteRemoteBackend(id: backend.id)
+                                }
+                            }
+                    }
                 }
             }
         }
     }
 
     private var datasetsSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Datasets")
-                .font(.headline)
-            VStack(spacing: 12) {
-                ForEach(modelManager.downloadedDatasets) { dataset in
-                    datasetCard(for: dataset)
+        sectionContainer {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Datasets")
+                    .font(.title3.weight(.semibold))
+                Spacer()
+            }
+        } content: {
+            if modelManager.downloadedDatasets.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("No datasets imported yet.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button {
+                        showImporter = true
+                    } label: {
+                        Label("Import Dataset", systemImage: "square.and.arrow.down")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 8)
+            } else {
+                VStack(spacing: 12) {
+                    ForEach(modelManager.downloadedDatasets) { dataset in
+                        datasetCard(for: dataset)
+                            .contextMenu {
+                                Button("Open Details") {
+                                    selectedDataset = dataset
+                                }
+                                Button("Delete", role: .destructive) {
+                                    Task { @MainActor in
+                                        try? datasetManager.delete(dataset)
+                                    }
+                                }
+                            }
+                    }
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func sectionContainer<Header: View, Content: View>(
+        @ViewBuilder header: () -> Header,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            header()
+            content()
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            .thinMaterial,
+            in: RoundedRectangle(cornerRadius: 30, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 30, style: .continuous)
+                .stroke(sectionBorderColor, lineWidth: 1)
+        )
     }
 
     private var emptyLibraryPrompt: some View {
@@ -268,31 +354,56 @@ struct VisionStoredPanel: View {
                 Button {
                     showRemoteBackendForm = true
                 } label: {
-                    Label("Remote", systemImage: "antenna.radiowaves.left.and.right")
+                    Label("Remote", systemImage: "plus")
                 }
                 .buttonStyle(.bordered)
             }
         }
-        .padding()
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Color(.secondarySystemBackground).opacity(0.6))
-        )
+        .padding(.vertical, 4)
     }
 
     private func modelCard(for model: LocalModel) -> some View {
         let isActive = modelManager.loadedModel?.id == model.id
         let isLoading = loadingModelID == model.id
 
-        return VStack(alignment: .leading, spacing: 10) {
+        let displayName = formattedDisplayName(for: model)
+        let vendor = model.modelID.split(separator: "/").first.map(String.init) ?? model.modelID
+        let chips = modelChips(for: model)
+
+        return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(model.name)
-                        .font(.subheadline.weight(.semibold))
-                    Text("\(model.format.rawValue.uppercased()) • \(model.quant)")
-                        .font(.footnote)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        if model.isFavourite {
+                            Image(systemName: "star.fill")
+                                .foregroundStyle(.yellow)
+                        }
+                        Text(displayName)
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        if model.isReasoningModel {
+                            Image(systemName: "brain")
+                                .foregroundStyle(.purple)
+                        }
+                        if UIConstants.showMultimodalUI && model.isMultimodal {
+                            Image(systemName: "eye")
+                        }
+                        if model.isToolCapable {
+                            Image(systemName: "hammer")
+                                .foregroundStyle(.blue)
+                        }
+                    }
+                    Text(vendor)
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    WrappingChipLayout() {
+                        ForEach(chips) { chip in
+                            chipView(chip)
+                        }
+                    }
                 }
                 Spacer()
                 if isActive {
@@ -305,7 +416,7 @@ struct VisionStoredPanel: View {
                 }
             }
 
-            HStack(spacing: 12) {
+            HStack(spacing: 18) {
                 Button {
                     if isActive {
                         Task { await vm.unload() }
@@ -313,26 +424,64 @@ struct VisionStoredPanel: View {
                         load(model)
                     }
                 } label: {
-                    Label(isActive ? "Unload" : "Load", systemImage: isActive ? "eject" : "play.fill")
-                        .labelStyle(.titleAndIcon)
+                    Group {
+                        if isLoading {
+                            ProgressView()
+                                .frame(width: 48, height: 48)
+                                .padding(6)
+                                .background(Circle().fill(Color.accentColor.opacity(0.35)))
+                        } else {
+                            IconCircle(
+                                systemImage: isActive ? "eject" : "play.fill",
+                                foreground: .white,
+                                background: isActive ? .orange : .accentColor
+                            )
+                        }
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(isActive ? .orange : .accentColor)
+                .buttonStyle(.plain)
                 .disabled(isLoading)
+                .accessibilityLabel(isActive ? "Unload model" : "Load model")
 
                 Button {
                     selectedModel = model
                 } label: {
-                    Label("Settings", systemImage: "slider.horizontal.3")
+                    IconCircle(
+                        systemImage: "slider.horizontal.3",
+                        foreground: .primary,
+                        background: Color.secondary.opacity(0.15)
+                    )
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.plain)
+                .accessibilityLabel("Model settings")
+
+                Button(role: .destructive) {
+                    Task { @MainActor in
+                        if modelManager.loadedModel?.id == model.id {
+                            await vm.unload()
+                        }
+                        modelManager.delete(model)
+                    }
+                } label: {
+                    IconCircle(
+                        systemImage: "trash",
+                        foreground: .red,
+                        background: Color.red.opacity(0.15)
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Delete model")
             }
         }
-        .padding()
+        .padding(24)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Color(.secondarySystemBackground).opacity(0.55))
+            .ultraThinMaterial,
+            in: RoundedRectangle(cornerRadius: 24, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(cardBorderColor, lineWidth: 1)
         )
     }
 
@@ -356,11 +505,15 @@ struct VisionStoredPanel: View {
                     ProgressView()
                 }
             }
-            .padding()
+            .padding(22)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(Color(.secondarySystemBackground).opacity(0.55))
+                .ultraThinMaterial,
+                in: RoundedRectangle(cornerRadius: 24, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .stroke(cardBorderColor, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -383,23 +536,217 @@ struct VisionStoredPanel: View {
                     ProgressView()
                 }
             }
-            .padding()
+            .padding(22)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(Color(.secondarySystemBackground).opacity(0.55))
+                .ultraThinMaterial,
+                in: RoundedRectangle(cornerRadius: 24, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .stroke(cardBorderColor, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
     }
 
     private func datasetSizeLabel(for dataset: LocalDataset) -> String {
-        if dataset.sizeMB >= 1024 {
-            let gb = dataset.sizeMB / 1024
-            return String(format: "%.1f GB", gb)
-        } else {
-            return String(format: "%.0f MB", dataset.sizeMB)
+        localizedFileSizeString(bytes: Int64(dataset.sizeMB * 1_048_576.0), locale: locale)
+    }
+
+    private func formattedDisplayName(for model: LocalModel) -> String {
+        guard !model.quant.isEmpty else { return model.name }
+        return model.name
+            .replacingOccurrences(of: "-\(model.quant)", with: "")
+            .replacingOccurrences(of: ".\(model.quant)", with: "")
+    }
+
+    private func modelChips(for model: LocalModel) -> [ModelChip] {
+        var chips: [ModelChip] = []
+        let isSLM = model.format == .slm
+
+        if !isSLM {
+            let quantLabel = QuantExtractor.shortLabel(from: model.quant, format: model.format)
+            chips.append(
+                ModelChip(
+                    text: quantLabel,
+                    background: .fill(Color.accentColor.opacity(0.2)),
+                    foreground: .accentColor
+                )
+            )
         }
+        chips.append(
+            ModelChip(
+                text: model.format.rawValue.uppercased(),
+                background: .gradient(model.format.tagGradient),
+                foreground: .white
+            )
+        )
+        if !isSLM {
+            if !model.architectureFamily.isEmpty {
+                chips.append(
+                    ModelChip(
+                        text: model.architectureFamily.uppercased(),
+                        background: .fill(Color.secondary.opacity(0.15)),
+                        foreground: .secondary
+                    )
+                )
+            }
+            if let moeInfo = model.moeInfo {
+                let isMoE = moeInfo.isMoE
+                let tint = isMoE ? Color.orange : Color.secondary
+                chips.append(
+                    ModelChip(
+                        text: isMoE ? "MoE" : "Dense",
+                        background: .fill(tint.opacity(0.2)),
+                        foreground: tint
+                    )
+                )
+            } else {
+                chips.append(
+                    ModelChip(
+                        text: "Checking…",
+                        background: .stroke(Color.secondary.opacity(0.3)),
+                        foreground: .secondary
+                    )
+                )
+            }
+        }
+        return chips
+    }
+
+    @ViewBuilder
+    private func chipView(_ chip: ModelChip) -> some View {
+        Text(chip.text)
+            .font(.caption2)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background {
+                switch chip.background {
+                case .fill(let color):
+                    Capsule().fill(color)
+                case .gradient(let gradient):
+                    Capsule().fill(gradient)
+                case .stroke(let color):
+                    Capsule().stroke(color, lineWidth: 1)
+                }
+            }
+            .foregroundStyle(chip.foreground)
+    }
+
+    private struct ModelChip: Identifiable {
+        enum Background {
+            case fill(Color)
+            case gradient(LinearGradient)
+            case stroke(Color)
+        }
+
+        let id = UUID()
+        let text: String
+        let background: Background
+        let foreground: Color
+    }
+
+    private struct IconCircle: View {
+        let systemImage: String
+        let foreground: Color
+        let background: Color
+        var size: CGFloat = 56
+
+        var body: some View {
+            Image(systemName: systemImage)
+                .font(.system(size: 22, weight: .semibold))
+                .frame(width: size, height: size)
+                .foregroundStyle(foreground)
+                .background(
+                    Circle()
+                        .fill(background)
+                        .shadow(color: Color.black.opacity(0.08), radius: 4, x: 0, y: 2)
+                )
+                .contentShape(Circle())
+        }
+    }
+
+    private struct WrappingChipLayout: Layout {
+        var horizontalSpacing: CGFloat = 8
+        var verticalSpacing: CGFloat = 8
+
+        func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+            guard !subviews.isEmpty else { return .zero }
+
+            let maxWidth = proposal.width ?? .infinity
+
+            var currentX: CGFloat = 0
+            var currentY: CGFloat = 0
+            var rowHeight: CGFloat = 0
+            var usedWidth: CGFloat = 0
+
+            let widthProposal: CGFloat? = maxWidth.isFinite ? maxWidth : nil
+
+            for (index, subview) in subviews.enumerated() {
+                let size = subview.sizeThatFits(
+                    ProposedViewSize(width: widthProposal, height: nil)
+                )
+                if currentX > 0 && currentX + size.width > maxWidth {
+                    currentX = 0
+                    currentY += rowHeight + verticalSpacing
+                    rowHeight = 0
+                }
+
+                rowHeight = max(rowHeight, size.height)
+                currentX += size.width
+                usedWidth = max(usedWidth, currentX)
+
+                if index != subviews.count - 1 {
+                    currentX += horizontalSpacing
+                }
+            }
+
+            return CGSize(
+                width: min(usedWidth, maxWidth),
+                height: currentY + rowHeight
+            )
+        }
+
+        func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+            guard !subviews.isEmpty else { return }
+
+            var x = bounds.minX
+            var y = bounds.minY
+            var rowHeight: CGFloat = 0
+
+            let widthProposal: CGFloat? = bounds.width.isFinite ? bounds.width : nil
+
+            for (index, subview) in subviews.enumerated() {
+                let size = subview.sizeThatFits(
+                    ProposedViewSize(width: widthProposal, height: nil)
+                )
+                if x > bounds.minX && x + size.width > bounds.maxX {
+                    x = bounds.minX
+                    y += rowHeight + verticalSpacing
+                    rowHeight = 0
+                }
+
+                subview.place(
+                    at: CGPoint(x: x, y: y),
+                    proposal: ProposedViewSize(width: size.width, height: size.height)
+                )
+                x += size.width
+                rowHeight = max(rowHeight, size.height)
+
+                if index != subviews.count - 1 {
+                    x += horizontalSpacing
+                }
+            }
+        }
+    }
+
+    private var sectionBorderColor: Color {
+        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.05)
+    }
+
+    private var cardBorderColor: Color {
+        colorScheme == .dark ? Color.white.opacity(0.12) : Color.black.opacity(0.08)
     }
 
     private func allowedUTTypes() -> [UTType] {
@@ -456,7 +803,7 @@ struct VisionStoredPanel: View {
                 let sizeBytes = Int64(model.sizeGB * 1_073_741_824.0)
                 let ctx = Int(settings.contextLength)
                 let layerHint: Int? = model.totalLayers > 0 ? model.totalLayers : nil
-                if !ModelRAMAdvisor.fitsInRAM(format: model.format, sizeBytes: sizeBytes, contextLength: ctx, layerCount: layerHint) {
+                if !ModelRAMAdvisor.fitsInRAM(format: model.format, sizeBytes: sizeBytes, contextLength: ctx, layerCount: layerHint, moeInfo: model.moeInfo) {
                     vm.loadError = "Model likely exceeds memory budget. Lower context size or use a smaller quant/model."
                     loadingModelID = nil
                     return

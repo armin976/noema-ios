@@ -8,13 +8,20 @@ import QuickLook
 
 struct DatasetFileViewer: View {
     let url: URL
+    @Environment(\.dismiss) private var dismiss
     @State private var content: String = ""
     @State private var error: String?
     @State private var isMarkdown = false
     private var isPDF: Bool { url.pathExtension.lowercased() == "pdf" }
     private var isEPUB: Bool { url.pathExtension.lowercased() == "epub" }
 
-    var body: some View { contentView.navigationTitle(url.lastPathComponent) }
+    var body: some View {
+        contentView
+            .navigationTitle(url.lastPathComponent)
+#if os(macOS)
+            .overlay(alignment: .topLeading) { macBackButton }
+#endif
+    }
 
     @ViewBuilder
     private var contentView: some View {
@@ -191,20 +198,65 @@ private struct QLPreviewRepresentableMac: NSViewControllerRepresentable {
 
 final class QLPreviewPanelHostController: NSViewController, QLPreviewPanelDataSource, QLPreviewPanelDelegate {
     let url: URL
+    private weak var panel: QLPreviewPanel?
+
     init(url: URL) { self.url = url; super.init(nibName: nil, bundle: nil) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    // MARK: View lifecycle
     override func viewDidAppear() {
         super.viewDidAppear()
-        if let panel = QLPreviewPanel.shared() {
-            panel.dataSource = self
-            panel.delegate = self
-            panel.makeKeyAndOrderFront(nil)
+        // Acquire the shared panel and present it; set delegates explicitly.
+        if let p = QLPreviewPanel.shared() {
+            panel = p
+            p.dataSource = self
+            p.delegate = self
+            p.makeKeyAndOrderFront(nil)
         }
     }
+
+    override func viewWillDisappear() {
+        super.viewWillDisappear()
+        // Ensure the panel is dismissed and delegates are released to break retain cycles.
+        if let p = panel, p.isVisible {
+            p.orderOut(nil)
+        }
+        panel?.dataSource = nil
+        panel?.delegate = nil
+        panel = nil
+    }
+
+    deinit {
+        // Defensive cleanup in case viewWillDisappear wasn’t called.
+        if let p = QLPreviewPanel.shared(), (p.delegate === self || p.dataSource === self) {
+            p.dataSource = nil
+            p.delegate = nil
+        }
+    }
+
+    // MARK: QLPreviewPanelDataSource
     func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int { 1 }
     func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem {
         return url as NSURL
     }
 }
 #endif
+#endif
+
+#if os(macOS)
+private extension DatasetFileViewer {
+    var macBackButton: some View {
+        Button {
+            dismiss()
+        } label: {
+            Label(LocalizedStringKey("Back"), systemImage: "chevron.left")
+                .labelStyle(.titleAndIcon)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .padding(.leading, 12)
+        .padding(.top, 12)
+        .background(.thinMaterial, in: Capsule())
+    }
+}
 #endif

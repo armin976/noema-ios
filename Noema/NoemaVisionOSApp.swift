@@ -3,6 +3,7 @@ import SwiftUI
 import RealityKit
 import UIKit
 import simd
+import Combine
 
 // Allow conditional availability within SceneBuilder closures (e.g., if #available).
 extension SceneBuilder {
@@ -19,18 +20,279 @@ enum VisionWindowMode {
 enum VisionSceneID {
     static let planarWindow = "com.noema.vision.planar"
     static let storedPanelWindow = "com.noema.vision.stored"
+    static let pinnedCardWindow = "com.noema.vision.pinnedCard"
 }
 
-private struct VisionPinnedNote: Identifiable, Hashable {
+struct VisionPinnedNote: Identifiable, Hashable, Codable {
     let id: UUID
     let text: String
     let createdAt: Date
+    let sessionID: UUID
+    let messageID: UUID
+    let anchorID: UUID
+    var storedTransform: simd_float4x4?
 
-    init(id: UUID = UUID(), text: String, createdAt: Date = Date()) {
+    init(
+        id: UUID = UUID(),
+        text: String,
+        createdAt: Date = Date(),
+        sessionID: UUID,
+        messageID: UUID,
+        anchorID: UUID = UUID(),
+        storedTransform: simd_float4x4? = nil
+    ) {
         self.id = id
         self.text = text
         self.createdAt = createdAt
+        self.sessionID = sessionID
+        self.messageID = messageID
+        self.anchorID = anchorID
+        self.storedTransform = storedTransform
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case text
+        case createdAt
+        case sessionID
+        case messageID
+        case anchorID
+        case storedTransform
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        text = try container.decode(String.self, forKey: .text)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        sessionID = try container.decode(UUID.self, forKey: .sessionID)
+        messageID = try container.decode(UUID.self, forKey: .messageID)
+        anchorID = try container.decode(UUID.self, forKey: .anchorID)
+        if let matrixArray = try container.decodeIfPresent([Float].self, forKey: .storedTransform), matrixArray.count == 16 {
+            storedTransform = simd_float4x4(
+                SIMD4(matrixArray[0], matrixArray[1], matrixArray[2], matrixArray[3]),
+                SIMD4(matrixArray[4], matrixArray[5], matrixArray[6], matrixArray[7]),
+                SIMD4(matrixArray[8], matrixArray[9], matrixArray[10], matrixArray[11]),
+                SIMD4(matrixArray[12], matrixArray[13], matrixArray[14], matrixArray[15])
+            )
+        } else {
+            storedTransform = nil
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(text, forKey: .text)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(sessionID, forKey: .sessionID)
+        try container.encode(messageID, forKey: .messageID)
+        try container.encode(anchorID, forKey: .anchorID)
+        if let storedTransform {
+            try container.encode(Self.flattenedTransform(storedTransform), forKey: .storedTransform)
+        }
+    }
+
+    static func == (lhs: VisionPinnedNote, rhs: VisionPinnedNote) -> Bool {
+        lhs.id == rhs.id &&
+        lhs.text == rhs.text &&
+        lhs.createdAt == rhs.createdAt &&
+        lhs.sessionID == rhs.sessionID &&
+        lhs.messageID == rhs.messageID &&
+        lhs.anchorID == rhs.anchorID &&
+        lhs.flattenedStoredTransform == rhs.flattenedStoredTransform
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(text)
+        hasher.combine(createdAt)
+        hasher.combine(sessionID)
+        hasher.combine(messageID)
+        hasher.combine(anchorID)
+        if let flattened = flattenedStoredTransform {
+            hasher.combine(flattened.count)
+            flattened.forEach { hasher.combine($0) }
+        } else {
+            hasher.combine(0)
+        }
+    }
+
+    private var flattenedStoredTransform: [Float]? {
+        guard let storedTransform else { return nil }
+        return Self.flattenedTransform(storedTransform)
+    }
+
+    private static func flattenedTransform(_ matrix: simd_float4x4) -> [Float] {
+        let column0 = matrix.columns.0
+        let column1 = matrix.columns.1
+        let column2 = matrix.columns.2
+        let column3 = matrix.columns.3
+        return [
+            column0.x, column0.y, column0.z, column0.w,
+            column1.x, column1.y, column1.z, column1.w,
+            column2.x, column2.y, column2.z, column2.w,
+            column3.x, column3.y, column3.z, column3.w
+        ]
+    }
+}
+
+@MainActor
+final class VisionPinnedNoteStore: ObservableObject {
+    @Published private(set) var notes: [VisionPinnedNote] = []
+    private let storageKey = "com.noema.vision.pinnedNotes"
+    private var pendingTransforms: [UUID: simd_float4x4] = [:]
+    private var lastPersistedAt: [UUID: Date] = [:]
+    private let transformEpsilon: Float = 1e-4
+    private let minPersistenceInterval: TimeInterval = 0.35
+
+    init() {
+        load()
+    }
+
+    func note(withID id: UUID) -> VisionPinnedNote? {
+        notes.first { $0.id == id }
+    }
+
+    @discardableResult
+    func pin(message: ChatVM.Msg, in sessionID: UUID) -> VisionPinnedNote {
+        let sanitized = sanitizedPinnedContent(from: message)
+        if let index = notes.firstIndex(where: { $0.messageID == message.id && $0.sessionID == sessionID }) {
+            if notes[index].text != sanitized {
+                notes[index] = VisionPinnedNote(
+                    id: notes[index].id,
+                    text: sanitized,
+                    createdAt: notes[index].createdAt,
+                    sessionID: sessionID,
+                    messageID: message.id,
+                    anchorID: notes[index].anchorID,
+                    storedTransform: notes[index].storedTransform
+                )
+                save()
+            }
+            primePersistenceMetadata(for: notes[index])
+            return notes[index]
+        }
+
+        let note = VisionPinnedNote(text: sanitized, sessionID: sessionID, messageID: message.id)
+        notes.append(note)
+        save()
+        primePersistenceMetadata(for: note)
+        return note
+    }
+
+    func remove(noteID: UUID) {
+        notes.removeAll { $0.id == noteID }
+        pendingTransforms.removeValue(forKey: noteID)
+        lastPersistedAt.removeValue(forKey: noteID)
+        save()
+    }
+
+    func updateTransform(for noteID: UUID, transform: simd_float4x4) {
+        guard let index = notes.firstIndex(where: { $0.id == noteID }) else { return }
+        primePersistenceMetadata(for: notes[index])
+
+        if let stored = notes[index].storedTransform, stored.isApproximatelyEqual(to: transform, tolerance: transformEpsilon) {
+            pendingTransforms.removeValue(forKey: noteID)
+            return
+        }
+
+        pendingTransforms[noteID] = transform
+
+        let now = Date()
+        if let lastPersisted = lastPersistedAt[noteID], now.timeIntervalSince(lastPersisted) < minPersistenceInterval {
+            return
+        }
+
+        let transformToPersist = pendingTransforms.removeValue(forKey: noteID) ?? transform
+        notes[index].storedTransform = transformToPersist
+        lastPersistedAt[noteID] = now
+        save()
+    }
+
+    private func load() {
+        guard let data = UserDefaults.standard.data(forKey: storageKey) else { return }
+        if let decoded = try? JSONDecoder().decode([VisionPinnedNote].self, from: data) {
+            let sanitizedNotes = decoded.map { sanitizeIfNeeded($0) }
+            notes = sanitizedNotes
+            sanitizedNotes.forEach { primePersistenceMetadata(for: $0) }
+        }
+    }
+
+    private func save() {
+        guard let data = try? JSONEncoder().encode(notes) else { return }
+        UserDefaults.standard.set(data, forKey: storageKey)
+    }
+
+    private func sanitizeIfNeeded(_ note: VisionPinnedNote) -> VisionPinnedNote {
+        let cleaned = sanitizedPinnedContent(from: note.text)
+        guard cleaned != note.text else { return note }
+        return VisionPinnedNote(
+            id: note.id,
+            text: cleaned,
+            createdAt: note.createdAt,
+            sessionID: note.sessionID,
+            messageID: note.messageID,
+            anchorID: note.anchorID,
+            storedTransform: note.storedTransform
+        )
+    }
+
+    private func sanitizedPinnedContent(from message: ChatVM.Msg) -> String {
+        sanitizedPinnedContent(from: message.text)
+    }
+
+    private func sanitizedPinnedContent(from rawText: String) -> String {
+        let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+
+        if let closingThink = trimmed.range(of: "</think>", options: .backwards) {
+            let afterThink = trimmed[closingThink.upperBound...]
+            let trailing = afterThink.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trailing.isEmpty {
+                let stripped = stripThinkTags(from: String(trailing))
+                if !stripped.isEmpty { return stripped }
+            }
+        }
+
+        return stripThinkTags(from: trimmed)
+    }
+
+    private func stripThinkTags(from text: String) -> String {
+        var result = text
+        while let open = result.range(of: "<think>"),
+              let close = result.range(of: "</think>", range: open.upperBound..<result.endIndex) {
+            result.removeSubrange(open.lowerBound..<close.upperBound)
+        }
+        result = result.replacingOccurrences(of: "<think>", with: "")
+        result = result.replacingOccurrences(of: "</think>", with: "")
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func primePersistenceMetadata(for note: VisionPinnedNote) {
+        if lastPersistedAt[note.id] == nil {
+            lastPersistedAt[note.id] = .distantPast
+        }
+        if let transform = note.storedTransform, pendingTransforms[note.id] == nil {
+            pendingTransforms[note.id] = transform
+        }
+    }
+}
+
+private extension simd_float4x4 {
+    func isApproximatelyEqual(to other: simd_float4x4, tolerance: Float) -> Bool {
+        let delta0 = abs(columns.0 - other.columns.0)
+        let delta1 = abs(columns.1 - other.columns.1)
+        let delta2 = abs(columns.2 - other.columns.2)
+        let delta3 = abs(columns.3 - other.columns.3)
+        let firstPair = max(delta0.maxComponent, delta1.maxComponent)
+        let secondPair = max(delta2.maxComponent, delta3.maxComponent)
+        return max(firstPair, secondPair) <= tolerance
+    }
+}
+
+private extension SIMD4 where Scalar == Float {
+    var maxComponent: Float { max(max(x, y), max(z, w)) }
 }
 
 struct NoemaVisionMainScene: SwiftUI.Scene {
@@ -40,17 +302,12 @@ struct NoemaVisionMainScene: SwiftUI.Scene {
     @StateObject private var datasetManager = DatasetManager()
     @StateObject private var downloadController = DownloadController()
     @StateObject private var walkthroughManager = GuidedWalkthroughManager()
+    @StateObject private var localizationManager = LocalizationManager()
     @State private var immersiveSpaceActive = false
-    @State private var pinnedNotes: [VisionPinnedNote] = []
+    @StateObject private var pinnedStore = VisionPinnedNoteStore()
     @AppStorage("appearance") private var appearance = "system"
 
-    private var colorScheme: ColorScheme? {
-        switch appearance {
-        case "light": return .light
-        case "dark": return .dark
-        default: return nil
-        }
-    }
+    private var colorScheme: ColorScheme? { VisionAppearance.forcedScheme(for: appearance) }
 
     private func storedPanelView() -> some View {
         StoredPanelWindow()
@@ -60,7 +317,10 @@ struct NoemaVisionMainScene: SwiftUI.Scene {
             .environmentObject(datasetManager)
             .environmentObject(downloadController)
             .environmentObject(walkthroughManager)
-            .preferredColorScheme(colorScheme)
+            .environmentObject(pinnedStore)
+            .environmentObject(localizationManager)
+            .environment(\.locale, localizationManager.locale)
+            .visionAppearance(colorScheme)
     }
 
     @SceneBuilder
@@ -75,18 +335,27 @@ struct NoemaVisionMainScene: SwiftUI.Scene {
                 downloadController: downloadController,
                 walkthroughManager: walkthroughManager,
                 immersiveSpaceActive: $immersiveSpaceActive,
-                pinnedNotes: $pinnedNotes
+                pinnedStore: pinnedStore,
+                localizationManager: localizationManager
             )
-            .preferredColorScheme(colorScheme)
+            .environmentObject(localizationManager)
+            .environment(\.locale, localizationManager.locale)
+            .visionAppearance(colorScheme)
         }
         .defaultSize(width: 1100, height: 840)
 
         storedPanelScene
 
+        pinnedCardScene
+
         ImmersiveSpace(id: VisionImmersiveView.spaceID) {
-            VisionImmersiveView(isActive: $immersiveSpaceActive, pinnedNotes: $pinnedNotes)
+            VisionImmersiveView(isActive: $immersiveSpaceActive)
                 .environmentObject(chatVM)
                 .environmentObject(modelManager)
+                .environmentObject(pinnedStore)
+                .environmentObject(localizationManager)
+                .environment(\.locale, localizationManager.locale)
+                .visionAppearance(colorScheme)
         }
     }
 
@@ -97,6 +366,24 @@ struct NoemaVisionMainScene: SwiftUI.Scene {
         .defaultSize(width: 420, height: 560)
         .windowResizability(.contentSize)
         .windowStyle(.plain)
+    }
+
+    private var pinnedCardScene: some SwiftUI.Scene {
+        WindowGroup(id: VisionSceneID.pinnedCardWindow, for: UUID.self) { binding in
+            if let noteID = binding.wrappedValue, let note = pinnedStore.note(withID: noteID) {
+                VisionPinnedCardWindow(note: note)
+                    .environmentObject(pinnedStore)
+                    .environmentObject(chatVM)
+                    .environmentObject(tabRouter)
+                    .visionAppearance(colorScheme)
+            } else {
+                Text("Pinned answer unavailable")
+                    .padding()
+            }
+        }
+        .windowStyle(.volumetric)
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 0.55, height: 0.22, depth: 0.05)
     }
 }
 
@@ -109,7 +396,8 @@ private struct VisionMainContainer: View {
     @ObservedObject var downloadController: DownloadController
     @ObservedObject var walkthroughManager: GuidedWalkthroughManager
     @Binding var immersiveSpaceActive: Bool
-    @Binding var pinnedNotes: [VisionPinnedNote]
+    @ObservedObject var pinnedStore: VisionPinnedNoteStore
+    @ObservedObject var localizationManager: LocalizationManager
     @State private var immersiveError: String?
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
@@ -138,6 +426,9 @@ private struct VisionMainContainer: View {
             downloadController: downloadController,
             walkthroughManager: walkthroughManager
         )
+        .environmentObject(pinnedStore)
+        .environmentObject(localizationManager)
+        .environment(\.locale, localizationManager.locale)
     }
 
     @ViewBuilder
@@ -147,13 +438,99 @@ private struct VisionMainContainer: View {
 
 }
 
+private struct VisionPinnedCardWindow: View {
+    @EnvironmentObject private var pinnedStore: VisionPinnedNoteStore
+    @EnvironmentObject private var chatVM: ChatVM
+    @EnvironmentObject private var tabRouter: TabRouter
+    @Environment(\.dismiss) private var dismiss
+    let note: VisionPinnedNote
+
+    private var formattedDate: String {
+        note.createdAt.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Pinned answer")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(formattedDate)
+                    .font(.footnote)
+                    .foregroundStyle(.tertiary)
+            }
+
+            ScrollView {
+                MathRichText(source: note.text, bodyFont: .title3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 4)
+                    .padding(.bottom, 8)
+            }
+            .frame(minHeight: 0, maxHeight: .infinity)
+        }
+        .padding(.vertical, 24)
+        .padding(.horizontal, 28)
+        .frame(
+            minWidth: 480,
+            idealWidth: 620,
+            maxWidth: 1300,
+            minHeight: 220,
+            idealHeight: 360,
+            maxHeight: 900
+        )
+        .glassBackgroundEffect()
+        .background(
+            .ultraThinMaterial,
+            in: RoundedRectangle(cornerRadius: 36, style: .continuous)
+        )
+        .overlay(alignment: .topTrailing) { overlayButtons }
+    }
+
+    private var overlayButtons: some View {
+        HStack(spacing: 12) {
+            Button(action: openChat) {
+                Label("View in Chat", systemImage: "arrow.turn.up.left")
+                    .labelStyle(.titleAndIcon)
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.thinMaterial, in: Capsule())
+            }
+            .buttonStyle(.plain)
+
+            Button(action: closeWindow) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 24, weight: .bold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close pinned answer")
+        }
+        .padding(12)
+    }
+
+    private func openChat() {
+        tabRouter.selection = .chat
+        if let session = chatVM.sessions.first(where: { $0.id == note.sessionID }) {
+            chatVM.select(session)
+        }
+        chatVM.focus(onMessageWithID: note.messageID)
+    }
+
+    private func closeWindow() {
+        pinnedStore.remove(noteID: note.id)
+        dismiss()
+    }
+}
+
 private struct VisionImmersiveView: View {
     static let spaceID = "NoemaImmersiveSpace"
 
     @EnvironmentObject private var chatVM: ChatVM
     @EnvironmentObject private var modelManager: AppModelManager
+    @EnvironmentObject private var pinnedStore: VisionPinnedNoteStore
     @Binding var isActive: Bool
-    @Binding var pinnedNotes: [VisionPinnedNote]
     @State private var scene = VisionImmersiveScene()
 
     var body: some View {
@@ -163,12 +540,12 @@ private struct VisionImmersiveView: View {
             scene.updateOutput(text: assistantSummary)
             scene.updateShelf(with: modelManager.downloadedModels)
             scene.updateStatus(isStreaming: chatVM.isStreaming, rate: chatVM.msgs.last?.perf?.avgTokPerSec)
-            scene.updatePinnedNotes(pinnedNotes)
+            scene.updatePinnedNotes(pinnedStore.notes)
         }
         .onChange(of: modelManager.downloadedModels) { models in
             scene.updateShelf(with: models)
         }
-        .onChange(of: pinnedNotes) { notes in
+        .onReceive(pinnedStore.$notes) { notes in
             scene.updatePinnedNotes(notes)
         }
         .onAppear { isActive = true }
@@ -301,7 +678,7 @@ private final class VisionImmersiveScene {
                 pinnedParent.addChild(entity)
                 pinnedEntities[note.id] = entity
             }
-            entity.position = [0, Float(index) * 0.18, 0]
+            entity.position = [0, Float(index) * 0.22, 0]
             seen.insert(note.id)
         }
         for (id, entity) in pinnedEntities where !seen.contains(id) {
@@ -338,20 +715,20 @@ private final class VisionImmersiveScene {
     }
 
     private func makePinnedEntity(for note: VisionPinnedNote) -> Entity {
-        let card = ModelEntity(mesh: .generatePlane(width: 0.24, height: 0.14, cornerRadius: 0.03), materials: [SimpleMaterial(color: UIColor(white: 1.0, alpha: 0.28), roughness: 0.2, isMetallic: false)])
+        let card = ModelEntity(mesh: .generatePlane(width: 0.3, height: 0.18, cornerRadius: 0.035), materials: [SimpleMaterial(color: UIColor(white: 1.0, alpha: 0.3), roughness: 0.2, isMetallic: false)])
         card.generateCollisionShapes(recursive: true)
         card.components.set(InputTargetComponent())
 
-        let text = ModelEntity(mesh: MeshResource.generateText(note.text, extrusionDepth: 0.001, font: .systemFont(ofSize: 0.055, weight: .regular), containerFrame: CGRect(x: -0.11, y: -0.055, width: 0.22, height: 0.11), alignment: .left, lineBreakMode: .byWordWrapping), materials: [SimpleMaterial(color: .white, roughness: 0.1, isMetallic: false)])
+        let text = ModelEntity(mesh: MeshResource.generateText(note.text, extrusionDepth: 0.001, font: .systemFont(ofSize: 0.07, weight: .regular), containerFrame: CGRect(x: -0.135, y: -0.075, width: 0.27, height: 0.15), alignment: .left, lineBreakMode: .byWordWrapping), materials: [SimpleMaterial(color: .white, roughness: 0.1, isMetallic: false)])
         text.position = [0, 0, 0.01]
-        text.scale = [0.0013, 0.0013, 0.0013]
+        text.scale = [0.0014, 0.0014, 0.0014]
         card.addChild(text)
         return card
     }
 
     private func updatePinnedText(for entity: Entity, text: String) {
         guard let card = entity.children.first as? ModelEntity else { return }
-        card.model = ModelComponent(mesh: MeshResource.generateText(text, extrusionDepth: 0.001, font: .systemFont(ofSize: 0.055, weight: .regular), containerFrame: CGRect(x: -0.11, y: -0.055, width: 0.22, height: 0.11), alignment: .left, lineBreakMode: .byWordWrapping), materials: [SimpleMaterial(color: .white, roughness: 0.1, isMetallic: false)])
+        card.model = ModelComponent(mesh: MeshResource.generateText(text, extrusionDepth: 0.001, font: .systemFont(ofSize: 0.07, weight: .regular), containerFrame: CGRect(x: -0.135, y: -0.075, width: 0.27, height: 0.15), alignment: .left, lineBreakMode: .byWordWrapping), materials: [SimpleMaterial(color: .white, roughness: 0.1, isMetallic: false)])
     }
 }
 #endif

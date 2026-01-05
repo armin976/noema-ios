@@ -1,3 +1,4 @@
+#if canImport(UIKit)
 import UIKit
 
 #if canImport(FBSDKCoreKit) && os(iOS)
@@ -35,3 +36,4 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     }
 #endif
 }
+#endif

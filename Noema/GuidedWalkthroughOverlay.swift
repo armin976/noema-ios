@@ -1,3 +1,4 @@
+#if os(iOS) || os(macOS) || os(visionOS)
 // GuidedWalkthroughOverlay.swift
 import SwiftUI
 
@@ -159,7 +160,7 @@ struct GuidedWalkthroughOverlay: View {
             Text("A larger context keeps more conversation history, but also uses more memory. Adjust it here.")
                 .multilineTextAlignment(.center)
         case .modelSettingsDefault:
-            Text("Enable default loading so this model is ready the moment Noema launches.")
+            Text("Startup defaults now live in Settings → Startup. Favorite models here to keep them handy.")
                 .multilineTextAlignment(.center)
         case .storedDatasets:
             Text("Datasets enrich the model with focused knowledge. Toggle one on to use it in chat.")
@@ -511,3 +512,5 @@ private struct InstructionCardSizePreferenceKey: PreferenceKey {
         }
     }
 }
+
+#endif

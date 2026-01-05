@@ -4,28 +4,42 @@ import PackageDescription
 let package = Package(
     name: "NoemaPackages",
     platforms: [
-        .iOS(.v15),
-        .visionOS(.v1)
+        .iOS(.v16),
+        .visionOS(.v1),
+        .macOS(.v12),          // Align with SwiftUI APIs used in RollingThought
+        .macCatalyst(.v13)
     ],
     products: [
-        // Expose the library through this package product
         .library(name: "NoemaPackages", targets: ["NoemaPackages"]),
+        .library(name: "RelayKit", targets: ["RelayKit"]),
+        .library(name: "LlamaFrameworkProduct", targets: ["LlamaFramework"]),
     ],
     dependencies: [
         .package(path: "Sources/RollingThought"),
+        .package(path: "../NoemaLLamaServer"),
     ],
     targets: [
-        // Regular target that wraps the binary framework
         .target(
             name: "NoemaPackages",
-            dependencies: ["LlamaFramework", "RollingThought"],
+            dependencies: [
+                "RollingThought",
+                .target(
+                    name: "LlamaFramework",
+                    condition: .when(platforms: [.iOS, .visionOS, .macOS, .macCatalyst])
+                ),
+                .product(name: "NoemaLLamaServer", package: "NoemaLLamaServer"),
+            ],
             path: "Sources/NoemaPackages"
         ),
-        // Binary framework target
+        .target(
+            name: "RelayKit",
+            dependencies: [],
+            path: "Sources/RelayKit"
+        ),
         .binaryTarget(
             name: "LlamaFramework",
-            url: "https://github.com/ggml-org/llama.cpp/releases/download/b6653/llama-b6653-xcframework.zip",
-            checksum: "b39bf4e4a626130d81fff23cb3f4529c1cb807f87d6e81ccbd30ab191ca13095" // Update via: swift package compute-checksum <path>
+            url: "https://github.com/ggml-org/llama.cpp/releases/download/b7313/llama-b7313-xcframework.zip",
+            checksum: "423b0eba7ec5e3a41e678c896e2207dba9df93584d0bf567899867cf9f2c4a4f"
         )
     ]
 )

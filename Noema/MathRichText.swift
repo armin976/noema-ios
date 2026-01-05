@@ -7,6 +7,21 @@
 //  across lines.
 
 import SwiftUI
+import Foundation
+
+struct MessageHoverCopySuppressionKey: EnvironmentKey {
+    static let defaultValue: Binding<Bool>? = nil
+}
+
+extension EnvironmentValues {
+    var messageHoverCopySuppression: Binding<Bool>? {
+        get { self[MessageHoverCopySuppressionKey.self] }
+        set { self[MessageHoverCopySuppressionKey.self] = newValue }
+    }
+}
+#if os(macOS)
+import AppKit
+#endif
 
 struct MathRichText: View {
     let source: String
@@ -14,12 +29,31 @@ struct MathRichText: View {
 
     var body: some View {
         RichMathTextLabel(source: source, bodyFont: bodyFont)
+            // VoiceOver was focusing on every tiny fragment because the composed
+            // view tree breaks text into many subviews. Combine/override so the
+            // whole paragraph is a single readable element.
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityString)
+    }
+
+    private var accessibilityString: String {
+        // Flatten excessive whitespace so the spoken output is natural.
+        source.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
     }
 }
 
 private struct RichMathTextLabel: View {
     let source: String
     var bodyFont: Font
+    private var blockFontSize: CGFloat {
+#if os(macOS)
+        // Chat messages use the platform body size as the baseline. Scale block display
+        // math noticeably larger so $$ ... $$ content stands out relative to prose.
+        return preferredFontSize(.body) * 1.5
+#else
+        return preferredFontSize(.title3)
+#endif
+    }
 
     var body: some View {
         enum Segment { case inline([MathToken]); case block(String); case incomplete(String) }
@@ -58,7 +92,14 @@ private struct RichMathTextLabel: View {
                     let paragraphs = normalized.components(separatedBy: "\n\n")
                     for (idx, para) in paragraphs.enumerated() {
                         let inlinePara = para.replacingOccurrences(of: "\n", with: " ")
-                        if !inlinePara.isEmpty { currentInline.append(.text(inlinePara)) }
+                        if !inlinePara.isEmpty {
+                            let split = MathTokenizer.splitHeuristicInlineLatex(in: inlinePara)
+                            if split.isEmpty {
+                                currentInline.append(.text(inlinePara))
+                            } else {
+                                currentInline.append(contentsOf: split)
+                            }
+                        }
                         if idx < paragraphs.count - 1 { flushInline() }
                     }
                 }
@@ -67,26 +108,49 @@ private struct RichMathTextLabel: View {
             return out
         }()
 
-        return VStack(alignment: .leading, spacing: 0) {
+        let view = VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(segments.enumerated()), id: \.offset) { _, seg in
                 switch seg {
                 case .inline(let inlineTokens):
                     InlineLine(tokens: inlineTokens, bodyFont: bodyFont)
                 case .block(let latex):
-                    BlockMathView(latex: latex)
+#if os(macOS)
+                    MacLatexHoverCopy(latex: latex) {
+                        BlockMathView(latex: latex, fontSize: blockFontSize)
+                    }
+#else
+                    BlockMathView(latex: latex, fontSize: blockFontSize)
+#endif
                 case .incomplete(let raw):
                     Text(raw)
                         .foregroundStyle(Color.red)
                 }
             }
         }
+
+#if os(macOS)
+        return view.textSelection(.enabled)
+#else
+        return view
+#endif
     }
 }
 
 private struct InlineLine: View {
     let tokens: [MathToken]
     var bodyFont: Font
-    @ScaledMetric(relativeTo: .body) private var inlineSize: CGFloat = UIFont.preferredFont(forTextStyle: .body).pointSize
+    @ScaledMetric(wrappedValue: preferredFontSize(.body), relativeTo: .body) private var inlineSize: CGFloat
+
+    init(tokens: [MathToken], bodyFont: Font) {
+        self.tokens = tokens
+        self.bodyFont = bodyFont
+#if os(macOS)
+        let baseSize = preferredFontSize(.body) * 1.4
+#else
+        let baseSize = preferredFontSize(.body)
+#endif
+        _inlineSize = ScaledMetric(wrappedValue: baseSize, relativeTo: .body)
+    }
 
     var body: some View {
         // Wrap inline runs naturally across lines using Text + inline images/views
@@ -114,6 +178,60 @@ private struct InlineLine: View {
         return out
     }
 }
+
+#if os(macOS)
+private struct MacLatexHoverCopy<Content: View>: View {
+    let latex: String
+    let content: () -> Content
+    @State private var isHovering = false
+    @State private var copied = false
+    @Environment(\.messageHoverCopySuppression) private var messageHoverCopySuppression
+
+    var body: some View {
+        content()
+            .overlay(alignment: .topTrailing) {
+                if isHovering {
+                    Button(action: copyLatexToPasteboard) {
+                        Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 12, weight: .semibold))
+                            .labelStyle(.titleAndIcon)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .foregroundStyle(Color.accentColor)
+                            .background(.thinMaterial, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(6)
+                    .transition(.opacity.combined(with: .scale))
+                    .accessibilityLabel("Copy LaTeX")
+                }
+            }
+            .onHover { hovering in
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    isHovering = hovering
+                }
+                messageHoverCopySuppression?.wrappedValue = hovering
+                if !hovering {
+                    copied = false
+                }
+            }
+    }
+
+    private func copyLatexToPasteboard() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(latex, forType: .string)
+        withAnimation(.easeInOut(duration: 0.16)) {
+            copied = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                copied = false
+            }
+        }
+    }
+}
+#endif
 
 private struct WrappedInline: View {
     let runs: [MathToken]
@@ -207,11 +325,19 @@ private struct WrappedInline: View {
                 case .text(let s):
                     if !s.isEmpty {
                         let parts = splitMarkdownFragments(s)
+#if os(macOS)
+                        let combined = parts.reduce(into: AttributedString()) { $0 += $1 }
+                        if !combined.characters.isEmpty {
+                            Text(combined)
+                                .multilineTextAlignment(.leading)
+                        }
+#else
                         ForEach(Array(parts.enumerated()), id: \.offset) { _, frag in
                             Text(frag)
                                 .lineLimit(1)
                                 .fixedSize(horizontal: true, vertical: true)
                         }
+#endif
                     }
                 case .inline(let latex):
                     InlineMathView(latex: latex, fontSize: fontSize)
@@ -254,77 +380,110 @@ private struct InlineWrap: Layout {
         #endif
     }
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let maxWidth = proposal.width ?? fallbackWidth
-        var cursorX: CGFloat = 0
-        var totalHeight: CGFloat = 0
-        var lineHeight: CGFloat = 0
+    private struct LineItem {
+        let index: Int
+        let size: CGSize
+        let baseline: CGFloat?
+    }
 
-        func measure(_ i: Int, width: CGFloat) -> CGSize {
-            subviews[i].sizeThatFits(ProposedViewSize(width: width, height: nil))
+    private struct Line {
+        var items: [LineItem] = []
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+        var baseline: CGFloat? = nil
+    }
+
+    private func measure(_ subview: LayoutSubview, width: CGFloat) -> (CGSize, CGFloat?) {
+        let proposed = ProposedViewSize(width: width, height: nil)
+        let size = subview.sizeThatFits(proposed)
+        let dims = subview.dimensions(in: ProposedViewSize(width: size.width, height: size.height))
+        let baseline = dims[VerticalAlignment.firstTextBaseline]
+        let validBaseline = baseline.isFinite ? baseline : nil
+        return (size, validBaseline)
+    }
+
+    private func buildLines(subviews: Subviews, maxWidth: CGFloat) -> [Line] {
+        var lines: [Line] = []
+        var current = Line()
+        var cursorX: CGFloat = 0
+
+        func pushLine() {
+            guard !current.items.isEmpty else { return }
+            let maxBaseline = current.items.compactMap { $0.baseline }.max()
+            let maxDescent = current.items.compactMap { item -> CGFloat? in
+                guard let base = item.baseline else { return nil }
+                return item.size.height - base
+            }.max()
+            let maxHeight = current.items.map(\.size.height).max() ?? 0
+            if let base = maxBaseline, let desc = maxDescent {
+                current.baseline = base
+                current.height = max(maxHeight, base + desc)
+            } else {
+                current.baseline = nil
+                current.height = maxHeight
+            }
+            current.width = max(0, cursorX - spacing)
+            lines.append(current)
+            current = Line()
+            cursorX = 0
         }
 
-        for i in subviews.indices {
+        for index in subviews.indices {
             let available = maxWidth.isFinite ? max(0, maxWidth - cursorX) : .infinity
 
-            // If the remaining space is too small to render readable text,
-            // wrap before measuring this element so it gets full line width.
             if minResidualWrapWidth > 0 && maxWidth.isFinite && cursorX > 0 && available < minResidualWrapWidth {
-                cursorX = 0
-                totalHeight += lineHeight + lineSpacing
-                lineHeight = 0
+                pushLine()
             }
 
-            var size = measure(i, width: max(0, maxWidth - cursorX))
+            var (size, baseline) = measure(subviews[index], width: max(0, maxWidth - cursorX))
             if maxWidth.isFinite && cursorX > 0 && size.width > available + 0.5 {
-                // wrap
-                cursorX = 0
-                totalHeight += lineHeight + lineSpacing
-                lineHeight = 0
-                size = measure(i, width: maxWidth)
+                pushLine()
+                (size, baseline) = measure(subviews[index], width: maxWidth)
             }
-            cursorX += size.width + spacing
-            lineHeight = max(lineHeight, size.height)
-        }
 
-        let finalHeight = totalHeight + lineHeight
-        let finalWidth = maxWidth
-        return CGSize(width: finalWidth, height: finalHeight)
+            current.items.append(LineItem(index: index, size: size, baseline: baseline))
+            cursorX += size.width + spacing
+        }
+        pushLine()
+        return lines
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? fallbackWidth
+        let lines = buildLines(subviews: subviews, maxWidth: maxWidth)
+
+        var totalHeight: CGFloat = 0
+        for (idx, line) in lines.enumerated() {
+            totalHeight += line.height
+            if idx < lines.count - 1 { totalHeight += lineSpacing }
+        }
+        return CGSize(width: maxWidth, height: totalHeight)
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         let maxWidth = bounds.width > 0 ? bounds.width : fallbackWidth
-        var cursorX: CGFloat = 0
-        var cursorY: CGFloat = bounds.minY
-        var lineHeight: CGFloat = 0
+        let lines = buildLines(subviews: subviews, maxWidth: maxWidth)
 
-        func measure(_ i: Int, width: CGFloat) -> CGSize {
-            subviews[i].sizeThatFits(ProposedViewSize(width: width, height: nil))
-        }
+        var cursorY = bounds.minY
+        for line in lines {
+            let baselineY: CGFloat = {
+                if let base = line.baseline { return cursorY + base }
+                return cursorY + (line.height / 2)
+            }()
 
-        for i in subviews.indices {
-            let available = max(0, maxWidth - cursorX)
-
-            // Pre-wrap if the remaining space is too small for readable text
-            if minResidualWrapWidth > 0 && cursorX > 0 && available < minResidualWrapWidth {
-                cursorX = 0
-                cursorY += lineHeight + lineSpacing
-                lineHeight = 0
+            var cursorX = bounds.minX
+            for item in line.items {
+                let y: CGFloat
+                if let itemBaseline = item.baseline, let lineBaseline = line.baseline {
+                    y = baselineY - itemBaseline
+                } else {
+                    y = cursorY + (line.height - item.size.height) / 2
+                }
+                subviews[item.index].place(at: CGPoint(x: cursorX, y: y),
+                                           proposal: ProposedViewSize(width: item.size.width, height: item.size.height))
+                cursorX += item.size.width + spacing
             }
-
-            var size = measure(i, width: max(0, maxWidth - cursorX))
-            if cursorX > 0 && size.width > available + 0.5 {
-                // wrap
-                cursorX = 0
-                cursorY += lineHeight + lineSpacing
-                lineHeight = 0
-                size = measure(i, width: maxWidth)
-            }
-            let origin = CGPoint(x: bounds.minX + cursorX, y: cursorY)
-            subviews[i].place(at: origin, proposal: ProposedViewSize(width: size.width, height: size.height))
-            cursorX += size.width + spacing
-            lineHeight = max(lineHeight, size.height)
+            cursorY += line.height + lineSpacing
         }
     }
 }
-

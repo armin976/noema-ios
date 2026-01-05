@@ -2,7 +2,9 @@
 import Foundation
 import CryptoKit
 import Security
+#if canImport(UIKit)
 import UIKit
+#endif
 import Darwin
 
 public struct UsageLimiterConfig {
@@ -52,6 +54,7 @@ public struct SystemTimeProvider: TimeProvider {
     public func now() -> Date { Date() }
     public func uptimeSeconds() -> TimeInterval { ProcessInfo.processInfo.systemUptime }
     public func currentIDFV() -> String? {
+#if canImport(UIKit)
         // Access UIDevice.identifierForVendor via Objective-C runtime to avoid main-actor isolation warnings.
         guard let uidClass: AnyClass = NSClassFromString("UIDevice") else { return nil }
         let selectorCurrent = NSSelectorFromString("currentDevice")
@@ -64,6 +67,9 @@ public struct SystemTimeProvider: TimeProvider {
         if let uuid = idfvObj as? UUID { return uuid.uuidString }
         if let nsuuid = idfvObj as? NSUUID { return nsuuid.uuidString }
         return nil
+#else
+        return nil
+#endif
     }
 }
 
@@ -626,5 +632,3 @@ public final class UsageLimiter: @unchecked Sendable {
         #endif
     }
 }
-
-

@@ -14,4 +14,24 @@ enum ModelScanner {
             return 0
         }
     }
+
+    static func moeInfo(for url: URL, format: ModelFormat) -> MoEInfo? {
+        switch format {
+        case .gguf:
+            var target = url
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: target.path, isDirectory: &isDir), isDir.boolValue {
+                if let gguf = try? FileManager.default
+                    .contentsOfDirectory(at: target, includingPropertiesForKeys: nil)
+                    .first(where: { $0.pathExtension.lowercased() == "gguf" }) {
+                    target = gguf
+                }
+            }
+            return GGUFMetadata.moeInfo(at: target)
+        case .mlx:
+            return MLXMetadata.moeInfo(at: url)
+        case .slm, .apple:
+            return nil
+        }
+    }
 }

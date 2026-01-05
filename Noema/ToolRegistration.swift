@@ -163,28 +163,34 @@ public final class ToolManager {
 
 // MARK: - Integration Helper
 
+#if os(iOS) || os(visionOS)
 extension ChatVM {
-    
+
     func initializeToolSystem() {
         Task { @MainActor in
             await ToolRegistrar.shared.initializeTools()
             await logger.log("[ChatVM] Tool system initialized")
         }
     }
-    
+
     func runToolEnabledGeneration(prompt: String) async throws -> String {
         // This would integrate with the existing ChatVM to use tools
         var messages = [
             ToolChatMessage.system("You are a helpful assistant with access to tools."),
             ToolChatMessage.user(prompt)
         ]
-        
+
         // Get the current backend and create a tool-capable version
         // This would need to be integrated with the existing backend system
-        
+
         await logger.log("[ChatVM] Running tool-enabled generation for: \(prompt.prefix(100))...")
-        
+
         // For now, return a placeholder
         return "Tool-enabled generation not yet integrated with ChatVM"
     }
 }
+#elseif os(macOS)
+extension ChatVM {
+    func initializeToolSystem() { }
+}
+#endif

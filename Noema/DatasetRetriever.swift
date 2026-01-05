@@ -16,6 +16,11 @@ actor DatasetRetriever {
     }
     private var cache: [String: [Chunk]] = [:]
 
+    /// Drops any in-memory chunk cache. Safe to call on memory pressure; on-disk vectors remain.
+    func clearCache() {
+        cache.removeAll(keepingCapacity: false)
+    }
+
     /// Purges any in-memory and on-disk embeddings for a dataset ID
     func purge(datasetID: String) {
         cache[datasetID] = nil
@@ -88,14 +93,18 @@ actor DatasetRetriever {
         let fm = FileManager.default
         // Collect eligible file URLs synchronously so we don't hold the enumerator
         // across suspension points when computing embeddings.
+        let excludedBasenames: Set<String> = ["vectors.json", "extracted.txt", "extracted.compact.txt", "title.txt"]
         var urls: [URL] = []
         if let enumerator = fm.enumerator(at: dataset.url, includingPropertiesForKeys: [.isRegularFileKey]) {
             while let url = enumerator.nextObject() as? URL {
+                let base = url.lastPathComponent
+                if excludedBasenames.contains(base) { continue }
                 let ext = url.pathExtension.lowercased()
                 guard ["txt", "md", "json", "jsonl", "csv", "tsv", "pdf", "epub"].contains(ext) else { continue }
                 urls.append(url)
             }
         }
+        urls.sort { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
         for url in urls {
             if Task.isCancelled { throw CancellationError() }
             let ext = url.pathExtension.lowercased()
@@ -275,27 +284,27 @@ actor DatasetRetriever {
                 Task { await logger.log("[RAG] extract.begin") }
                 if let progress { await progress(DatasetProcessingStatus(stage: .extracting, progress: 0.0, message: "Extracting text from files (images ignored)", etaSeconds: nil)) }
                 let t0 = Date()
-                let extracted = try await extractPlainText(from: dataset) { frac in
+                try await extractPlainText(from: dataset, writingTo: extractedURL) { frac in
                     Task { @MainActor in
                         let dt = Date().timeIntervalSince(t0)
                         let eta = frac > 0 ? dt * (1.0 / frac - 1.0) : nil
                         progress?(DatasetProcessingStatus(stage: .extracting, progress: frac, message: "Extracting text from files (images ignored)", etaSeconds: eta))
                     }
                 }
-                try? extracted.data(using: .utf8)?.write(to: extractedURL)
-                Task { await logger.log("[RAG] extract.done size=\(extracted.count)B dt=\(String(format: "%.2f", Date().timeIntervalSince(t0)))s") }
+                let extractedBytes = (try? FileManager.default.attributesOfItem(atPath: extractedURL.path)[.size] as? NSNumber)?.int64Value ?? 0
+                Task { await logger.log("[RAG] extract.done size=\(extractedBytes)B dt=\(String(format: "%.2f", Date().timeIntervalSince(t0)))s") }
 
                 if let progress { await progress(DatasetProcessingStatus(stage: .compressing, progress: 0.0, message: "Normalizing whitespace and merging paragraphs", etaSeconds: nil)) }
                 let c0 = Date()
-                let compact = compactText(extracted) { frac in
+                try compactText(from: extractedURL, writingTo: compactURL) { frac in
                     Task { @MainActor in
                         let dt = Date().timeIntervalSince(c0)
                         let eta = frac > 0 ? dt * (1.0 / frac - 1.0) : nil
                         progress?(DatasetProcessingStatus(stage: .compressing, progress: frac, message: "Normalizing whitespace and merging paragraphs", etaSeconds: eta))
                     }
                 }
-                try? compact.data(using: .utf8)?.write(to: compactURL)
-                Task { await logger.log("[RAG] compress.done size=\(compact.count)B dt=\(String(format: "%.2f", Date().timeIntervalSince(c0)))s") }
+                let compactBytes = (try? FileManager.default.attributesOfItem(atPath: compactURL.path)[.size] as? NSNumber)?.int64Value ?? 0
+                Task { await logger.log("[RAG] compress.done size=\(compactBytes)B dt=\(String(format: "%.2f", Date().timeIntervalSince(c0)))s") }
             }
 
             // If caller asked to pause, emit an embedding gate status; otherwise continue to embeddings.
@@ -399,14 +408,20 @@ actor DatasetRetriever {
 
     // MARK: - Pipeline helpers
 
-    private func extractPlainText(from dataset: LocalDataset, onProgress: @escaping (Double) -> Void) async throws -> String {
-        var parts: [String] = []
+    private func extractPlainText(from dataset: LocalDataset, writingTo outputURL: URL, onProgress: @escaping (Double) -> Void) async throws {
         let fm = FileManager.default
+        let excludedBasenames: Set<String> = ["vectors.json", "extracted.txt", "extracted.compact.txt", "title.txt"]
         var pdfs: [URL] = []
         var epubs: [URL] = []
         var textFiles: [URL] = []
         if let enumerator = fm.enumerator(at: dataset.url, includingPropertiesForKeys: [.isRegularFileKey]) {
             while let url = enumerator.nextObject() as? URL {
+                let base = url.lastPathComponent
+                if excludedBasenames.contains(base) { continue }
+                if let values = try? url.resourceValues(forKeys: [.isRegularFileKey]),
+                   values.isRegularFile != true {
+                    continue
+                }
                 let ext = url.pathExtension.lowercased()
                 guard ["txt", "md", "json", "jsonl", "csv", "tsv", "pdf", "epub"].contains(ext) else { continue }
                 if ext == "pdf" { pdfs.append(url) }
@@ -414,69 +429,182 @@ actor DatasetRetriever {
                 else { textFiles.append(url) }
             }
         }
-        #if canImport(PDFKit)
+        let sortByName: (URL, URL) -> Bool = { a, b in
+            a.lastPathComponent.localizedStandardCompare(b.lastPathComponent) == .orderedAscending
+        }
+        pdfs.sort(by: sortByName)
+        epubs.sort(by: sortByName)
+        textFiles.sort(by: sortByName)
+
+        // Truncate/create output file
+        _ = fm.createFile(atPath: outputURL.path, contents: nil)
+        let out = try FileHandle(forWritingTo: outputURL)
+        defer { out.closeFile() }
+        func write(_ s: String) throws {
+            guard let data = s.data(using: .utf8) else { return }
+            out.write(data)
+        }
+        func writeSeparator() throws {
+            try write("\n\n")
+        }
+        let markerPrefix = "<<<FILE: "
+        let markerSuffix = ">>>"
+        func writeFileMarker(_ name: String) throws {
+            try write("\(markerPrefix)\(name)\(markerSuffix)\n")
+        }
+
         var totalPages = 0
+        #if canImport(PDFKit)
         for u in pdfs { if let doc = PDFKit.PDFDocument(url: u) { totalPages += doc.pageCount } }
+        #endif
         let totalEPUBUnits = epubs.reduce(0) { $0 + EPUBTextExtractor.countHTMLUnits(in: $1) }
-        let denomUnits = max(totalPages + totalEPUBUnits, 1)
+        let denomUnits = max(totalPages + totalEPUBUnits + textFiles.count, 1)
         var processed = 0
+
+        #if canImport(PDFKit)
         for u in pdfs {
-            if Task.isCancelled { break }
+            if Task.isCancelled { throw CancellationError() }
             if let doc = PDFKit.PDFDocument(url: u) {
-                var combined = ""
+                try writeFileMarker(u.lastPathComponent)
                 for i in 0..<doc.pageCount {
-                    if Task.isCancelled { break }
-                    if let page = doc.page(at: i), let text = page.string { combined += text + "\n" }
+                    if Task.isCancelled { throw CancellationError() }
+                    if let page = doc.page(at: i), let text = page.string {
+                        try write(text)
+                        try write("\n")
+                    }
                     processed += 1
                     onProgress(min(0.95, Double(processed) / Double(denomUnits)))
                 }
-                parts.append(combined)
+                try writeSeparator()
             }
         }
         #endif
         // Process EPUBs
         for u in epubs {
-            if Task.isCancelled { break }
+            if Task.isCancelled { throw CancellationError() }
+            try writeFileMarker(u.lastPathComponent)
             let text = EPUBTextExtractor.extractText(from: u) { done, _ in
                 processed += 1
                 onProgress(min(0.95, Double(processed) / Double(denomUnits)))
             }
-            parts.append(text)
+            try write(text)
+            try writeSeparator()
         }
         for u in textFiles {
-            if Task.isCancelled { break }
-            if let str = try? String(contentsOf: u) { parts.append(str) }
+            if Task.isCancelled { throw CancellationError() }
+            try writeFileMarker(u.lastPathComponent)
+            if let str = try? String(contentsOf: u) {
+                try write(str)
+            }
+            processed += 1
+            onProgress(min(0.95, Double(processed) / Double(denomUnits)))
+            try writeSeparator()
         }
+        if Task.isCancelled { throw CancellationError() }
         onProgress(1.0)
-        return parts.joined(separator: "\n\n")
     }
 
-    private func compactText(_ text: String, onProgress: (Double) -> Void) -> String {
-        let lines = text.components(separatedBy: .newlines)
-        var out: [String] = []
-        out.reserveCapacity(lines.count)
-        var lastBlank = false
-        let total = max(lines.count, 1)
-        for (idx, line) in lines.enumerated() {
-            var t = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if t.isEmpty {
-                if !lastBlank { out.append("") }
-                lastBlank = true
-            } else {
-                t = t.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-                out.append(t)
-                lastBlank = false
-            }
-            if idx % 200 == 0 { onProgress(Double(idx + 1) / Double(total)) }
+    private func compactText(from inputURL: URL, writingTo outputURL: URL, onProgress: (Double) -> Void) throws {
+        let fm = FileManager.default
+        let totalBytes: Int64 = (try? fm.attributesOfItem(atPath: inputURL.path)[.size] as? NSNumber)?.int64Value ?? 0
+
+        // Truncate/create output file
+        _ = fm.createFile(atPath: outputURL.path, contents: nil)
+
+        let input = try FileHandle(forReadingFrom: inputURL)
+        defer { input.closeFile() }
+        let output = try FileHandle(forWritingTo: outputURL)
+        defer { output.closeFile() }
+
+        func writeLine(_ s: String) throws {
+            guard let data = (s + "\n").data(using: .utf8) else { return }
+            output.write(data)
         }
+
+        func normalizeInlineWhitespace(_ s: String) -> String {
+            var out = ""
+            out.reserveCapacity(s.count)
+            var previousWasSpace = false
+            for scalar in s.unicodeScalars {
+                if CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                    if !previousWasSpace {
+                        out.append(" ")
+                        previousWasSpace = true
+                    }
+                } else {
+                    out.unicodeScalars.append(scalar)
+                    previousWasSpace = false
+                }
+            }
+            return out.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        var buffer = Data()
+        buffer.reserveCapacity(64 * 1024)
+        let chunkSize = 64 * 1024
+        var bytesRead: Int64 = 0
+        var lastBlank = false
+        var lastProgressBytes: Int64 = 0
+
+        func handleLine(_ raw: String) throws {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                if !lastBlank {
+                    try writeLine("")
+                    lastBlank = true
+                }
+                return
+            }
+            let normalized = normalizeInlineWhitespace(trimmed)
+            try writeLine(normalized)
+            lastBlank = false
+        }
+
+        while true {
+            if Task.isCancelled { throw CancellationError() }
+            let chunk = input.readData(ofLength: chunkSize)
+            if chunk.isEmpty { break }
+            bytesRead += Int64(chunk.count)
+            buffer.append(chunk)
+
+            while let newline = buffer.firstIndex(of: 0x0A) {
+                let lineData = buffer.subdata(in: buffer.startIndex..<newline)
+                buffer.removeSubrange(buffer.startIndex...newline)
+                let line = String(data: lineData, encoding: .utf8) ?? String(decoding: lineData, as: UTF8.self)
+                try handleLine(line)
+            }
+
+            // Progress: based on bytes consumed.
+            if totalBytes > 0, bytesRead - lastProgressBytes >= 512 * 1024 {
+                lastProgressBytes = bytesRead
+                onProgress(min(0.99, Double(bytesRead) / Double(totalBytes)))
+            }
+        }
+
+        if !buffer.isEmpty {
+            let line = String(data: buffer, encoding: .utf8) ?? String(decoding: buffer, as: UTF8.self)
+            try handleLine(line)
+        }
+
         onProgress(1.0)
-        return out.joined(separator: "\n")
     }
 
     private func embedFromText(_ text: String, datasetID: String? = nil, onProgress: @escaping @Sendable (Double, String) -> Void) async throws -> [Chunk] {
         // Chunk by token cap without embedding per chunk; batch-embed at the end.
-        var chunks: [String] = []
+        var chunkTexts: [String] = []
+        var chunkSources: [String?] = []
         var buffer = ""
+        var currentSource: String? = nil
+        let markerPrefix = "<<<FILE: "
+        let markerSuffix = ">>>"
+
+        func parseSourceMarker(_ line: String) -> String? {
+            guard line.hasPrefix(markerPrefix), line.hasSuffix(markerSuffix) else { return nil }
+            let start = line.index(line.startIndex, offsetBy: markerPrefix.count)
+            let end = line.index(line.endIndex, offsetBy: -markerSuffix.count)
+            let raw = String(line[start..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+            return raw.isEmpty ? nil : raw
+        }
         let lines = text.components(separatedBy: .newlines)
         let total = max(lines.count, 1)
         var lastProgressEmit = Date(timeIntervalSince1970: 0)
@@ -508,10 +636,14 @@ actor DatasetRetriever {
                 // Ensure we don't emit chunks that exceed the embedder's character limit
                 let maxCharsPerChunk = 8000
                 if trimmed.count <= maxCharsPerChunk {
-                    chunks.append(trimmed)
+                    chunkTexts.append(trimmed)
+                    chunkSources.append(currentSource)
                 } else {
                     let parts = splitLongText(trimmed, maxChars: maxCharsPerChunk)
-                    for p in parts { chunks.append(p) }
+                    for p in parts {
+                        chunkTexts.append(p)
+                        chunkSources.append(currentSource)
+                    }
                 }
             }
             buffer = ""
@@ -520,6 +652,11 @@ actor DatasetRetriever {
         for (idx, line) in lines.enumerated() {
             if Task.isCancelled { throw CancellationError() }
             let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let marker = parseSourceMarker(t) {
+                flushBuffer()
+                currentSource = marker
+                continue
+            }
             if t.isEmpty {
                 flushBuffer()
             } else {
@@ -544,7 +681,7 @@ actor DatasetRetriever {
         }
         flushBuffer()
         // Token-safety pass: ensure no chunk exceeds token cap; split by tokens when needed
-        let tokenSafetyChunksCount = chunks.count
+        let tokenSafetyChunksCount = chunkTexts.count
         let tokenSafetyMaxTokens = maxTokensPerChunk
         Task.detached { await logger.log("[RAG] token_safety_pass start chunks=\(tokenSafetyChunksCount) maxTokens=\(tokenSafetyMaxTokens)") }
         func splitLongByTokens(_ s: String, maxTokens: Int) async -> [String] {
@@ -580,17 +717,22 @@ actor DatasetRetriever {
             return out
         }
 
-        var tokenSafeChunks: [String] = []
-        for c in chunks {
+        var tokenSafeTexts: [String] = []
+        var tokenSafeSources: [String?] = []
+        for i in chunkTexts.indices {
             if Task.isCancelled { throw CancellationError() }
+            let c = chunkTexts[i]
+            let source = chunkSources.indices.contains(i) ? chunkSources[i] : nil
             let tok = await EmbeddingModel.shared.countTokens(c)
             if tok <= maxTokensPerChunk {
-                tokenSafeChunks.append(c)
+                tokenSafeTexts.append(c)
+                tokenSafeSources.append(source)
             } else {
                 Task.detached { await logger.log("[RAG] Chunk too large (\(tok) tokens), splitting by tokens") }
                 let parts = await splitLongByTokens(c, maxTokens: maxTokensPerChunk)
                 for p in parts {
-                    tokenSafeChunks.append(p)
+                    tokenSafeTexts.append(p)
+                    tokenSafeSources.append(source)
                     Task.detached {
                         let tcount = await EmbeddingModel.shared.countTokens(p)
                         await logger.log("[RAG] Added split part chars=\(p.count) tokens=\(tcount)")
@@ -598,46 +740,60 @@ actor DatasetRetriever {
                 }
             }
         }
-        chunks = tokenSafeChunks
+        chunkTexts = tokenSafeTexts
+        chunkSources = tokenSafeSources
         // Ensure we show an immediate hand-off to embedding phase at 50%
         onProgress(0.50, "Embedding")
 
         // Batch embed the prepared chunks, streaming per-item progress to UI
         var batched: [Chunk] = []
-        if !chunks.isEmpty {
+        if !chunkTexts.isEmpty {
             let batchSize = 8
             var produced = 0
-            let totalCount = chunks.count
-            for i in stride(from: 0, to: chunks.count, by: batchSize) {
+            let totalCount = chunkTexts.count
+            for i in stride(from: 0, to: chunkTexts.count, by: batchSize) {
                 if Task.isCancelled { throw CancellationError() }
-                let j = min(i + batchSize, chunks.count)
-                let slice = Array(chunks[i..<j])
+                let j = min(i + batchSize, chunkTexts.count)
+                let sliceTexts = Array(chunkTexts[i..<j])
+                let sliceSources: [String?]
+                if chunkSources.count >= j {
+                    sliceSources = Array(chunkSources[i..<j])
+                } else if chunkSources.count > i {
+                    sliceSources = Array(chunkSources[i...])
+                } else {
+                    sliceSources = []
+                }
                 // Stream progress within the batch so UI updates at each item completion
                 let baseProduced = produced
-                let vecs = await EmbeddingModel.shared.embedDocumentsWithProgress(slice) { done, _ in
+                let vecs = await EmbeddingModel.shared.embedDocumentsWithProgress(sliceTexts) { done, _ in
                     let overallDone = baseProduced + done
                     let frac = Double(overallDone) / Double(totalCount)
                     onProgress(0.5 + frac * 0.5, "Embedding")
                 }
-                if vecs.count == slice.count {
-                    for (t, v) in zip(slice, vecs) {
+                if vecs.count == sliceTexts.count {
+                    for idx in 0..<sliceTexts.count {
+                        let t = sliceTexts[idx]
+                        let source = sliceSources.indices.contains(idx) ? sliceSources[idx] : nil
+                        let v = vecs[idx]
                         if !v.isEmpty && v.allSatisfy({ $0.isFinite && !$0.isNaN }) {
-                            batched.append(Chunk(text: t, vector: v, source: nil))
+                            batched.append(Chunk(text: t, vector: v, source: source))
                         } else {
                             Task { await logger.log("[RAG] ⚠️ Skipping invalid/empty vector for a batch item") }
                             let ds = datasetID ?? "<unknown>"
-                            Task { await writeEmbeddingFailureBackup(dataset: ds, source: nil, text: t, reason: "invalid_batch_vector") }
+                            Task { await writeEmbeddingFailureBackup(dataset: ds, source: source, text: t, reason: "invalid_batch_vector") }
                         }
                     }
                 } else {
                     // Fallback per-item if batch failed or mismatched
-                    for t in slice {
+                    for idx in 0..<sliceTexts.count {
+                        let t = sliceTexts[idx]
+                        let source = sliceSources.indices.contains(idx) ? sliceSources[idx] : nil
                         let v = await EmbeddingModel.shared.embedDocument(t)
                         if !v.isEmpty && v.allSatisfy({ $0.isFinite && !$0.isNaN }) {
-                            batched.append(Chunk(text: t, vector: v, source: nil))
+                            batched.append(Chunk(text: t, vector: v, source: source))
                         } else {
                             let ds = datasetID ?? "<unknown>"
-                            Task { await writeEmbeddingFailureBackup(dataset: ds, source: nil, text: t, reason: "fallback_failed") }
+                            Task { await writeEmbeddingFailureBackup(dataset: ds, source: source, text: t, reason: "fallback_failed") }
                         }
                     }
                 }
@@ -678,11 +834,31 @@ actor DatasetRetriever {
     /// Estimates how many tokens the full dataset would occupy when inserted
     /// into the prompt. Uses the embedding model's tokenizer for counting.
     func estimateTokens(in dataset: LocalDataset) async -> Int {
+        // Prefer prepared/normalized text when available to avoid re-parsing PDFs/EPUBs and
+        // to prevent double-counting (original docs + extracted.txt).
+        let compactURL = dataset.url.appendingPathComponent("extracted.compact.txt")
+        if let str = try? String(contentsOf: compactURL) {
+            let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return await EmbeddingModel.shared.countTokens(trimmed)
+            }
+        }
+        let extractedURL = dataset.url.appendingPathComponent("extracted.txt")
+        if let str = try? String(contentsOf: extractedURL) {
+            let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return await EmbeddingModel.shared.countTokens(trimmed)
+            }
+        }
+
         var total = 0
         let fm = FileManager.default
+        let excludedBasenames: Set<String> = ["vectors.json", "extracted.txt", "extracted.compact.txt", "title.txt"]
         if let enumerator = fm.enumerator(at: dataset.url, includingPropertiesForKeys: [.isRegularFileKey]) {
             while let url = enumerator.nextObject() as? URL {
                 if Task.isCancelled { return total }
+                let base = url.lastPathComponent
+                if excludedBasenames.contains(base) { continue }
                 let ext = url.pathExtension.lowercased()
                 guard ["txt", "md", "json", "jsonl", "csv", "tsv", "pdf", "epub"].contains(ext) else { continue }
 #if canImport(PDFKit)
@@ -718,37 +894,64 @@ actor DatasetRetriever {
     /// Reads and concatenates all eligible files within the dataset without
     /// performing any embedding or tokenization.
     func fetchAllContent(for dataset: LocalDataset) -> String {
+        // Prefer prepared/normalized text when available (fast + avoids duplication).
+        let compactURL = dataset.url.appendingPathComponent("extracted.compact.txt")
+        if let str = try? String(contentsOf: compactURL) {
+            let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return str
+            }
+        }
+        let extractedURL = dataset.url.appendingPathComponent("extracted.txt")
+        if let str = try? String(contentsOf: extractedURL) {
+            let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return str
+            }
+        }
+
         var parts: [String] = []
         let fm = FileManager.default
+        let excludedBasenames: Set<String> = ["vectors.json", "extracted.txt", "extracted.compact.txt", "title.txt"]
+        var urls: [URL] = []
         if let enumerator = fm.enumerator(at: dataset.url, includingPropertiesForKeys: [.isRegularFileKey]) {
             while let url = enumerator.nextObject() as? URL {
                 if Task.isCancelled { break }
+                let base = url.lastPathComponent
+                if excludedBasenames.contains(base) { continue }
                 let ext = url.pathExtension.lowercased()
                 guard ["txt", "md", "json", "jsonl", "csv", "tsv", "pdf", "epub"].contains(ext) else { continue }
-#if canImport(PDFKit)
-                if ext == "pdf" {
-                    if let doc = PDFKit.PDFDocument(url: url) {
-                        var combined = ""
-                        for i in 0..<doc.pageCount {
-                            if let page = doc.page(at: i), let text = page.string {
-                                combined += text + "\n"
-                            }
-                        }
-                        parts.append(combined)
-                    }
-                } else if ext == "epub" {
-                    let text = EPUBTextExtractor.extractText(from: url)
-                    parts.append(text)
-                } else if let str = try? String(contentsOf: url) {
-                    parts.append(str)
-                }
-#else
-                if ext == "epub" {
-                    let text = EPUBTextExtractor.extractText(from: url)
-                    parts.append(text)
-                } else if let str = try? String(contentsOf: url) { parts.append(str) }
-#endif
+                urls.append(url)
             }
+        }
+        urls.sort { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+
+        for url in urls {
+#if canImport(PDFKit)
+            let ext = url.pathExtension.lowercased()
+            if ext == "pdf" {
+                if let doc = PDFKit.PDFDocument(url: url) {
+                    var combined = ""
+                    for i in 0..<doc.pageCount {
+                        if let page = doc.page(at: i), let text = page.string {
+                            combined += text + "\n"
+                        }
+                    }
+                    parts.append(combined)
+                }
+            } else if ext == "epub" {
+                let text = EPUBTextExtractor.extractText(from: url)
+                parts.append(text)
+            } else if let str = try? String(contentsOf: url) {
+                parts.append(str)
+            }
+#else
+            let ext = url.pathExtension.lowercased()
+            if ext == "epub" {
+                let text = EPUBTextExtractor.extractText(from: url)
+                parts.append(text)
+            } else if let str = try? String(contentsOf: url) { parts.append(str) }
+#endif
         }
         return parts.joined(separator: "\n\n")
     }

@@ -5,6 +5,16 @@ struct DownloadListPopup: View {
     @EnvironmentObject var controller: DownloadController
     @Environment(\.dismiss) private var dismiss
 
+    var onClose: (() -> Void)? = nil
+
+    private func close() {
+        if let onClose {
+            onClose()
+        } else {
+            dismiss()
+        }
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -22,9 +32,8 @@ struct DownloadListPopup: View {
                 }
             }
             .navigationTitle("Downloads")
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { close() } } }
         }
-        .presentationDetents([.fraction(0.5)])
     }
 
     // MARK: – Row view

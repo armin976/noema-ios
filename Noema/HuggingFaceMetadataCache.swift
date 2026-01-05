@@ -7,6 +7,11 @@ struct ModelHubMeta: Codable {
     let pipelineTag: String?
     let tags: [String]?
     let gguf: GGUFMeta?
+    let projectorFiles: [ProjectorFile]?
+    // When available, indicates vision capability inferred from Hub JSON (non‑GGUF paths, e.g. MLX)
+    // This is computed by scanning pipeline_tag, config archetypes/model_type,
+    // presence of processor/preprocessor artifacts in siblings, and chat template tokens.
+    let mlxVisionCapable: Bool?
 
     struct GGUFMeta: Codable {
         let architecture: String?
@@ -14,17 +19,19 @@ struct ModelHubMeta: Codable {
         let chat_template: String?
     }
 
-    var isVisionByPipeline: Bool {
-        guard let p = pipelineTag?.lowercased() else { return false }
-        return p == "image-text-to-text"
+    struct ProjectorFile: Codable {
+        let filename: String
+        let size: Int64
     }
     
+    var hasProjectorFile: Bool {
+        guard let projectorFiles else { return false }
+        return !projectorFiles.isEmpty
+    }
+
     var isVision: Bool {
-        // Treat as vision if pipeline tag is exactly "image-text-to-text"
-        // or if tags include "image-text-to-text"
-        if isVisionByPipeline { return true }
-        if let tags, tags.contains(where: { $0.lowercased() == "image-text-to-text" }) { return true }
-        return false
+        // Consider either GGUF projector files or MLX/VLM hub signals
+        hasProjectorFile || (mlxVisionCapable ?? false)
     }
 }
 
@@ -61,7 +68,7 @@ enum HuggingFaceMetadataCache {
 
     static func fetch(repoId: String, token: String?) async -> ModelHubMeta? {
         let escaped = repoId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? repoId
-        guard let url = URL(string: "https://huggingface.co/api/models/\(escaped)") else { return nil }
+        guard let url = URL(string: "https://huggingface.co/api/models/\(escaped)?full=1") else { return nil }
         do {
             let (data, resp) = try await HFHubRequestManager.shared.data(for: url,
                                                                          token: token,
@@ -81,7 +88,76 @@ enum HuggingFaceMetadataCache {
                 let tmpl = g["chat_template"] as? String
                 gguf = .init(architecture: arch, context_length: ctx, chat_template: tmpl)
             }
-            return ModelHubMeta(id: id, author: author, pipelineTag: pipeline, tags: tags, gguf: gguf)
+            // Parse siblings for both GGUF projector files and MLX processors
+            var projectorFiles: [ModelHubMeta.ProjectorFile] = []
+            var hasProcessor = false
+            var hasVideoPreprocessor = false
+            if let siblings = raw?["siblings"] as? [[String: Any]] {
+                let projectorKeywords = ["mmproj", "projector", "image_proj"]
+                for entry in siblings {
+                    guard let rfilename = entry["rfilename"] as? String else { continue }
+                    let lower = rfilename.lowercased()
+                    // GGUF projector detection
+                    if lower.hasSuffix(".gguf"), projectorKeywords.contains(where: { lower.contains($0) }) {
+                        var size: Int64 = 0
+                        if let lfs = entry["lfs"] as? [String: Any], let s = lfs["size"] as? Int {
+                            size = Int64(s)
+                        }
+                        if size == 0, let s = entry["size"] as? Int { size = Int64(s) }
+                        projectorFiles.append(.init(filename: rfilename, size: size))
+                    }
+                    // MLX/VLM processor artefacts
+                    if lower == "preprocessor_config.json" || lower == "processor_config.json" { hasProcessor = true }
+                    if lower == "video_preprocessor_config.json" { hasVideoPreprocessor = true }
+                }
+            }
+
+            // Extract optional config for architectures/model_type and chat templates
+            var configArchitectures: [String] = []
+            var configModelType: String = ""
+            var chatTemplates: [String] = []
+            if let cfg = raw?["config"] as? [String: Any] {
+                if let archs = cfg["architectures"] as? [String] { configArchitectures = archs }
+                if let mt = cfg["model_type"] as? String { configModelType = mt }
+                if let ct = cfg["chat_template"] as? String { chatTemplates.append(ct) }
+                if let ctj = cfg["chat_template_jinja"] as? String { chatTemplates.append(ctj) }
+            }
+            if let card = raw?["cardData"] as? [String: Any] {
+                if let ct = card["chat_template"] as? String { chatTemplates.append(ct) }
+                if let ctj = card["chat_template_jinja"] as? String { chatTemplates.append(ctj) }
+            }
+
+            // Compute MLX/VLM vision capability from converging hub signals
+            let pipelineLower = (pipeline ?? "").lowercased()
+            let pipelineLooksVision = pipelineLower.contains("image-text-to-text") || pipelineLower.contains("image-to-text") || pipelineLower.contains("image") || pipelineLower.contains("video")
+            let archLower = Set(configArchitectures.map { $0.lowercased() })
+            let mtypeLower = configModelType.lowercased()
+            let archLooksVLM = archLower.contains(where: { $0.contains("vl") || $0.contains("vision") || $0.contains("gemma3") || $0.contains("gemma3n") || $0.contains("qwen3") })
+                || mtypeLower.contains("vl") || mtypeLower.contains("vision") || mtypeLower.contains("qwen3_vl") || mtypeLower.contains("gemma3")
+            let templatesJoined = chatTemplates.joined(separator: "\n").lowercased()
+            let templateHasVisionTokens = templatesJoined.contains("<|vision_start|>") || templatesJoined.contains("<image_soft_token>") || templatesJoined.contains("<image_pad>") || templatesJoined.contains("<video_pad>")
+            // Tags as corroboration
+            let lowerTags = Set((tags ?? []).map { $0.lowercased() })
+            let tagHints = ["qwen3_vl", "image-text-to-text", "video-text-to-text", "vision-language", "vlm"]
+            let tagsSuggestVision = lowerTags.contains(where: { tagHints.contains($0) })
+
+            var mlxVisionCapable: Bool = false
+            if pipelineLooksVision && (archLooksVLM || hasProcessor || templateHasVisionTokens) {
+                mlxVisionCapable = true
+            } else if hasProcessor || templateHasVisionTokens || hasVideoPreprocessor {
+                mlxVisionCapable = true
+            } else if pipelineLooksVision && tagsSuggestVision {
+                // Supportive fallback when pipelines + tags strongly suggest vision
+                mlxVisionCapable = true
+            }
+
+            return ModelHubMeta(id: id,
+                                author: author,
+                                pipelineTag: pipeline,
+                                tags: tags,
+                                gguf: gguf,
+                                projectorFiles: projectorFiles,
+                                mlxVisionCapable: mlxVisionCapable)
         } catch {
             return nil
         }
@@ -117,5 +193,3 @@ enum HuggingFaceMetadataCache {
         }
     }
 }
-
-

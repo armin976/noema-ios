@@ -1,18 +1,19 @@
 // Noema.swift
-//  Noema.swift
-//  Noema – iPhone‑first local‑LLM chat (verbose console logging)
-//
-//  • First launch ⇒ one‑tap download (Qwen3‑1.7B GGUF from Hugging Face)
-//  • After that the model loads 100% offline from <Documents>/LocalLLMModels/…
-//
-//
-//  Requires Swift Concurrency (iOS 17+).
+// Requires Swift Concurrency (iOS 17+).
 
 import SwiftUI
 import Foundation
+import RelayKit
 import Combine
+#if canImport(UIKit)
 import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
+#if canImport(PhotosUI)
 import PhotosUI
+#endif
 @_exported import Foundation
 
 // Import RollingThought functionality through NoemaPackages
@@ -27,19 +28,79 @@ import LeapSDK
 import MLX
 #endif
 
+#if canImport(UIKit)
+private extension UIImage {
+    func resizedDown(to targetSize: CGSize) -> UIImage? {
+        let maxW = max(1, Int(targetSize.width))
+        let maxH = max(1, Int(targetSize.height))
+        // If already smaller than target, skip expensive work
+        if size.width <= CGFloat(maxW) && size.height <= CGFloat(maxH) { return self }
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: maxW, height: maxH), format: format)
+        return renderer.image { _ in
+            self.draw(in: CGRect(x: 0, y: 0, width: CGFloat(maxW), height: CGFloat(maxH)))
+        }
+    }
+}
+#endif
+
 private func currentDeviceWidth() -> CGFloat {
 #if os(visionOS)
     return 1024
-#else
+#elseif canImport(UIKit)
     return UIScreen.main.bounds.width
+#elseif canImport(AppKit)
+    return NSScreen.main?.frame.width ?? 1024
+#else
+    return 1024
 #endif
 }
 
 @MainActor
 private func performMediumImpact() {
 #if os(iOS)
-    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    Haptics.impact(.medium)
 #endif
+}
+
+#if os(macOS)
+private final class MacNonDraggableView: NSView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+}
+
+private struct MacWindowDragBlocker: NSViewRepresentable {
+    func makeNSView(context: Context) -> MacNonDraggableView {
+        MacNonDraggableView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: MacNonDraggableView, context: Context) {}
+}
+#endif
+
+extension View {
+    @ViewBuilder
+    func macWindowDragDisabled() -> some View {
+#if os(macOS)
+        self.background(MacWindowDragBlocker().allowsHitTesting(false))
+#else
+        self
+#endif
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +141,7 @@ enum ModelKind { case gemma, llama3, qwen, smol, lfm, mistral, phi, internlm, de
 enum RunPurpose { case chat, title }
 
 // MARK: –– Model metadata ----------------------------------------------------
+#if canImport(UIKit) || canImport(AppKit)
 private enum ModelInfo {
     static let repoID   = "ggml-org/Qwen3-1.7B-GGUF"
     static let fileName = "Qwen3-1.7B-Q4_K_M.gguf"
@@ -193,6 +255,7 @@ private extension ModelDownloader.State {
     var isFailed: Bool       { if case .failed = self { true } else { false } }
     var isDownloading: Bool  { if case .downloading = self { true } else { false } }
 }
+#endif
 
 // MARK: –– FileManager helpers ----------------------------------------------
 extension FileManager {
@@ -208,22 +271,23 @@ extension FileManager {
 }
 
 // MARK: –– Download screen ---------------------------------------------------
+#if canImport(UIKit) || os(macOS)
 struct DownloadView: View {
     @ObservedObject var vm: ModelDownloader
 
     var body: some View {
         VStack(spacing: 20) {
-            Text("First‑time setup: download the Qwen‑1.7B model and embeddings.\nWi‑Fi recommended.")
+            Text(LocalizedStringKey("First‑time setup: download the Qwen‑1.7B model and embeddings.\nWi‑Fi recommended."))
                 .multilineTextAlignment(.center)
 
             switch vm.state {
             case .idle:
-                Button("Download Models") { vm.start() }
+                Button(LocalizedStringKey("Download Models")) { vm.start() }
                     .buttonStyle(.borderedProminent)
 
             case .downloading(let p):
                 VStack(spacing: 12) {
-                    Text("Downloading…")
+                    Text(LocalizedStringKey("Downloading…"))
                         .font(.headline)
                     ModernDownloadProgressView(progress: p, speed: nil)
                 }
@@ -231,12 +295,12 @@ struct DownloadView: View {
             case .failed(let msg):
                 VStack(spacing: 12) {
                     Text("⚠️ " + msg).font(.caption)
-                    Button("Retry") { vm.start() }
+                    Button(LocalizedStringKey("Retry")) { vm.start() }
                 }
 
             case .finished:
                 ProgressView().progressViewStyle(.circular)
-                Text("Preparing…").font(.caption)
+                Text(LocalizedStringKey("Preparing…")).font(.caption)
             }
         }
         .padding()
@@ -325,7 +389,8 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
 }
 
 @MainActor final class AppModelManager: ObservableObject {
-    private let store: InstalledModelsStore
+    // Thread-safe store (internally synchronized) is safe to access off the main actor.
+    private nonisolated let store: InstalledModelsStore
     @Published var downloadedModels: [LocalModel] = []
     @Published var loadedModel: LocalModel?
     @Published var lastUsedModel: LocalModel?
@@ -340,6 +405,10 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
     private static let favouriteLimit = 3
     fileprivate var datasetManager: DatasetManager?
     private var cancellables: Set<AnyCancellable> = []
+    var activeRelayLANRefreshes: Set<RemoteBackend.ID> = []
+    var relayLANRefreshTimestamps: [RemoteBackend.ID: Date] = [:]
+    // Track one-time early LAN health probes per backend so we don't spam.
+    var lanInitialProbePerformed: Set<RemoteBackend.ID> = []
 
     init(store: InstalledModelsStore = InstalledModelsStore()) {
         self.store = store
@@ -361,6 +430,7 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
             return m
         }
         downloadedModels = installed
+        hydrateMoEInfoFromCache()
         updateLastUsedModel()
         // Load durable settings first from Keychain+mirror; fall back to legacy UserDefaults once then migrate
         let durable = ModelSettingsStore.load()
@@ -387,6 +457,7 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
         remoteBackends = RemoteBackendsStore.load()
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         scanLayersIfNeeded()
+        scanMoEInfoIfNeeded()
     }
 
     func refresh() {
@@ -403,10 +474,56 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
             return m
         }
         downloadedModels = installed
+        hydrateMoEInfoFromCache()
         updateLastUsedModel()
         scanLayersIfNeeded()
+        scanMoEInfoIfNeeded()
         scanCapabilitiesIfNeeded()
         datasetManager?.reloadFromDisk()
+    }
+
+    // MARK: - Async Refresh (Performance Optimized)
+
+    private var lastRefreshTime: Date = .distantPast
+    private static let refreshDebounceInterval: TimeInterval = 0.3
+
+    /// Async version of refresh that moves heavy I/O off the main thread.
+    /// Includes debouncing to prevent redundant refreshes when rapidly switching tabs.
+    func refreshAsync() async {
+        let now = Date()
+        guard now.timeIntervalSince(lastRefreshTime) > Self.refreshDebounceInterval else { return }
+        lastRefreshTime = now
+
+        // Capture store reference for use in detached task
+        let store = self.store
+        let currentFavouritePaths = self.favouritePaths
+
+        // Perform heavy I/O operations off the main actor
+        let installed = await Task.detached(priority: .userInitiated) {
+            store.reload()
+            store.migrateLeapBundles()
+            store.migratePaths()
+            store.rehomeIfMissing()
+            var models = LocalModel.loadInstalled(store: store)
+                .removingDuplicateURLs()
+            models = models.map { model in
+                var m = model
+                m.isFavourite = currentFavouritePaths.contains(m.url.path)
+                return m
+            }
+            return models
+        }.value
+
+        // Update UI on main actor
+        pruneFavouritePaths(against: installed)
+        downloadedModels = installed
+        hydrateMoEInfoFromCache()
+        updateLastUsedModel()
+
+        // These already use Task.detached internally
+        scanLayersIfNeeded()
+        scanMoEInfoIfNeeded()
+        scanCapabilitiesIfNeeded()
     }
 
     private func updateLastUsedModel() {
@@ -438,24 +555,39 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
         guard self.datasetManager !== datasetManager else { return }
         self.datasetManager = datasetManager
         datasetManager.$datasets
+            .receive(on: RunLoop.main)
             .sink { [weak self] ds in
-                self?.downloadedDatasets = ds
-                // Don't automatically set activeDataset - user must explicitly select
-                // self?.activeDataset = ds.first { $0.isSelected }
+                // Publish changes on the next runloop to avoid nested view-update warnings
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.downloadedDatasets = ds
+                    let selectedID = UserDefaults.standard.string(forKey: "selectedDatasetID") ?? ""
+                    if selectedID.isEmpty {
+                        self.activeDataset = nil
+                        return
+                    }
+
+                    if let selected = ds.first(where: { $0.datasetID == selectedID }) {
+                        // Keep the active dataset object fresh (e.g., when indexing flips isIndexed).
+                        self.activeDataset = selected
+                    } else {
+                        // Selected dataset no longer exists on disk.
+                        self.activeDataset = nil
+                        UserDefaults.standard.set("", forKey: "selectedDatasetID")
+                    }
+                }
             }
             .store(in: &cancellables)
     }
 
     func setActiveDataset(_ ds: LocalDataset?) {
         datasetManager?.select(ds)
-        // Update activeDataset immediately
-        activeDataset = ds
-        // Persist selection for background gates
-        let d = UserDefaults.standard
-        if let id = ds?.datasetID, !id.isEmpty {
-            d.set(id, forKey: "selectedDatasetID")
-        } else {
-            d.set("", forKey: "selectedDatasetID")
+        // Defer publishing selection to avoid modifying state during view updates
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.activeDataset = ds
+            let id = ds?.datasetID ?? ""
+            UserDefaults.standard.set(id, forKey: "selectedDatasetID")
         }
     }
 
@@ -484,12 +616,13 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
             try? fm.removeItem(at: model.url)
         }
         store.remove(modelID: model.modelID, quantLabel: model.quant)
+        Task {
+            await MoEDetectionStore.shared.remove(modelID: model.modelID, quantLabel: model.quant)
+        }
         refresh()
         if loadedModel?.id == model.id { loadedModel = nil }
         if lastUsedModel?.id == model.id { lastUsedModel = nil }
-        if UserDefaults.standard.string(forKey: "defaultModelPath") == model.url.path {
-            UserDefaults.standard.set("", forKey: "defaultModelPath")
-        }
+        StartupPreferencesStore.clearLocalPath(model.url.path)
     }
 
     func settings(for model: LocalModel) -> ModelSettings {
@@ -607,6 +740,57 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
         }
     }
 
+    private func scanMoEInfoIfNeeded() {
+        let pending = downloadedModels.filter { model in
+            switch model.format {
+            case .gguf:
+                guard let info = model.moeInfo else { return true }
+                if info.isMoE {
+                    return info.moeLayerCount == nil || info.totalLayerCount == nil || info.hiddenSize == nil || info.feedForwardSize == nil || info.vocabSize == nil
+                }
+                return info.totalLayerCount == nil
+            case .mlx:
+                guard let info = model.moeInfo else { return true }
+                if info.isMoE {
+                    return info.expertCount <= 1
+                }
+                if info.totalLayerCount == nil, info.moeLayerCount == 0 {
+                    return true
+                }
+                return false
+            case .slm, .apple:
+                return false
+            }
+        }
+        guard !pending.isEmpty else { return }
+        let models = pending
+        Task.detached(priority: .utility) { [weak self] in
+            print("[MoEDetect] queued \(models.count) models for metadata scan")
+            for model in models {
+                let descriptor = "\(model.name) (\(model.quant)) [\(model.format.rawValue)]"
+                print("[MoEDetect] ▶︎ scanning \(descriptor)")
+                let info = ModelScanner.moeInfo(for: model.url, format: model.format)
+                let resolvedInfo: MoEInfo
+                if let info {
+                    let label = info.isMoE ? "MoE" : "Dense"
+                    let moeLayers = info.moeLayerCount.map(String.init) ?? "n/a"
+                    let totalLayers = info.totalLayerCount.map(String.init) ?? "n/a"
+                    print("[MoEDetect] ✓ \(descriptor) result=\(label) experts=\(info.expertCount) moeLayers=\(moeLayers) totalLayers=\(totalLayers)")
+                    resolvedInfo = info
+                } else {
+                    print("[MoEDetect] ⚠︎ \(descriptor) scan failed; defaulting to Dense metadata")
+                    resolvedInfo = .denseFallback
+                }
+                guard let self else {
+                    try? await Task.sleep(nanoseconds: 30_000_000)
+                    continue
+                }
+                await self.applyMoEInfo(resolvedInfo, to: model)
+                try? await Task.sleep(nanoseconds: 30_000_000)
+            }
+        }
+    }
+
     private func scanCapabilitiesIfNeeded() {
         let token = UserDefaults.standard.string(forKey: "huggingFaceToken")
         // Prepare a list of models that still need capability detection
@@ -666,9 +850,45 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
             store.updateLayers(modelID: model.modelID, quantLabel: model.quant, layers: count)
         }
     }
+
+    private func hydrateMoEInfoFromCache() {
+        Task { [weak self] in
+            let cache = await MoEDetectionStore.shared.all()
+            guard !cache.isEmpty else { return }
+            await MainActor.run {
+                guard let self else { return }
+                var updated = self.downloadedModels
+                var mutated = false
+                for idx in updated.indices {
+                    if updated[idx].moeInfo == nil {
+                        let key = MoEDetectionStore.key(modelID: updated[idx].modelID, quantLabel: updated[idx].quant)
+                        if let cachedInfo = cache[key] {
+                            updated[idx].moeInfo = cachedInfo
+                            self.store.updateMoEInfo(modelID: updated[idx].modelID, quantLabel: updated[idx].quant, info: cachedInfo)
+                            mutated = true
+                        }
+                    }
+                }
+                if mutated {
+                    self.downloadedModels = updated
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func applyMoEInfo(_ info: MoEInfo, to model: LocalModel) async {
+        if let idx = downloadedModels.firstIndex(where: { $0.id == model.id }) {
+            downloadedModels[idx].moeInfo = info
+        }
+        store.updateMoEInfo(modelID: model.modelID, quantLabel: model.quant, info: info)
+        await MoEDetectionStore.shared.update(info: info, modelID: model.modelID, quantLabel: model.quant)
+    }
 }
 
-@MainActor final class ChatVM: ObservableObject {
+extension AppModelManager: ModelLoadingManaging {}
+
+    @MainActor final class ChatVM: ObservableObject {
     // Progress tracker for model loading
     @Published var loadingProgressTracker = ModelLoadingProgressTracker()
     struct Msg: Identifiable, Equatable, Codable {
@@ -720,8 +940,13 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
         let role: String
         var text: String
         var timestamp: Date
+        var datasetID: String?
+        var datasetName: String?
         var perf: Perf?
         var streaming: Bool = false
+        // Shows a post-tool-call waiting spinner in the UI until
+        // the first continuation token arrives after a tool result.
+        var postToolWaiting: Bool = false
         var retrievedContext: String?
         var citations: [Citation]?
         var usedWebSearch: Bool?
@@ -730,16 +955,25 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
         var imagePaths: [String]?
         var toolCalls: [ToolCall]?
 
-        init(id: UUID = UUID(), role: String, text: String, timestamp: Date = Date(), perf: Perf? = nil, streaming: Bool = false) {
+        init(id: UUID = UUID(),
+             role: String,
+             text: String,
+             timestamp: Date = Date(),
+             datasetID: String? = nil,
+             datasetName: String? = nil,
+             perf: Perf? = nil,
+             streaming: Bool = false) {
             self.id = id
             self.role = role
             self.text = text
             self.timestamp = timestamp
+            self.datasetID = datasetID
+            self.datasetName = datasetName
             self.perf = perf
             self.streaming = streaming
         }
 
-        enum CodingKeys: String, CodingKey { case id, role, text, timestamp, perf, retrievedContext, citations, usedWebSearch, webHits, webError, imagePaths, toolCalls }
+        enum CodingKeys: String, CodingKey { case id, role, text, timestamp, datasetID, datasetName, perf, retrievedContext, citations, usedWebSearch, webHits, webError, imagePaths, toolCalls }
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -747,6 +981,8 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
             role = try c.decode(String.self, forKey: .role)
             text = try c.decode(String.self, forKey: .text)
             timestamp = (try? c.decode(Date.self, forKey: .timestamp)) ?? Date()
+            datasetID = try? c.decode(String.self, forKey: .datasetID)
+            datasetName = try? c.decode(String.self, forKey: .datasetName)
             perf = try? c.decode(Perf.self, forKey: .perf)
             retrievedContext = try? c.decode(String.self, forKey: .retrievedContext)
             citations = try? c.decode([Citation].self, forKey: .citations)
@@ -763,6 +999,8 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
             try c.encode(role, forKey: .role)
             try c.encode(text, forKey: .text)
             try c.encode(timestamp, forKey: .timestamp)
+            try c.encodeIfPresent(datasetID, forKey: .datasetID)
+            try c.encodeIfPresent(datasetName, forKey: .datasetName)
             try c.encodeIfPresent(perf, forKey: .perf)
             try c.encodeIfPresent(retrievedContext, forKey: .retrievedContext)
             try c.encode(citations, forKey: .citations)
@@ -799,9 +1037,19 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
         case text(String)
         case think(String, done: Bool)
         case code(String, language: String?)
-        // Inline placeholder where a tool response should render instead of raw JSON
         case tool(Int) // Index of the tool call in the message's toolCalls array
+
         var id: UUID { UUID() }
+
+        var isThink: Bool {
+            if case .think = self { return true }
+            return false
+        }
+
+        var isTool: Bool {
+            if case .tool = self { return true }
+            return false
+        }
     }
 
     enum InjectionStage { case none, deciding, decided, processing, predicting }
@@ -810,13 +1058,19 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
     @Published var sessions: [Session] = [] {
         didSet { saveSessions() }
     }
-    private var suppressAutoDatasetRestore = false
     @Published var activeSessionID: Session.ID? {
         didSet {
             saveSessions()
-            if !suppressAutoDatasetRestore { applySessionDataset() }
             // Recreate rolling thought view models when switching sessions
-            recreateRollingThoughtViewModels()
+            DispatchQueue.main.async { [weak self] in
+                self?.recreateRollingThoughtViewModels()
+            }
+            if let id = activeSessionID {
+                Task { [weak self] in
+                    guard let self else { return }
+                    await self.remoteService?.updateConversationID(id)
+                }
+            }
         }
     }
     @Published var prompt: String = ""
@@ -836,7 +1090,10 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
     @Published var injectionMethod: InjectionMethod?
     @Published var supportsImageInput: Bool = false
     @Published var pendingImageURLs: [URL] = []
+    // In-memory thumbnails for pending attachments to avoid re-decoding on each keystroke.
+    @Published private(set) var pendingThumbnails: [URL: UIImage] = [:]
     @Published var crossSessionSendBlocked: Bool = false
+    @Published var spotlightMessageID: UUID?
 
     private struct PendingPerfAccumulator {
         var start: Date
@@ -904,6 +1161,7 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
         }
 
         if pendingToolJSON == nil {
+            AccessibilityAnnouncer.announceLocalized("Response generated.")
             markRollingThoughtsInterrupted(forMessageAt: messageIndex)
         }
 
@@ -1063,7 +1321,6 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
     private var toolSpecsCache: [ToolSpec] = []
     private var systemPromptWebSearchOverride: Bool?
     
-    @AppStorage("defaultModelPath") private var defaultModelPath = ""
     @AppStorage("verboseLogging") private var verboseLogging = false
     @AppStorage("ragMaxChunks") private var ragMaxChunks = 5
     @AppStorage("ragMinScore") private var ragMinScore = 0.5
@@ -1072,7 +1329,6 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
     private var lastDatasetID: String?
 
     init() {
-        suppressAutoDatasetRestore = true
         if let data = try? Data(contentsOf: Self.sessionsURL()),
            let decoded = try? JSONDecoder().decode([Session].self, from: data),
            !decoded.isEmpty {
@@ -1084,7 +1340,6 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
             sessions = [first]
             activeSessionID = first.id
         }
-        suppressAutoDatasetRestore = false
         // Recreate rolling thought view models for loaded sessions
         recreateRollingThoughtViewModels()
         // Ensure tools are registered early so calls are executable during the first run
@@ -1102,41 +1357,20 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
         }
     }
 
-    private func applySessionDataset() {
-        guard let idx = activeIndex else {
+    func setDatasetForActiveSession(_ ds: LocalDataset?) {
+        if ds != nil, isSLMModel {
+            Task { await logger.log("[ChatVM] Ignoring dataset assignment because current model is SLM") }
             modelManager?.setActiveDataset(nil)
             return
         }
-        if let id = sessions[idx].datasetID,
-           let ds = modelManager?.downloadedDatasets.first(where: { $0.datasetID == id }) {
-            modelManager?.setActiveDataset(ds)
-        } else {
-            modelManager?.setActiveDataset(nil)
-        }
-    }
 
-    func setDatasetForActiveSession(_ ds: LocalDataset?) {
-        guard let idx = activeIndex else { return }
-        if let dataset = ds {
-            if isSLMModel {
-                Task { await logger.log("[ChatVM] Ignoring dataset assignment because current model is SLM") }
-                sessions[idx].datasetID = nil
-                modelManager?.setActiveDataset(nil)
-                return
-            }
-            if modelManager?.activeRemoteSession != nil {
-                Task { await logger.log("[ChatVM] Ignoring dataset assignment because a remote model is active") }
-                sessions[idx].datasetID = nil
-                modelManager?.setActiveDataset(nil)
-                return
-            }
-            sessions[idx].datasetID = dataset.datasetID
-            modelManager?.setActiveDataset(dataset)
-        } else {
-            sessions[idx].datasetID = nil
-            modelManager?.setActiveDataset(nil)
+        modelManager?.setActiveDataset(ds)
+        if ds == nil {
+            // Reset injection state so subsequent runs don't carry stale dataset flags.
+            lastDatasetID = nil
+            didInjectDataset = false
+            currentInjectedTokenOverhead = 0
         }
-        // Do not auto-warm embedder here; readiness will be ensured when actually used
     }
 
     private static func defaultTitle(date: Date = .now) -> String {
@@ -1217,6 +1451,10 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
 
     func select(_ session: Session) {
         activeSessionID = session.id
+    }
+
+    func focus(onMessageWithID id: UUID) {
+        spotlightMessageID = id
     }
 
     func startNewSession() {
@@ -1438,8 +1676,9 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
                 if var s = finalSettings {
                     let layers = ModelScanner.layerCount(for: loadURL, format: .gguf)
                     let ctxMax = GGUFMetadata.contextLength(at: loadURL) ?? Int.max
-                    if s.gpuLayers >= 0 {
-                        s.gpuLayers = min(max(0, s.gpuLayers), max(0, layers))
+                    if s.gpuLayers >= 0, layers > 0 {
+                        // Only clamp when layer count is known; otherwise trust the user's value
+                        s.gpuLayers = min(max(0, s.gpuLayers), layers)
                     }
                     s.contextLength = min(s.contextLength, Double(ctxMax))
                     if (s.tokenizerPath ?? "").isEmpty {
@@ -1475,8 +1714,15 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
     ) async throws {
         if client != nil {
             guard forceReload else { return }
-            unloadResources()
+            // Fully unload the existing runner before starting a new load to avoid
+            // llama.cpp/Metal races on iOS when models are reloaded back‑to‑back.
+            await unload()
         }
+        // Reset any prior loopback server and vision override. The newly selected model
+        // will explicitly re-enable and restart the server if needed.
+        LlamaServerBridge.stop()
+        // Reset loopback vision override; the new selection will explicitly re-enable it if needed.
+        UserDefaults.standard.set(false, forKey: "serverVisionEnabled")
         loading = true
         stillLoading = false
         loadError = nil
@@ -1509,6 +1755,55 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
         }
         if verboseLogging { print("MODEL_LOAD_START \(Date().timeIntervalSince1970)") }
 
+        let llamaOptions = LlamaOptions(extraEOSTokens: ["<|im_end|>", "<end_of_turn>"], verbose: true)
+        let contextOverride = finalSettings.map { settings -> Int in
+            let clamped = max(1.0, min(settings.contextLength, Double(Int32.max)))
+            return Int(clamped)
+        }
+        let threadOverride = finalSettings.map { settings -> Int in
+            let requested = settings.cpuThreads > 0 ? settings.cpuThreads : ProcessInfo.processInfo.activeProcessorCount
+            return max(1, requested)
+        }
+        // Resolve projector info next to the model (if any). If the model is
+        // vision-capable (merged projector or external mmproj), start the
+        // in‑process HTTP server bound to 127.0.0.1 so multimodal requests
+        // consistently route via loopback.
+        let explicitMMProj: String? = ProjectorLocator.projectorPath(alongside: loadURL)
+        let hasMergedProjector: Bool = (detectedFmt == .gguf) ? GGUFMetadata.hasMultimodalProjector(at: loadURL) : false
+        if detectedFmt == .gguf, (explicitMMProj != nil || hasMergedProjector) {
+            // Capture only Sendable values before launching the detached task.
+            let loadPath = loadURL.path
+            let mmprojPath = explicitMMProj
+            // Ensure we are restarting the server for the newly selected model.
+            // Run on a detached task to avoid blocking the main thread (which freezes the loading UI).
+            let p = await Task.detached { @Sendable () -> Int32 in
+                LlamaServerBridge.stop()
+                return LlamaServerBridge.start(
+                    host: "127.0.0.1",
+                    preferredPort: 0,
+                    ggufPath: loadPath,
+                    mmprojPath: mmprojPath
+                )
+            }.value
+
+            if p > 0 {
+                let d = UserDefaults.standard
+                d.set(true, forKey: "serverVisionEnabled")
+                d.synchronize()
+                let projName = explicitMMProj.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "merged"
+                if verboseLogging { print("[ChatVM] Started loopback llama.cpp server on 127.0.0.1:\(p) with projector \(projName)") }
+                Task { await logger.log("[Loopback] start host=127.0.0.1 port=\(p) gguf=\(loadURL.lastPathComponent) mmproj=\(projName)") }
+            } else {
+                if verboseLogging { print("[ChatVM] Failed to start loopback llama.cpp server; continuing without vision server") }
+                Task { await logger.log("[Loopback] start.failed gguf=\(loadURL.lastPathComponent) mmproj=\(explicitMMProj.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "merged")") }
+            }
+        }
+        let llamaParameter = LlamaParameter(
+            options: llamaOptions,
+            contextLength: contextOverride,
+            threadCount: threadOverride,
+            mmproj: explicitMMProj
+        )
 
         if let f = format {
             switch f {
@@ -1526,7 +1821,7 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
                 client = try await AnyLLMClient(
                     NoemaLlamaClient.llama(
                         url: loadURL,
-                        parameter: .init(options: .init(extraEOSTokens: ["<|im_end|>", "<end_of_turn>"], verbose: true))
+                        parameter: llamaParameter
                     )
                 )
                 loadedFormat = .gguf
@@ -1547,11 +1842,25 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
                 throw NSError(
                     domain: "Noema",
                     code: -2,
-                    userInfo: [NSLocalizedDescriptionKey: "SLM models are not supported on this platform."]
+                    userInfo: [
+                        NSLocalizedDescriptionKey: String(
+                            localized: "SLM models are not supported on this platform.",
+                            locale: LocalizationManager.preferredLocale()
+                        )
+                    ]
                 )
 #endif
             case .apple:
-                throw NSError(domain: "Noema", code: -2, userInfo: [NSLocalizedDescriptionKey: "Unsupported model format"]) 
+                throw NSError(
+                    domain: "Noema",
+                    code: -2,
+                    userInfo: [
+                        NSLocalizedDescriptionKey: String(
+                            localized: "Unsupported model format",
+                            locale: LocalizationManager.preferredLocale()
+                        )
+                    ]
+                ) 
             }
         } else {
             // Auto-detect format and load via appropriate client
@@ -1570,7 +1879,7 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
                 client = try await AnyLLMClient(
                     NoemaLlamaClient.llama(
                         url: loadURL,
-                        parameter: .init(options: .init(extraEOSTokens: ["<|im_end|>", "<end_of_turn>"], verbose: true))
+                        parameter: llamaParameter
                     )
                 )
                 loadedFormat = .gguf
@@ -1589,7 +1898,12 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
                 throw NSError(
                     domain: "Noema",
                     code: -2,
-                    userInfo: [NSLocalizedDescriptionKey: "SLM models are not supported on this platform."]
+                    userInfo: [
+                        NSLocalizedDescriptionKey: String(
+                            localized: "SLM models are not supported on this platform.",
+                            locale: LocalizationManager.preferredLocale()
+                        )
+                    ]
                 )
 #endif
             case .apple:
@@ -1605,26 +1919,36 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
         loadedSettings = finalSettings ?? ModelSettings.default(for: loadedFormat ?? .gguf)
 
         modelLoaded = true
+        AccessibilityAnnouncer.announceLocalized("Model loaded.")
 
         // Update image-input capability from stored metadata; fallback to local detection when unknown
+        var imageDetectNotes: [String] = []
         if let loadedModel = modelManager?.downloadedModels.first(where: { $0.url == loadURL }) {
             supportsImageInput = loadedModel.isMultimodal
+            imageDetectNotes.append("store.isMultimodal=\(loadedModel.isMultimodal)")
         } else {
             supportsImageInput = false
+            imageDetectNotes.append("store.missing")
         }
         if supportsImageInput == false {
             // Heuristic fallback by format to ensure the image button appears when applicable
             if let fmt = loadedFormat {
                 switch fmt {
                 case .gguf:
-                    supportsImageInput = Self.guessLlamaVisionModel(from: loadURL)
+                    let guess = Self.guessLlamaVisionModel(from: loadURL)
+                    supportsImageInput = guess
+                    imageDetectNotes.append("gguf.heuristic=\(guess)")
                 case .mlx:
-                    supportsImageInput = MLXBridge.isVLMModel(at: loadURL)
+                    let isVLM = MLXBridge.isVLMModel(at: loadURL)
+                    supportsImageInput = isVLM
+                    imageDetectNotes.append("mlx.isVLM=\(isVLM)")
                 case .slm:
 #if canImport(LeapSDK)
                     // Prefer Leap catalog slug heuristic; fallback to bundle scan when available
                     let slug = loadURL.deletingPathExtension().lastPathComponent
-                    supportsImageInput = LeapCatalogService.isVisionQuantizationSlug(slug) || LeapCatalogService.bundleLikelyVision(at: loadURL)
+                    let isVision = LeapCatalogService.isVisionQuantizationSlug(slug) || LeapCatalogService.bundleLikelyVision(at: loadURL)
+                    supportsImageInput = isVision
+                    imageDetectNotes.append("slm.catalogOrBundle=\(isVision)")
 #else
                     supportsImageInput = false
 #endif
@@ -1635,9 +1959,48 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
                 if supportsImageInput, let manager = modelManager,
                    let model = manager.downloadedModels.first(where: { $0.url == loadURL }) {
                     manager.setCapabilities(modelID: model.modelID, quant: model.quant, isMultimodal: true, isToolCapable: model.isToolCapable)
+                    imageDetectNotes.append("persisted=true")
                 }
             }
         }
+        // Finally, intersect with the runtime compiler capability so UI never advertises
+        // image input when the llama.cpp build lacks llava/clip. If headers are hidden but
+        // symbols exist (common with some XCFrameworks), prefer a runtime symbol check.
+        if loadedFormat == .gguf {
+            let d = UserDefaults.standard
+            var compiled = d.bool(forKey: "llama.compiledVision")
+            if compiled == false {
+                // Soft fallback: if the binary contains the necessary symbols, treat as compiled.
+                if LlamaRunner.runtimeHasVisionSymbols() {
+                    compiled = true
+                    imageDetectNotes.append("runtimeSymbols=true")
+                }
+            }
+            if compiled == false {
+                // If the in-process server is armed with a projector, allow image UI even when the
+                // embedded xcframework lacks vision entry points.
+                if d.bool(forKey: "serverVisionEnabled") {
+                    supportsImageInput = true
+                    imageDetectNotes.append("serverVision=true")
+                } else {
+                    supportsImageInput = false
+                    imageDetectNotes.append("build.compiledVision=false")
+                }
+            } else {
+                // Only hide due to probe if we truly lack a projector. Some builds cannot run our
+                // probe despite having vision; in that case, presence of a projector or merged VLM
+                // is sufficient to surface the button.
+                let probe = d.string(forKey: "llama.visionProbe")
+                let hasProj = (ProjectorLocator.projectorPath(alongside: loadURL) != nil) || GGUFMetadata.hasMultimodalProjector(at: loadURL)
+                if let probe, probe != "OK", hasProj == false {
+                    supportsImageInput = false
+                    imageDetectNotes.append("build.probe=\(probe)")
+                }
+            }
+            // Final override: if the server indicates vision support, prefer enabling UI controls
+            if d.bool(forKey: "serverVisionEnabled") { supportsImageInput = true }
+        }
+        Task { await logger.log("[Images][Capability] format=\(String(describing: loadedFormat)) supports=\(supportsImageInput) notes=\(imageDetectNotes.joined(separator: ","))") }
 
         // Persist current model format and function-calling capability for tool gating (e.g., web search)
         do {
@@ -1688,6 +2051,9 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
         let clampedThreads = max(1, threadCount)
         setenv("LLAMA_THREADS", String(clampedThreads), 1)
         setenv("LLAMA_THREADS_BATCH", String(clampedThreads), 1)
+        // Some llama/ggml builds still honor GGML_* env names – set both for safety
+        setenv("GGML_NUM_THREADS", String(clampedThreads), 1)
+        setenv("GGML_NUM_THREADS_BATCH", String(clampedThreads), 1)
         let kvOffloadEnabled = supportsOffload && resolvedGpuLayers > 0 && s.kvCacheOffload
         setenv("LLAMA_KV_OFFLOAD", kvOffloadEnabled ? "1" : "0", 1)
         setenv("LLAMA_MMAP", s.useMmap ? "1" : "0", 1)
@@ -1702,11 +2068,81 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
             setenv("LLAMA_FLASH_ATTENTION", "1", 1)
             setenv("LLAMA_V_QUANT", s.vCacheQuant.rawValue, 1)
         } else {
-            unsetenv("LLAMA_FLASH_ATTENTION")
+            setenv("LLAMA_FLASH_ATTENTION", "0", 1)
             unsetenv("LLAMA_V_QUANT")
         }
         setenv("LLAMA_K_QUANT", s.kCacheQuant.rawValue, 1)
         if let tok = s.tokenizerPath { setenv("LLAMA_TOKENIZER_PATH", tok, 1) }
+        if let experts = s.moeActiveExperts, experts > 0 {
+            setenv("LLAMA_MOE_EXPERTS", String(experts), 1)
+        } else {
+            unsetenv("LLAMA_MOE_EXPERTS")
+        }
+        setenv("NOEMA_TEMPERATURE", String(format: "%.3f", s.temperature), 1)
+        setenv("NOEMA_TOP_K", String(max(1, s.topK)), 1)
+        setenv("NOEMA_TOP_P", String(format: "%.3f", s.topP), 1)
+        setenv("NOEMA_MIN_P", String(format: "%.3f", s.minP), 1)
+        setenv("NOEMA_REPEAT_PENALTY", String(format: "%.3f", s.repetitionPenalty), 1)
+        setenv("NOEMA_REPEAT_LAST_N", String(max(0, s.repeatLastN)), 1)
+        setenv("NOEMA_PRESENCE_PENALTY", String(format: "%.3f", s.presencePenalty), 1)
+        setenv("NOEMA_FREQUENCY_PENALTY", String(format: "%.3f", s.frequencyPenalty), 1)
+        if let rope = s.ropeScaling {
+            setenv("NOEMA_ROPE_SCALING", "yarn", 1)
+            setenv("NOEMA_ROPE_FACTOR", String(format: "%.3f", rope.factor), 1)
+            setenv("NOEMA_ROPE_BASE", String(rope.originalContext), 1)
+            setenv("NOEMA_ROPE_LOW_FREQ", String(format: "%.3f", rope.lowFrequency), 1)
+            setenv("NOEMA_ROPE_HIGH_FREQ", String(format: "%.3f", rope.highFrequency), 1)
+        } else {
+            unsetenv("NOEMA_ROPE_SCALING")
+            unsetenv("NOEMA_ROPE_FACTOR")
+            unsetenv("NOEMA_ROPE_BASE")
+            unsetenv("NOEMA_ROPE_LOW_FREQ")
+            unsetenv("NOEMA_ROPE_HIGH_FREQ")
+        }
+        if !s.logitBias.isEmpty,
+           let data = try? JSONEncoder().encode(s.logitBias),
+           let json = String(data: data, encoding: .utf8) {
+            setenv("NOEMA_LOGIT_BIAS", json, 1)
+        } else {
+            unsetenv("NOEMA_LOGIT_BIAS")
+        }
+        if s.promptCacheEnabled {
+            setenv("NOEMA_PROMPT_CACHE", s.promptCachePath, 1)
+            setenv("NOEMA_PROMPT_CACHE_ALL", s.promptCacheAll ? "1" : "0", 1)
+        } else {
+            unsetenv("NOEMA_PROMPT_CACHE")
+            unsetenv("NOEMA_PROMPT_CACHE_ALL")
+        }
+        if let overrideValue = s.tensorOverride.overrideValue {
+            setenv("NOEMA_OVERRIDE_TENSOR", overrideValue, 1)
+        } else {
+            unsetenv("NOEMA_OVERRIDE_TENSOR")
+        }
+        // Speculative decoding environment variables are not applied on macOS.
+        #if !os(macOS)
+        if let helper = s.speculativeDecoding.helperModelID, !helper.isEmpty {
+            setenv("NOEMA_DRAFT_MODEL", helper, 1)
+            let mode = s.speculativeDecoding.mode == .tokens ? "tokens" : "max"
+            setenv("NOEMA_DRAFT_MODE", mode, 1)
+            setenv("NOEMA_DRAFT_VALUE", String(max(1, s.speculativeDecoding.value)), 1)
+            if let manager = modelManager,
+               let candidate = manager.downloadedModels.first(where: { $0.modelID == helper }) {
+                setenv("NOEMA_DRAFT_PATH", candidate.url.path, 1)
+            } else {
+                unsetenv("NOEMA_DRAFT_PATH")
+            }
+        } else {
+            unsetenv("NOEMA_DRAFT_MODEL")
+            unsetenv("NOEMA_DRAFT_MODE")
+            unsetenv("NOEMA_DRAFT_VALUE")
+            unsetenv("NOEMA_DRAFT_PATH")
+        }
+        #else
+        unsetenv("NOEMA_DRAFT_MODEL")
+        unsetenv("NOEMA_DRAFT_MODE")
+        unsetenv("NOEMA_DRAFT_VALUE")
+        unsetenv("NOEMA_DRAFT_PATH")
+        #endif
     }
 
     func load(
@@ -1782,6 +2218,10 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
         }
     }
 
+    nonisolated static func guessLlamaVisionModel(from url: URL) -> Bool {
+        ModelVisionDetector.guessLlamaVisionModel(from: url)
+    }
+
     private func unloadResources() {
         // Ensure any in-flight loading HUD stops immediately when unloading/ejecting
         if loading {
@@ -1812,8 +2252,14 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
             }
         }
 
-        if remoteService != nil {
-            Task { await self.remoteService?.cancelActiveStream() }
+        if let service = remoteService {
+            Task {
+                await service.setTransportObserver(nil)
+#if os(iOS) || os(visionOS)
+                await service.setLANRefreshHandler(nil)
+#endif
+                await service.cancelActiveStream()
+            }
         }
         remoteService = nil
         systemPromptWebSearchOverride = nil
@@ -1844,7 +2290,17 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
     }
 
     nonisolated func unload() async {
-        await MainActor.run { self.unloadResources() }
+        // Capture the current client so we can await a full teardown off the main actor.
+        let clientToUnload: AnyLLMClient? = await MainActor.run { () -> AnyLLMClient? in
+            let captured = self.client
+            // Perform UI + state teardown immediately
+            self.unloadResources()
+            return captured
+        }
+        // If the client supports an awaited unload, use it to ensure memory is freed.
+        if let c = clientToUnload {
+            await c.unloadAndWait()
+        }
     }
 
 #if canImport(LeapSDK)
@@ -1858,6 +2314,7 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
             loadedSettings = ModelSettings.default(for: .slm)
             loadedURL = url
             modelLoaded = true
+            AccessibilityAnnouncer.announceLocalized("Model loaded.")
         } catch {
             client = nil
             modelLoaded = false
@@ -1866,8 +2323,10 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
 #endif
 
     func activateRemoteSession(backend: RemoteBackend, model: RemoteModel) async throws {
-        guard backend.chatEndpointURL != nil else {
-            throw RemoteBackendError.invalidEndpoint
+        if !backend.isCloudRelay {
+            guard backend.chatEndpointURL != nil else {
+                throw RemoteBackendError.invalidEndpoint
+            }
         }
         let modelIdentifier = model.id.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !modelIdentifier.isEmpty else {
@@ -1878,18 +2337,100 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
 
         unloadResources()
 
-        if modelManager?.activeDataset != nil {
-            setDatasetForActiveSession(nil)
-        }
+        // Do NOT clear active dataset when switching to a remote session.
+        // RAG injection works with remote backends; keep the user's selection.
 
         let specs = await fetchToolSpecs()
         toolSpecsCache = specs
 
         let service = RemoteChatService(backend: backend, modelID: modelIdentifier, toolSpecs: specs)
         remoteService = service
+        let backendID = backend.id
+        await service.setTransportObserver { [weak self] transport, streaming in
+            await MainActor.run {
+                guard let self else { return }
+                self.updateActiveRemoteTransport(for: backendID, transport: transport, streaming: streaming)
+            }
+        }
+#if os(iOS) || os(visionOS)
+        await service.setLANRefreshHandler { [weak self] in
+            guard let self else { return nil }
+            return await self.refreshRelayBackend(backendID: backendID)
+        }
+#endif
+        // Preflight LAN adoption (iOS/visionOS) before establishing UI session state
+        var initialLANSSID: String? = nil
+#if os(iOS) || os(visionOS)
+        initialLANSSID = await service.preflightLANAdoption()
+#endif
+
         activeRemoteBackendID = backend.id
         activeRemoteModelID = modelIdentifier
-        remoteLoadingPending = true
+
+        do {
+        if backend.endpointType == .noemaRelay {
+            let containerID = backend.baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !containerID.isEmpty else {
+                throw RemoteBackendError.validationFailed("Missing CloudKit container identifier for relay.")
+            }
+            guard let hostDeviceID = backend.relayHostDeviceID?.trimmingCharacters(in: .whitespacesAndNewlines), !hostDeviceID.isEmpty else {
+                throw RemoteBackendError.validationFailed("Missing host device ID for relay.")
+            }
+            let recordName: String
+            if let relayRecord = model.relayRecordName, !relayRecord.isEmpty {
+                recordName = relayRecord
+            } else if modelIdentifier.hasPrefix("model-") {
+                recordName = modelIdentifier
+            } else {
+                recordName = "model-\(modelIdentifier)"
+            }
+            let payload: [String: Any] = [
+                "modelRef": recordName,
+                "ensure": "loaded"
+            ]
+            let body = try JSONSerialization.data(withJSONObject: payload, options: [])
+            let command = try await RelayCatalogClient.shared.createCommand(
+                containerIdentifier: containerID,
+                hostDeviceID: hostDeviceID,
+                verb: "POST",
+                path: "/models/activate",
+                body: body
+            )
+            let result = try await RelayCatalogClient.shared.waitForCommand(
+                containerIdentifier: containerID,
+                commandID: command.recordID,
+                // Don't block the UI for minutes. Wait briefly and then
+                // allow streaming to proceed; the Mac can finish activation
+                // in the background.
+                timeout: 25
+            )
+            if result.state != .succeeded {
+                if let data = result.result,
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let message = json["error"] as? String {
+                    throw RemoteBackendError.validationFailed(message)
+                }
+                throw RemoteBackendError.validationFailed("Relay activation failed.")
+            }
+        } } catch let relayError as RelayError {
+            if case .timeout = relayError {
+                // Continue without failing; first message will proceed once the
+                // Mac finishes activation. This avoids indefinite spinners.
+                await logger.log("[RemoteBackendAPI] ⚠️ Relay activation timed out; continuing without blocking UI.")
+            } else {
+                throw relayError
+            }
+        }
+
+        await service.updateConversationID(activeSessionID)
+        if backend.endpointType == .noemaRelay {
+            await service.updateRelayContainerID(backend.baseURLString)
+        } else if backend.endpointType == .cloudRelay {
+            let containerID = RelayConfiguration.containerIdentifier
+            await service.updateRelayContainerID(containerID)
+        } else {
+            await service.updateRelayContainerID(nil)
+        }
 
         let textStream: @Sendable (LLMInput) async throws -> AsyncThrowingStream<String, Error> = { [weak self] input in
             guard let self else { return AsyncThrowingStream { continuation in continuation.finish() } }
@@ -1915,14 +2456,38 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
         loadedURL = nil
         loadedSettings = nil
         modelLoaded = true
+        AccessibilityAnnouncer.announceLocalized("Model loaded.")
         currentKind = ModelKind.detect(id: modelIdentifier)
         modelManager?.loadedModel = nil
+        let defaultTransport: RemoteSessionTransport
+        let defaultStreaming: Bool
+        switch backend.endpointType {
+        case .noemaRelay:
+            #if os(iOS) || os(visionOS)
+            if let _ = initialLANSSID {
+                defaultTransport = .lan(ssid: initialLANSSID ?? "")
+            } else {
+                defaultTransport = .cloudRelay
+            }
+            #else
+            defaultTransport = .cloudRelay
+            #endif
+            defaultStreaming = false
+        case .cloudRelay:
+            defaultTransport = .cloudRelay
+            defaultStreaming = false
+        default:
+            defaultTransport = .direct
+            defaultStreaming = true
+        }
         modelManager?.activeRemoteSession = ActiveRemoteSession(
             backendID: backend.id,
             backendName: backend.name,
             modelID: modelIdentifier,
             modelName: model.name,
-            endpointType: backend.endpointType
+            endpointType: backend.endpointType,
+            transport: defaultTransport,
+            streamingEnabled: defaultStreaming
         )
 
         let defaults = UserDefaults.standard
@@ -1934,6 +2499,9 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
             && WebToolGate.isAvailable(currentFormat: loadedFormat)
             && !specs.isEmpty
         systemPromptWebSearchOverride = remoteWebSearchReady
+
+        // Record remote usage for review milestone tracking (prompting happens after a success moment).
+        ReviewPrompter.shared.noteRemoteUsed()
     }
 
     func refreshActiveRemoteBackendIfNeeded(updatedBackendID: RemoteBackend.ID, activeModelID: String) async throws {
@@ -1951,10 +2519,101 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
             toolSpecsCache = specs
             await service.updateToolSpecs(specs)
         }
+#if os(iOS) || os(visionOS)
+        requestImmediateLANCheck(reason: "active-backend-refresh")
+#endif
+    }
+
+#if os(iOS) || os(visionOS)
+    func requestImmediateLANCheck(reason: String) {
+        Task {
+            guard let service = await self.remoteService else { return }
+            await service.forceLANRefresh(reason: reason)
+        }
+    }
+
+    func forceLANOverride(reason: String) {
+        Task {
+            guard let service = await self.remoteService else { return }
+            await service.setLANManualOverride(true, reason: reason)
+        }
+    }
+
+    private func refreshRelayBackend(backendID: RemoteBackend.ID) async -> RemoteBackend? {
+        guard let manager = modelManager else { return nil }
+        await manager.fetchRemoteModels(for: backendID)
+        return manager.remoteBackend(withID: backendID)
+    }
+#endif
+
+    private func updateActiveRemoteTransport(for backendID: RemoteBackend.ID,
+                                             transport: RemoteSessionTransport,
+                                             streaming: Bool) {
+        guard let session = modelManager?.activeRemoteSession,
+              session.backendID == backendID else {
+            return
+        }
+        modelManager?.activeRemoteSession = ActiveRemoteSession(
+            backendID: session.backendID,
+            backendName: session.backendName,
+            modelID: session.modelID,
+            modelName: session.modelName,
+            endpointType: session.endpointType,
+            transport: transport,
+            streamingEnabled: streaming
+        )
     }
 
     func deactivateRemoteSession() {
+        let backendID = activeRemoteBackendID
+        let modelID = activeRemoteModelID
+        var relayContext: (containerID: String, hostDeviceID: String, recordName: String)? = nil
+        if let backendID, let modelID,
+           let backend = modelManager?.remoteBackend(withID: backendID),
+           backend.endpointType == .noemaRelay,
+           backend.relayEjectsOnDisconnect {
+            let containerID = backend.baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+            let hostID = backend.relayHostDeviceID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !containerID.isEmpty, !hostID.isEmpty {
+                let recordName = modelID.hasPrefix("model-") ? modelID : "model-\(modelID)"
+                relayContext = (containerID, hostID, recordName)
+            }
+        }
+        if let context = relayContext {
+            Task {
+                await sendRelayDeactivateCommand(containerID: context.containerID,
+                                                 hostDeviceID: context.hostDeviceID,
+                                                 recordName: context.recordName)
+            }
+        }
         unloadResources()
+    }
+
+    private func sendRelayDeactivateCommand(containerID: String, hostDeviceID: String, recordName: String) async {
+        let payload: [String: Any] = [
+            "modelRef": recordName,
+            "ensure": "unloaded"
+        ]
+        guard let body = try? JSONSerialization.data(withJSONObject: payload, options: []) else { return }
+        do {
+            let command = try await RelayCatalogClient.shared.createCommand(
+                containerIdentifier: containerID,
+                hostDeviceID: hostDeviceID,
+                verb: "POST",
+                path: "/models/deactivate",
+                body: body
+            )
+            let result = try await RelayCatalogClient.shared.waitForCommand(
+                containerIdentifier: containerID,
+                commandID: command.recordID,
+                timeout: 60
+            )
+            if result.state != .succeeded {
+                await logger.log("[RemoteBackendAPI] ⚠️ Relay eject returned state=\(result.state.rawValue)")
+            }
+        } catch {
+            await logger.log("[RemoteBackendAPI] ❌ Failed to request relay eject: \(error.localizedDescription)")
+        }
     }
 
 
@@ -2025,7 +2684,17 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
     private func appendUser(_ text: String, purpose: RunPurpose) {
         precondition(purpose == .chat, "appendUser used for non-chat run")
         var m = msgs
-        m.append(.init(role: "🧑‍💻", text: text, timestamp: Date()))
+        let datasetSnapshot: (id: String, name: String)? = {
+            guard loadedFormat != .some(.slm),
+                  let ds = modelManager?.activeDataset,
+                  ds.isIndexed else { return nil }
+            return (ds.datasetID, ds.name)
+        }()
+        m.append(.init(role: "🧑‍💻",
+                       text: text,
+                       timestamp: Date(),
+                       datasetID: datasetSnapshot?.id,
+                       datasetName: datasetSnapshot?.name))
         msgs = m
     }
 
@@ -2057,6 +2726,14 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
         }
 
         prompt = ""
+        AccessibilityAnnouncer.announceLocalized("Prompt submitted.")
+
+        let datasetSnapshot: (id: String, name: String)? = {
+            guard loadedFormat != .some(.slm),
+                  let ds = modelManager?.activeDataset,
+                  ds.isIndexed else { return nil }
+            return (ds.datasetID, ds.name)
+        }()
 
         if verboseLogging { print("[ChatVM] USER ▶︎ \(input)") }
         Task { await logger.log("[ChatVM] USER ▶︎ \(input)") }
@@ -2076,14 +2753,32 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
             if !didLaunchStreamTask { streamSessionIndex = nil }
         }
         var m = self.streamMsgs
-        m.append(.init(role: "🧑‍💻", text: input, timestamp: Date()))
+        m.append(.init(role: "🧑‍💻",
+                       text: input,
+                       timestamp: Date(),
+                       datasetID: datasetSnapshot?.id,
+                       datasetName: datasetSnapshot?.name))
         self.streamMsgs = m
+        // Snapshot attachments at send time so UI can clear the input tray immediately
+        // Track which image file paths this specific run uses, so prior/next runs
+        // cannot accidentally clear attachments they don't own.
+        var usedImagePathsForThisRun: [String] = []
         let attachments = pendingImageURLs.map { $0.path }
         if !attachments.isEmpty {
             m = self.streamMsgs
             let idx = m.index(before: m.endIndex)
             m[idx].imagePaths = attachments
             self.streamMsgs = m
+            // Mark these specific paths as the attachments for this run
+            usedImagePathsForThisRun = attachments
+            // Immediately remove used attachments from the input tray to avoid
+            // showing them while generation is in progress. The sent images remain
+            // visible on the user message via msg.imagePaths.
+            for path in attachments {
+                let url = URL(fileURLWithPath: path)
+                if let i = pendingImageURLs.firstIndex(of: url) { pendingImageURLs.remove(at: i) }
+                pendingThumbnails.removeValue(forKey: url)
+            }
         }
         m = self.streamMsgs
         m.append(.init(role: "🤖", text: "", timestamp: Date(), streaming: true))
@@ -2111,17 +2806,24 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
         // Use local backends only.
 
         var promptStr: String
-        let stops: [String]
+        var stops: [String]
         var llmInput: LLMInput
+        
         if loadedFormat == .slm {
             promptStr = input
-            stops = []
+            stops = loadedSettings?.stopSequences ?? []
             let userMessage = ChatMessage(role: "user", content: input)
             llmInput = LLMInput(.messages([userMessage]))
         } else {
             let (basePrompt, s, _) = self.buildPrompt(kind: currentKind, history: history)
             promptStr = basePrompt
-            stops = s
+            var mergedStops = s
+            if mergedStops.isEmpty {
+                if let overrideStops = (loadedSettings?.stopSequences ?? nil), !overrideStops.isEmpty {
+                    mergedStops = overrideStops
+                }
+            }
+            stops = mergedStops
             llmInput = LLMInput(.plain("") ) // will assign after final prompt computed
         }
         let isMLXFormat = (self.loadedFormat == .mlx)
@@ -2214,7 +2916,13 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
                                     }
                                 }
                             }
-                            ctx = detailed.enumerated().map { "[\($0.offset + 1)] \($0.element.text)" }.joined(separator: "\n\n")
+                            ctx = detailed.enumerated().map { offset, element in
+                                let src = element.source?.trimmingCharacters(in: .whitespacesAndNewlines)
+                                if let src, !src.isEmpty {
+                                    return "[\(offset + 1)] (\(src)) \(element.text)"
+                                }
+                                return "[\(offset + 1)] \(element.text)"
+                            }.joined(separator: "\n\n")
                             await MainActor.run {
                                 self.streamMsgs[outIdx].citations = detailed.map { ChatVM.Msg.Citation(text: $0.text, source: $0.source) }
                             }
@@ -2233,12 +2941,18 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
                         ) { status in
                             Task { @MainActor in
                                 self.datasetManager?.processingStatus[ds.datasetID] = status
-                                if let dc = self.datasetManager?.downloadController {
-                                    dc.showOverlay = status.stage != .completed && status.stage != .failed
-                                }
+                            if let dc = self.datasetManager?.downloadController {
+                                dc.showOverlay = status.stage != .completed && status.stage != .failed
                             }
                         }
-                        ctx = detailed.enumerated().map { "[\($0.offset + 1)] \($0.element.text)" }.joined(separator: "\n\n")
+                    }
+                        ctx = detailed.enumerated().map { offset, element in
+                            let src = element.source?.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if let src, !src.isEmpty {
+                                return "[\(offset + 1)] (\(src)) \(element.text)"
+                            }
+                            return "[\(offset + 1)] \(element.text)"
+                        }.joined(separator: "\n\n")
                         await MainActor.run {
                             self.streamMsgs[outIdx].citations = detailed.map { ChatVM.Msg.Citation(text: $0.text, source: $0.source) }
                         }
@@ -2263,7 +2977,13 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
                             }
                         }
                     }
-                    ctx = detailed.enumerated().map { "[\($0.offset + 1)] \($0.element.text)" }.joined(separator: "\n\n")
+                    ctx = detailed.enumerated().map { offset, element in
+                        let src = element.source?.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if let src, !src.isEmpty {
+                            return "[\(offset + 1)] (\(src)) \(element.text)"
+                        }
+                        return "[\(offset + 1)] \(element.text)"
+                    }.joined(separator: "\n\n")
                     await MainActor.run {
                         self.streamMsgs[outIdx].citations = detailed.map { ChatVM.Msg.Citation(text: $0.text, source: $0.source) }
                     }
@@ -2305,6 +3025,9 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
                 }
                 // Keep banner visible while streaming; show "Processing" while retrieving
                 injectionStage = .processing
+                // Milestone: a RAG flow was used in chat (full or rag injection)
+                ReviewPrompter.shared.noteRAGUsed()
+                ReviewPrompter.shared.safeMaybePromptIfEligible(chatVM: self)
             }
             if client == nil, let url = loadedURL {
                 try? await ensureClient(url: url, settings: loadedSettings, format: loadedFormat, forceReload: false)
@@ -2369,6 +3092,7 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
                 try? await Task.sleep(nanoseconds: 80_000_000) // ~80ms
             }
             guard self.modelLoaded, let c = self.client else { return }
+            AccessibilityAnnouncer.announceLocalized("Generating response…")
             let start = Date()
             await self.beginPerfTracking(messageID: messageID, start: start)
             var firstTok: Date?
@@ -2423,8 +3147,25 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
                     return defaultStopsBase + ["Step 1:", "Step 2:"]
                 }()
                 let stopSeqs = stops.isEmpty ? defaultStops : stops
-                let imagePaths = pendingImageURLs.map { $0.path }
+                // Use the attachments snapshot from send time; do not consult
+                // pendingImageURLs here because we clear them when the message is sent.
+                let imagePaths = usedImagePathsForThisRun
                 let useImages = self.supportsImageInput && !imagePaths.isEmpty && (self.loadedFormat == .mlx || self.loadedFormat == .gguf || self.loadedFormat == .slm)
+                // Preserve the snapshot if images are allowed; otherwise mark empty.
+                usedImagePathsForThisRun = useImages ? imagePaths : []
+                if !imagePaths.isEmpty {
+                    if useImages {
+                        let names = imagePaths.map { URL(fileURLWithPath: $0).lastPathComponent }
+                        Task { await logger.log("[Images][Use] yes format=\(String(describing: self.loadedFormat)) count=\(imagePaths.count) names=\(names.joined(separator: ", "))") }
+                    } else {
+                        var reasons: [String] = []
+                        if !self.supportsImageInput { reasons.append("supportsImageInput=false") }
+                        if !(self.loadedFormat == .mlx || self.loadedFormat == .gguf || self.loadedFormat == .slm) {
+                            reasons.append("format=\(String(describing: self.loadedFormat)) unsupported")
+                        }
+                        Task { await logger.log("[Images][Use] no reasons=\(reasons.joined(separator: ",")) count=\(imagePaths.count)") }
+                    }
+                }
                 // If images are present and supported, inject image placeholders only for llama.cpp or MLX templates
                 // For Leap SLM, do NOT inject placeholders; send raw text plus image binaries via multimodal
                 let finalPrompt = promptStr
@@ -2440,6 +3181,11 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
                         temperature: temperature,
                         includeTools: allowTools
                     )
+                }
+                // For remote sessions, show a brief loading indicator when starting
+                // the first stream, instead of on model selection.
+                if self.remoteService != nil && self.remoteLoadingPending == false {
+                    self.remoteLoadingPending = true
                 }
                 if self.remoteLoadingPending {
                     await MainActor.run {
@@ -2654,6 +3400,8 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
                     guard myID == self.activeRunID,
                           self.streamMsgs.indices.contains(outIdx) else { return }
                     self.streamMsgs[outIdx].streaming = false
+                    // Consider an in‑app review prompt after a successful turn.
+                    ReviewPrompter.shared.safeMaybePromptIfEligible(chatVM: self)
                     if !wasCancellation {
                         let lower = error.localizedDescription.lowercased()
                         if !lower.contains("decode") {
@@ -2909,6 +3657,9 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
                     await MainActor.run {
                         if self.streamMsgs.indices.contains(outIdx) {
                             self.streamMsgs[outIdx].streaming = true
+                            // Begin waiting for post-tool continuation tokens
+                            self.streamMsgs[outIdx].postToolWaiting = true
+                            AccessibilityAnnouncer.announceLocalized("Generating response…")
                         }
                     }
 
@@ -3021,6 +3772,13 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
                                             }
                                         }
                                         await self.handleRollingThoughts(raw: continuationText, messageIndex: outIdx)
+                                        // Another tool call was executed mid-continuation; show the
+                                        // post-tool waiting spinner again until next tokens stream.
+                                        await MainActor.run {
+                                            if self.streamMsgs.indices.contains(outIdx) {
+                                                self.streamMsgs[outIdx].postToolWaiting = true
+                                            }
+                                        }
                                         // Stop the current continuation stream before starting the next tool turn
                                         client.cancelActive()
                                         break
@@ -3054,6 +3812,15 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
                                 let appendChunk = nonOverlappingDelta(newChunk: t, existing: continuation)
                                 continuation += appendChunk
                                 contTokCount += 1
+
+                                // First token of post-tool continuation: hide waiting spinner
+                                if contTokCount == 1 {
+                                    await MainActor.run {
+                                        if self.streamMsgs.indices.contains(outIdx) {
+                                            self.streamMsgs[outIdx].postToolWaiting = false
+                                        }
+                                    }
+                                }
 
                                 await MainActor.run {
                                     if self.streamMsgs.indices.contains(outIdx) {
@@ -3184,9 +3951,13 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
                     await MainActor.run {
                         if self.streamMsgs.indices.contains(outIdx) {
                             self.streamMsgs[outIdx].streaming = false
+                            self.streamMsgs[outIdx].postToolWaiting = false
                             if let perf = finalPerf {
                                 self.streamMsgs[outIdx].perf = perf
                             }
+                            // Consider an in‑app review prompt after a successful turn.
+                            ReviewPrompter.shared.safeMaybePromptIfEligible(chatVM: self)
+                            AccessibilityAnnouncer.announceLocalized("Response generated.")
                         }
                     }
                     self.markRollingThoughtsInterrupted(forMessageAt: outIdx)
@@ -3196,7 +3967,23 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
         }
         // Do not immediately clear the banner here; allow the delayed clear above
         currentInjectedTokenOverhead = 0
-        pendingImageURLs.removeAll()
+        // Only clear images actually used by THIS run to avoid races.
+        var removedCount = 0
+        if !usedImagePathsForThisRun.isEmpty {
+            let usedSet = Set(usedImagePathsForThisRun)
+            // Map paths to URLs and remove if still pending
+            for path in usedSet {
+                let url = URL(fileURLWithPath: path)
+                if let idx = pendingImageURLs.firstIndex(of: url) {
+                    pendingImageURLs.remove(at: idx)
+                    pendingThumbnails.removeValue(forKey: url)
+                    removedCount += 1
+                }
+            }
+        }
+        if removedCount > 0 {
+            Task { await logger.log("[Images][Clear] cleared=\(removedCount)") }
+        }
     }
 
     // maybeAutoTitle removed in favor of using the first user query as title
@@ -3314,52 +4101,57 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
                     }
                 }
                 // Detect inline tool result JSON markers repeatedly and render tool box instead of raw JSON
-                while let toolRange = rest.range(of: "<tool_response>") ?? rest.range(of: "TOOL_RESULT:") {
+                toolLoop: while let toolRange = rest.range(of: "<tool_response>") ?? rest.range(of: "TOOL_RESULT:") {
                     // Emit text before the tool block
                     if toolRange.lowerBound > rest.startIndex {
                         finalPieces.append(.text(String(rest[..<toolRange.lowerBound])))
                     }
-                    // Determine which marker we matched and skip over its content while
-                    // preserving any trailing text after the tool result JSON.
-                    if rest[toolRange].hasPrefix("<tool_response>") {
-                        rest = rest[toolRange.upperBound...]
-                        if let end = rest.range(of: "</tool_response>") {
-                            rest = rest[end.upperBound...]
-                        } else {
-                            // If no explicit closing tag, drop everything after marker
-                            rest = rest[rest.endIndex...]
+
+                    let markerSlice = rest[toolRange]
+                    var remainder = rest[toolRange.upperBound...]
+                    var consumedPayload = false
+
+                    if markerSlice.hasPrefix("<tool_response>") {
+                        if let end = remainder.range(of: "</tool_response>") {
+                            remainder = remainder[end.upperBound...]
+                            consumedPayload = true
                         }
                     } else {
                         // Skip TOOL_RESULT JSON payloads. These can be objects or arrays.
-                        rest = rest[toolRange.upperBound...]
-                        // Advance past any whitespace
-                        var idx = rest.startIndex
-                        while idx < rest.endIndex && rest[idx].isWhitespace { idx = rest.index(after: idx) }
-                        if idx < rest.endIndex {
-                            if rest[idx] == "[" {
-                                if let close = findMatchingBracket(in: rest, startingFrom: idx) {
-                                    rest = rest[rest.index(after: close)...]
-                                } else {
-                                    // Incomplete array JSON; drop remainder until more tokens arrive
-                                    rest = rest[rest.endIndex...]
+                        var idx = remainder.startIndex
+                        while idx < remainder.endIndex && remainder[idx].isWhitespace {
+                            idx = remainder.index(after: idx)
+                        }
+                        if idx < remainder.endIndex {
+                            if remainder[idx] == "[" {
+                                if let close = findMatchingBracket(in: remainder, startingFrom: idx) {
+                                    remainder = remainder[remainder.index(after: close)...]
+                                    consumedPayload = true
                                 }
-                            } else if rest[idx] == "{" {
-                                if let close = findMatchingBrace(in: rest, startingFrom: idx) {
-                                    rest = rest[rest.index(after: close)...]
-                                } else {
-                                    // Incomplete object JSON; drop remainder until more tokens arrive
-                                    rest = rest[rest.endIndex...]
+                            } else if remainder[idx] == "{" {
+                                if let close = findMatchingBrace(in: remainder, startingFrom: idx) {
+                                    remainder = remainder[remainder.index(after: close)...]
+                                    consumedPayload = true
                                 }
                             } else {
-                                // Unknown payload; be conservative and drop remainder
-                                rest = rest[rest.endIndex...]
+                                // Unknown payload: drop through to the next newline to avoid leaking JSON.
+                                if let newline = remainder[idx...].firstIndex(of: "\n") {
+                                    remainder = remainder[newline...]
+                                } else {
+                                    remainder = remainder[remainder.endIndex...]
+                                }
+                                consumedPayload = true
                             }
                         } else {
-                            rest = rest[rest.endIndex...]
+                            remainder = remainder[idx...]
+                            consumedPayload = true
                         }
                     }
+
                     // Tool response doesn't increment the index since it's for the same tool call
                     finalPieces.append(.tool(toolCallIndex))
+                    rest = remainder
+                    if !consumedPayload { break toolLoop }
                 }
                 // Parse all think blocks that remain
                 while let s = rest.range(of: "<think>") {
@@ -3459,8 +4251,6 @@ private func fetchTokenizer(into dir: URL, repoID: String) async {
         }
         return nil
     }
-
-    
 
     // Inserts retrieval context inside the current template's user section so BOS/control tokens remain valid.
     // If the template isn't recognized, it falls back to prefixing a "Context:" block.
@@ -3815,28 +4605,46 @@ extension ChatVM {
     }
 
     // Heuristic for GGUF VLMs when Hub metadata is unavailable (offline or missing tags)
-    internal static nonisolated func guessLlamaVisionModel(from url: URL) -> Bool {
-        // Prefer a definitive architectural check for a multimodal projector
-        return GGUFMetadata.hasMultimodalProjector(at: url)
-    }
-
     @MainActor
     func savePendingImage(_ image: UIImage) async {
         // Persist to temporary directory so we can pass file paths into model clients
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("noema_images", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        if let data = image.jpegData(compressionQuality: 0.9) {
-            let url = dir.appendingPathComponent(UUID().uuidString + ".jpg")
-            try? data.write(to: url)
-            pendingImageURLs.append(url)
+
+        guard let data = image.jpegData(compressionQuality: 0.9) else { return }
+        let url = dir.appendingPathComponent(UUID().uuidString + ".jpg")
+        try? data.write(to: url)
+
+        // Prepare and cache a small thumbnail once so typing doesn't force re-decodes.
+        // Target ~160pt to look crisp at 80pt cells on 2x displays.
+        let target = CGSize(width: 160, height: 160)
+        #if canImport(UIKit)
+        if let thumb = await image.byPreparingThumbnail(ofSize: target) ?? image.resizedDown(to: target) {
+            pendingThumbnails[url] = thumb
         }
+        #else
+        if let thumb = image.resizedDown(to: target) {
+            pendingThumbnails[url] = thumb
+        }
+        #endif
+
+        pendingImageURLs.append(url)
+        let w = Int(image.size.width), h = Int(image.size.height)
+        Task { await logger.log("[Images][Attach] saved=\(url.lastPathComponent) size=\(w)x\(h) path=\(url.path) pending=\(pendingImageURLs.count)") }
     }
 
     @MainActor
     func removePendingImage(at index: Int) {
         guard pendingImageURLs.indices.contains(index) else { return }
         let url = pendingImageURLs.remove(at: index)
+        pendingThumbnails.removeValue(forKey: url)
         try? FileManager.default.removeItem(at: url)
+        Task { await logger.log("[Images][Remove] removed=\(url.lastPathComponent) pending=\(pendingImageURLs.count)") }
+    }
+
+    // Accessor used by views to fetch cached thumbnails
+    func pendingThumbnail(for url: URL) -> UIImage? {
+        pendingThumbnails[url]
     }
     
     /// Handle rolling thoughts for <think> tags during streaming
@@ -3977,13 +4785,13 @@ extension ChatVM {
             }
         }
 
-        // Remove stale keys that do not belong to the active session anymore
+        // Compute removals and additions first
+        var keysToRemove: [String] = []
         for key in rollingThoughtViewModels.keys where !allowedKeys.contains(key) {
-            rollingThoughtViewModels[key]?.cancel()
-            rollingThoughtViewModels.removeValue(forKey: key)
+            keysToRemove.append(key)
         }
 
-        // Create missing view models for newly detected think blocks; preserve existing ones
+        var modelsToAdd: [String: RollingThoughtViewModel] = [:]
         for key in allowedKeys where rollingThoughtViewModels[key] == nil {
             let vm = RollingThoughtViewModel()
             if let tuple = keyToContent[key] {
@@ -3991,8 +4799,65 @@ extension ChatVM {
                 vm.updateRollingLines()
                 vm.phase = tuple.isComplete ? .complete : .expanded
             }
-            rollingThoughtViewModels[key] = vm
+            modelsToAdd[key] = vm
         }
+
+        // Apply all mutations in one deferred main-queue pass to avoid nested updates
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            for key in keysToRemove {
+                self.rollingThoughtViewModels[key]?.cancel()
+                self.rollingThoughtViewModels.removeValue(forKey: key)
+            }
+            for (key, vm) in modelsToAdd {
+                self.rollingThoughtViewModels[key] = vm
+            }
+        }
+    }
+    
+    /// Returns only the assistant-visible answer text, stripping think/tool blocks
+    /// and preferring content that appears after the final control segment.
+    func finalAnswerText(for message: Msg) -> String? {
+        let pieces = parse(message.text, toolCalls: message.toolCalls)
+        guard !pieces.isEmpty else { return nil }
+        
+        let lastControlIndex = pieces.lastIndex { piece in
+            switch piece {
+            case .think, .tool:
+                return true
+            default:
+                return false
+            }
+        }
+        
+        var segments: [String] = []
+        for (index, piece) in pieces.enumerated() {
+            guard case .text(let text) = piece else { continue }
+            if let last = lastControlIndex, index <= last { continue }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                segments.append(trimmed)
+            }
+        }
+        
+        var combined = segments.joined(separator: "\n")
+        if combined.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let fallbackSegments = pieces.compactMap { piece -> String? in
+                guard case .text(let text) = piece else { return nil }
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }
+            combined = fallbackSegments.joined(separator: "\n")
+        }
+        
+        let trimmed = combined.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+extension ChatVM: ModelBenchmarkingViewModel {
+    func unloadAfterBenchmark() async {
+        await unload()
     }
 }
 
@@ -4003,10 +4868,31 @@ extension ChatVM {
 struct MessageView: View {
     let msg: ChatVM.Msg
     @EnvironmentObject var vm: ChatVM
+    @Environment(\.colorScheme) private var colorScheme
     @State private var expandedThinkIndices: Set<Int> = []
-    @State private var showContext = false
     @State private var showCopyPopup = false
     @State private var copiedMessage = false
+    @State private var expandedImagePath: String? = nil
+#if os(macOS)
+    @State private var hoverCopyVisible = false
+    @State private var suppressHoverCopy = false
+#endif
+#if os(visionOS)
+    @EnvironmentObject private var pinnedStore: VisionPinnedNoteStore
+    @Environment(\.openWindow) private var openWindow
+    @State private var hoverActive = false
+    @State private var showInteractionOptions = false
+    @GestureState private var isPressingMessage = false
+#endif
+    
+    private var datasetDisplayName: String? {
+        if let stored = msg.datasetName, !stored.isEmpty { return stored }
+        if let id = msg.datasetID,
+           let ds = vm.datasetManager?.datasets.first(where: { $0.datasetID == id }) {
+            return ds.name
+        }
+        return nil
+    }
     
     private func parse(_ text: String, toolCalls: [ChatVM.Msg.ToolCall]? = nil) -> [ChatVM.Piece] {
         // First parse code blocks
@@ -4179,42 +5065,52 @@ struct MessageView: View {
                     searchStart = rest.index(after: braceStart)
                 }
                 // Hide multiple tool_response blocks
-                while let toolRange = rest.range(of: "<tool_response>") ?? rest.range(of: "TOOL_RESULT:") {
+                toolLoop: while let toolRange = rest.range(of: "<tool_response>") ?? rest.range(of: "TOOL_RESULT:") {
                     if toolRange.lowerBound > rest.startIndex { appendTextWithThinks(rest[..<toolRange.lowerBound]) }
-                    if rest[toolRange].hasPrefix("<tool_response>") {
-                        rest = rest[toolRange.upperBound...]
-                        if let end = rest.range(of: "</tool_response>") {
-                            rest = rest[end.upperBound...]
-                        } else {
-                            rest = rest[rest.endIndex...]
+
+                    let markerSlice = rest[toolRange]
+                    var remainder = rest[toolRange.upperBound...]
+                    var consumedPayload = false
+
+                    if markerSlice.hasPrefix("<tool_response>") {
+                        if let end = remainder.range(of: "</tool_response>") {
+                            remainder = remainder[end.upperBound...]
+                            consumedPayload = true
                         }
                     } else {
                         // TOOL_RESULT payload can be a JSON object or array; skip entire structure
-                        rest = rest[toolRange.upperBound...]
-                        var idx = rest.startIndex
-                        while idx < rest.endIndex && rest[idx].isWhitespace { idx = rest.index(after: idx) }
-                        if idx < rest.endIndex {
-                            if rest[idx] == "[" {
-                                if let close = findMatchingBracket(in: rest, startingFrom: idx) {
-                                    rest = rest[rest.index(after: close)...]
-                                } else {
-                                    rest = rest[rest.endIndex...]
+                        var idx = remainder.startIndex
+                        while idx < remainder.endIndex && remainder[idx].isWhitespace {
+                            idx = remainder.index(after: idx)
+                        }
+                        if idx < remainder.endIndex {
+                            if remainder[idx] == "[" {
+                                if let close = findMatchingBracket(in: remainder, startingFrom: idx) {
+                                    remainder = remainder[remainder.index(after: close)...]
+                                    consumedPayload = true
                                 }
-                            } else if rest[idx] == "{" {
-                                if let close = findMatchingBrace(in: rest, startingFrom: idx) {
-                                    rest = rest[rest.index(after: close)...]
-                                } else {
-                                    rest = rest[rest.endIndex...]
+                            } else if remainder[idx] == "{" {
+                                if let close = findMatchingBrace(in: remainder, startingFrom: idx) {
+                                    remainder = remainder[remainder.index(after: close)...]
+                                    consumedPayload = true
                                 }
                             } else {
-                                rest = rest[rest.endIndex...]
+                                if let newline = remainder[idx...].firstIndex(of: "\n") {
+                                    remainder = remainder[newline...]
+                                } else {
+                                    remainder = remainder[remainder.endIndex...]
+                                }
+                                consumedPayload = true
                             }
                         } else {
-                            rest = rest[rest.endIndex...]
+                            remainder = remainder[idx...]
+                            consumedPayload = true
                         }
                     }
                     // Tool response doesn't increment the index since it's for the same tool call
                     finalPieces.append(ChatVM.Piece.tool(toolCallIndex))
+                    rest = remainder
+                    if !consumedPayload { break toolLoop }
                 }
                 // Preserve all think blocks (and sanitize inner content)
                 while let s = rest.range(of: "<think>") {
@@ -4256,6 +5152,9 @@ struct MessageView: View {
     
     
     // MARK: - Text or List rendering
+    // Units used to render text blocks while allowing lists to be combined
+    // into a single selectable region.
+    private enum RenderUnit { case bulletBlock(String); case entryIndex(Int) }
     @ViewBuilder
     private func renderTextOrList(_ t: String) -> some View {
         // Enhanced rendering:
@@ -4267,28 +5166,58 @@ struct MessageView: View {
             EmptyView()
         } else {
             let entries = parseTextEntries(from: text)
+            // Precompute render units so the ViewBuilder only loops values.
+            let units: [RenderUnit] = {
+                var out: [RenderUnit] = []
+                var i = 0
+                while i < entries.count {
+                    switch entries[i] {
+                    case .blank, .heading, .mathBlock, .table, .text:
+                        out.append(.entryIndex(i))
+                        i += 1
+                    case .bullet:
+                        var lines: [String] = []
+                        while i < entries.count {
+                            if case .bullet(let marker, let content) = entries[i] {
+                                lines.append("\(marker) \(content)")
+                                i += 1
+                            } else { break }
+                        }
+                        out.append(.bulletBlock(lines.joined(separator: "\n\n")))
+                    }
+                }
+                return out
+            }()
 
             VStack(alignment: .leading, spacing: 6) {
-                ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
-                    switch entry {
-                    case .blank:
-                        // Preserve paragraph gaps produced by normalizeListFormatting
-                        Text("")
-                    case .heading(let level, let content):
-                        MathRichText(source: content, bodyFont: headingFont(for: level))
+                ForEach(Array(units.enumerated()), id: \.offset) { _, unit in
+                    switch unit {
+                    case .bulletBlock(let block):
+                        MathRichText(source: block, bodyFont: chatBodyFont)
+                            .font(chatBodyFont)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                    case .bullet(let marker, let content):
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text(marker)
-                            MathRichText(source: content)
+                    case .entryIndex(let idx):
+                        switch entries[idx] {
+                        case .blank:
+                            Text("")
+                        case .heading(let level, let content):
+                            MathRichText(source: content, bodyFont: headingFont(for: level))
+                                .font(headingFont(for: level))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        case .mathBlock(let source):
+                            MathRichText(source: source, bodyFont: chatBodyFont)
+                                .font(chatBodyFont)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        case .table(let headers, let alignments, let rows):
+                            tableView(headers: headers, alignments: alignments, rows: rows)
+                        case .text(let line):
+                            MathRichText(source: line, bodyFont: chatBodyFont)
+                                .font(chatBodyFont)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        case .bullet:
+                            // Should not appear as individual entries because bullets are grouped.
+                            EmptyView()
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    case .mathBlock(let source):
-                        MathRichText(source: source)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    case .text(let line):
-                        MathRichText(source: line)
-                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
             }
@@ -4300,12 +5229,43 @@ struct MessageView: View {
         case heading(level: Int, content: String)
         case bullet(marker: String, content: String)
         case mathBlock(String)
+        case table(headers: [String], alignments: [TableColumnAlignment], rows: [[String]])
         case text(String)
     }
 
     private enum TextBlockDelimiter {
         case doubleDollar
         case bracket
+    }
+
+    private enum TableColumnAlignment {
+        case leading
+        case center
+        case trailing
+
+        var gridAlignment: Alignment {
+            switch self {
+            case .leading: return .leading
+            case .center: return .center
+            case .trailing: return .trailing
+            }
+        }
+
+        var frameAlignment: Alignment {
+            switch self {
+            case .leading: return .leading
+            case .center: return .center
+            case .trailing: return .trailing
+            }
+        }
+
+        var textAlignment: TextAlignment {
+            switch self {
+            case .leading: return .leading
+            case .center: return .center
+            case .trailing: return .trailing
+            }
+        }
     }
 
     private func parseTextEntries(from text: String) -> [TextLineEntry] {
@@ -4335,6 +5295,12 @@ struct MessageView: View {
             if trimmed.isEmpty {
                 entries.append(.blank)
                 index += 1
+                continue
+            }
+
+            if let table = parseTableBlock(startingAt: index, in: lines) {
+                entries.append(.table(headers: table.headers, alignments: table.alignments, rows: table.rows))
+                index += table.consumed
                 continue
             }
 
@@ -4374,6 +5340,127 @@ struct MessageView: View {
         }
 
         return entries
+    }
+
+    @ViewBuilder
+    private func tableView(headers: [String], alignments: [TableColumnAlignment], rows: [[String]]) -> some View {
+        let columns: [GridItem] = alignments.map { alignment in
+            GridItem(.flexible(), spacing: 12, alignment: alignment.gridAlignment)
+        }
+
+        VStack(spacing: 0) {
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
+                ForEach(Array(headers.enumerated()), id: \.offset) { index, header in
+                    MathRichText(source: header, bodyFont: tableHeaderFont)
+                        .font(tableHeaderFont)
+                        .multilineTextAlignment(alignments[index].textAlignment)
+                        .frame(maxWidth: .infinity, alignment: alignments[index].frameAlignment)
+                }
+            }
+            .padding(.bottom, rows.isEmpty ? 0 : 10)
+
+            if !rows.isEmpty {
+                Divider()
+                    .padding(.bottom, 10)
+            }
+
+            ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, row in
+                LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
+                    ForEach(Array(row.enumerated()), id: \.offset) { columnIndex, value in
+                        MathRichText(source: value, bodyFont: chatBodyFont)
+                            .font(chatBodyFont)
+                            .multilineTextAlignment(alignments[columnIndex].textAlignment)
+                            .frame(maxWidth: .infinity, alignment: alignments[columnIndex].frameAlignment)
+                    }
+                }
+                if rowIndex < rows.count - 1 {
+                    Divider()
+                        .padding(.vertical, 10)
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(tableBackgroundColor)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(tableBorderColor, lineWidth: 0.5)
+        )
+    }
+
+    private func parseTableBlock(startingAt startIndex: Int, in lines: [String]) -> (consumed: Int, headers: [String], alignments: [TableColumnAlignment], rows: [[String]])? {
+        guard let headerCells = parseTableRow(lines[startIndex]) else { return nil }
+        let separatorIndex = startIndex + 1
+        guard separatorIndex < lines.count,
+              let alignments = parseTableAlignments(lines[separatorIndex], expectedCount: headerCells.count) else {
+            return nil
+        }
+
+        var rows: [[String]] = []
+        var cursor = separatorIndex + 1
+
+        while cursor < lines.count {
+            let candidate = lines[cursor]
+            if candidate.trimmingCharacters(in: .whitespaces).isEmpty {
+                break
+            }
+            guard let cells = parseTableRow(candidate), cells.count == headerCells.count else {
+                break
+            }
+            rows.append(cells)
+            cursor += 1
+        }
+
+        let consumed = 1 + 1 + rows.count
+        return (consumed, headerCells, alignments, rows)
+    }
+
+    private func parseTableRow(_ line: String) -> [String]? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.contains("|") else { return nil }
+
+        var segments = trimmed.split(separator: "|", omittingEmptySubsequences: false).map { segment in
+            segment.trimmingCharacters(in: .whitespaces)
+        }
+
+        if let first = segments.first, first.isEmpty { segments.removeFirst() }
+        if let last = segments.last, last.isEmpty { segments.removeLast() }
+
+        guard segments.count >= 2 else { return nil }
+
+        // Require at least one non-empty column so we don't treat inline pipes as tables
+        guard segments.contains(where: { !$0.isEmpty }) else { return nil }
+
+        return segments
+    }
+
+    private func parseTableAlignments(_ line: String, expectedCount: Int) -> [TableColumnAlignment]? {
+        guard let rawColumns = parseTableRow(line), rawColumns.count == expectedCount else { return nil }
+
+        var alignments: [TableColumnAlignment] = []
+        for column in rawColumns {
+            let trimmed = column.trimmingCharacters(in: .whitespaces)
+            guard trimmed.contains("-") else { return nil }
+
+            let leadingColon = trimmed.hasPrefix(":")
+            let trailingColon = trimmed.hasSuffix(":")
+            let dashPortion = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: ":"))
+            guard !dashPortion.isEmpty, dashPortion.allSatisfy({ $0 == "-" }) else { return nil }
+
+            let alignment: TableColumnAlignment
+            if leadingColon && trailingColon {
+                alignment = .center
+            } else if trailingColon {
+                alignment = .trailing
+            } else {
+                alignment = .leading
+            }
+            alignments.append(alignment)
+        }
+
+        return alignments
     }
 
     private func headingLevel(for line: String) -> Int? {
@@ -4566,7 +5653,9 @@ struct MessageView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     Text(code)
                         .font(.system(.body, design: .monospaced))
+#if os(macOS)
                         .textSelection(.enabled)
+#endif
                         .padding(12)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -4648,248 +5737,348 @@ struct MessageView: View {
         return nil
     }
     
+    private var chatBodyFont: Font {
+#if os(macOS)
+        return .system(size: 16, weight: .regular)
+#else
+        return .body
+#endif
+    }
+
+    private var tableHeaderFont: Font {
+#if os(macOS)
+        return .system(size: 15, weight: .semibold)
+#else
+        return .system(size: 15, weight: .semibold)
+#endif
+    }
+
+    private var tableBackgroundColor: Color {
+        if colorScheme == .dark {
+            return Color.white.opacity(0.06)
+        }
+        return Color.primary.opacity(0.05)
+    }
+
+    private var tableBorderColor: Color {
+        Color.primary.opacity(colorScheme == .dark ? 0.2 : 0.08)
+    }
+
     var bubbleColor: Color {
-        msg.role == "🧑‍💻" ? Color.accentColor.opacity(0.2) : Color(.secondarySystemBackground)
+        if msg.role == "🧑‍💻" {
+#if os(macOS)
+            let accentOpacity: Double = colorScheme == .dark ? 0.3 : 0.22
+            return Color.accentColor.opacity(accentOpacity)
+#else
+            return Color.accentColor.opacity(0.2)
+#endif
+        }
+#if os(macOS)
+        if colorScheme == .dark {
+            return Color(uiColor: UIColor.controlBackgroundColor.withAlphaComponent(0.55))
+        } else {
+            return Color(uiColor: UIColor.textBackgroundColor)
+        }
+#else
+        return Color(.secondarySystemBackground)
+#endif
     }
     
     @ViewBuilder
     private func imagesView(paths: [String]) -> some View {
+        let thumbSize = CGSize(width: 96, height: 96)
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(Array(paths.prefix(5).enumerated()), id: \.offset) { _, p in
-                    if let ui = UIImage(contentsOfFile: p) {
-                        Image(uiImage: ui)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: 96, height: 96)
-                            .clipped()
-                            .cornerRadius(12)
+                    let img = ImageThumbnailCache.shared.thumbnail(for: p, pointSize: thumbSize)
+                    ZStack {
+                        if let ui = img {
+                            Image(platformImage: ui)
+                                .resizable()
+                                .scaledToFill()
+                        } else {
+                            Rectangle().fill(Color.secondary.opacity(0.15))
+                                .overlay(ProgressView().scaleEffect(0.6))
+                        }
                     }
+                    .frame(width: thumbSize.width, height: thumbSize.height)
+                    .clipped()
+                    .cornerRadius(12)
+                    .drawingGroup(opaque: false)
+                    .contentShape(Rectangle())
+                    .onTapGesture { expandedImagePath = p }
                 }
             }
             .padding(.horizontal, 4)
         }
         .padding(.horizontal, 12)
     }
-    
-    @ViewBuilder
-    private func webSearchSummaryView() -> some View {
-        if let err = msg.webError {
-            HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
-                Text("Web search error: \(err)")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Spacer(minLength: 0)
-            }
-            .padding(8)
-            .background(Color(.systemGray6))
-            .adaptiveCornerRadius(.medium)
-        } else if let hits = msg.webHits, !hits.isEmpty {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "globe").font(.caption)
-                        Text("\(hits.count)")
-                            .font(.caption2).bold()
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color(.systemGray6))
-                    .clipShape(Capsule())
-                    ForEach(Array(hits.enumerated()), id: \.offset) { idx, h in
-                        Button(action: { showContext = true }) {
-                            HStack(spacing: 6) {
-                                Text("\(idx+1)")
-                                    .font(.caption2).bold()
-                                Text(h.title.isEmpty ? h.url : h.title)
-                                    .font(.caption2)
-                                    .lineLimit(1)
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 6)
-                            .background(Color(.systemGray6))
-                            .adaptiveCornerRadius(.small)
-                        }
-                        .buttonStyle(.plain)
-                        .sheet(isPresented: Binding(get: { showContext }, set: { showContext = $0 })) {
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(h.title.isEmpty ? h.url : h.title).font(.headline)
-                                        Text("Source: \(h.engine) · \(h.url)")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
-                                    Spacer()
-                                    Button("Close") { showContext = false }
-                                }
-                                ScrollView {
-                                    Text(h.snippet)
-                                        .font(.body)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .padding(.top, 4)
-                                }
-                                .frame(maxHeight: .infinity)
-                            }
-                            .padding()
-                            .frame(minWidth: 300, minHeight: 200)
-                        }
-                    }
-                }
-                .padding(.horizontal, 8)
-            }
-        } else {
-            HStack(spacing: 8) {
-                ProgressView().scaleEffect(0.8)
-                Text("Searching the web…")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                Spacer(minLength: 0)
-            }
-            .padding(8)
-            .background(Color(.systemGray6))
-            .adaptiveCornerRadius(.medium)
-        }
-    }
-    
-    @ViewBuilder
-    private func toolInlineView(index: Int) -> some View {
-        if let calls = msg.toolCalls {
-            let call: ChatVM.Msg.ToolCall? = calls.indices.contains(index) ? calls[index] : calls.last
-            if let call = call {
-                // For web search calls, ensure we have proper result/error state
-                if call.toolName == "noema.web.retrieve" {
-                    let updatedCall: ChatVM.Msg.ToolCall = {
-                        if let err = msg.webError {
-                            return ChatVM.Msg.ToolCall(
-                                id: call.id,
-                                toolName: call.toolName,
-                                displayName: call.displayName,
-                                iconName: call.iconName,
-                                requestParams: call.requestParams,
-                                result: nil,
-                                error: err,
-                                timestamp: call.timestamp
-                            )
-                        } else if let hits = msg.webHits, !hits.isEmpty {
-                            // Convert web hits to JSON string for result
-                            let hitsArray = hits.map { hit in
-                                [
-                                    "title": hit.title,
-                                    "url": hit.url,
-                                    "snippet": hit.snippet,
-                                    "engine": hit.engine,
-                                    "score": hit.score
-                                ] as [String: Any]
-                            }
-                            if let data = try? JSONSerialization.data(withJSONObject: hitsArray, options: .prettyPrinted),
-                               let jsonString = String(data: data, encoding: .utf8) {
-                                return ChatVM.Msg.ToolCall(
-                                    id: call.id,
-                                    toolName: call.toolName,
-                                    displayName: call.displayName,
-                                    iconName: call.iconName,
-                                    requestParams: call.requestParams,
-                                    result: jsonString,
-                                    error: nil,
-                                    timestamp: call.timestamp
-                                )
-                            } else {
-                                return call
-                            }
-                        } else {
-                            return call
-                        }
-                    }()
-                    ToolCallView(toolCall: updatedCall)
+
+    private struct AttachmentPreview: View {
+        let path: String
+        let onClose: () -> Void
+        @Environment(\.dismiss) private var dismiss
+        var body: some View {
+            ZStack(alignment: .topTrailing) {
+                Color.black.opacity(0.95).ignoresSafeArea()
+#if canImport(UIKit)
+                if let ui = UIImage(contentsOfFile: path) {
+                    Image(platformImage: ui)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .padding()
+                        .background(Color.black.opacity(0.001).ignoresSafeArea())
                 } else {
-                    ToolCallView(toolCall: call)
+                    Text("Unable to load image").foregroundColor(.white)
                 }
-            } else {
-                EmptyView()
+#else
+                if let ns = NSImage(contentsOfFile: path) {
+                    Image(nsImage: ns)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .padding()
+                        .background(Color.black.opacity(0.001).ignoresSafeArea())
+                } else {
+                    Text("Unable to load image").foregroundColor(.white)
+                }
+#endif
+                HStack {
+                    Spacer()
+                    Button(action: { onClose(); dismiss() }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 30, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.9))
+                            .padding(12)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-        } else {
-            EmptyView()
+            .contentShape(Rectangle())
+            .onTapGesture { onClose(); dismiss() }
         }
     }
+
+    private func displayedToolCall(_ call: ChatVM.Msg.ToolCall) -> ChatVM.Msg.ToolCall {
+        guard call.toolName == "noema.web.retrieve" else { return call }
+
+        if let err = msg.webError {
+            return ChatVM.Msg.ToolCall(
+                id: call.id,
+                toolName: call.toolName,
+                displayName: call.displayName,
+                iconName: call.iconName,
+                requestParams: call.requestParams,
+                result: nil,
+                error: err,
+                timestamp: call.timestamp
+            )
+        }
+
+        guard let hits = msg.webHits, !hits.isEmpty else { return call }
+
+        let hitsArray: [[String: Any]] = hits.map { hit in
+            [
+                "title": hit.title,
+                "url": hit.url,
+                "snippet": hit.snippet,
+                "engine": hit.engine,
+                "score": hit.score
+            ]
+        }
+
+        if let data = try? JSONSerialization.data(withJSONObject: hitsArray, options: .prettyPrinted),
+           let jsonString = String(data: data, encoding: .utf8) {
+            return ChatVM.Msg.ToolCall(
+                id: call.id,
+                toolName: call.toolName,
+                displayName: call.displayName,
+                iconName: call.iconName,
+                requestParams: call.requestParams,
+                result: jsonString,
+                error: nil,
+                timestamp: call.timestamp
+            )
+        }
+
+        return call
+    }
     
+    private struct RenderEntry: Identifiable {
+        enum Kind {
+            case text(String)
+            case code(code: String, language: String?)
+            case thinkExisting(key: String)
+            case thinkNew(text: String, done: Bool, key: String)
+            case tool(ChatVM.Msg.ToolCall)
+            case postToolWait
+        }
+
+        let id: String
+        let kind: Kind
+        let topPadding: CGFloat
+        let bottomPadding: CGFloat
+
+        init(id: String, kind: Kind, topPadding: CGFloat, bottomPadding: CGFloat = 0) {
+            self.id = id
+            self.kind = kind
+            self.topPadding = topPadding
+            self.bottomPadding = bottomPadding
+        }
+    }
+
     @ViewBuilder
     private func piecesView(_ pieces: [ChatVM.Piece]) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(pieces.enumerated()), id: \.offset) { idx, piece in
-                let prevIsThink: Bool = {
-                    if idx == 0 { return false }
-                    if case .think(_, _) = pieces[idx - 1] { return true }
-                    return false
-                }()
-                let prevIsTool: Bool = {
-                    if idx == 0 { return false }
-                    if case .tool(_) = pieces[idx - 1] { return true }
-                    return false
-                }()
+        let thinkOrdinals: [Int?] = {
+            var ordinals = Array(repeating: Int?.none, count: pieces.count)
+            var counter = 0
+            for idx in pieces.indices {
+                if pieces[idx].isThink {
+                    ordinals[idx] = counter
+                    counter += 1
+                }
+            }
+            return ordinals
+        }()
+
+        let renderEntries: [RenderEntry] = {
+            var results: [RenderEntry] = []
+            var renderedToolCallIDs = Set<UUID>()
+
+            for idx in pieces.indices {
+                let piece = pieces[idx]
+                let prevIsThink = idx > 0 ? pieces[idx - 1].isThink : false
+                let prevIsTool = idx > 0 ? pieces[idx - 1].isTool : false
+
                 switch piece {
                 case .text(let t):
-                    if !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        renderTextOrList(t)
-                        // Reduce padding when following thought or tool boxes
-                        // so the final text sits closer to the preceding box.
-                            .padding(.top, (prevIsThink || prevIsTool) ? 2 : 4)
+                    let trimmed = t.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else { continue }
+                    let topPadding: CGFloat = (prevIsThink || prevIsTool) ? 2 : 4
+                    results.append(
+                        RenderEntry(
+                            id: "text-\(msg.id.uuidString)-\(idx)",
+                            kind: .text(t),
+                            topPadding: topPadding
+                        )
+                    )
+                case .code(let code, let language):
+                    results.append(
+                        RenderEntry(
+                            id: "code-\(msg.id.uuidString)-\(idx)",
+                            kind: .code(code: code, language: language),
+                            topPadding: 4
+                        )
+                    )
+                case .think(let t, let done):
+                    guard let thinkOrdinalIndex = thinkOrdinals[idx] else { continue }
+                    let thinkKey = "message-\(msg.id.uuidString)-think-\(thinkOrdinalIndex)"
+
+                    if vm.rollingThoughtViewModels[thinkKey] != nil {
+                        results.append(
+                            RenderEntry(
+                                id: "think-existing-\(thinkKey)",
+                                kind: .thinkExisting(key: thinkKey),
+                                topPadding: 4
+                            )
+                        )
+                    } else {
+                        let trimmed = t.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !trimmed.isEmpty else { continue }
+                        results.append(
+                            RenderEntry(
+                                id: "think-new-\(thinkKey)",
+                                kind: .thinkNew(text: t, done: done, key: thinkKey),
+                                topPadding: 4
+                            )
+                        )
                     }
+                case .tool(let toolIndex):
+                    guard let toolCalls = msg.toolCalls,
+                          toolCalls.indices.contains(toolIndex) else { continue }
+
+                    let originalCall = toolCalls[toolIndex]
+                    let call = displayedToolCall(originalCall)
+                    guard renderedToolCallIDs.insert(call.id).inserted else { continue }
+
+                    results.append(
+                        RenderEntry(
+                            id: "tool-\(call.id.uuidString)",
+                            kind: .tool(call),
+                            topPadding: 4,
+                            bottomPadding: 2
+                        )
+                    )
+                }
+            }
+            // Append a small spinner after the last tool call while waiting
+            // for the post-tool continuation to start streaming tokens.
+            if msg.postToolWaiting, pieces.contains(where: { $0.isTool }) {
+                results.append(
+                    RenderEntry(
+                        id: "post-tool-wait-\(msg.id.uuidString)",
+                        kind: .postToolWait,
+                        topPadding: 4,
+                        bottomPadding: 2
+                    )
+                )
+            }
+            return results
+        }()
+
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(renderEntries) { entry in
+                switch entry.kind {
+                case .text(let text):
+                    renderTextOrList(text)
+                        .padding(.top, entry.topPadding)
                 case .code(let code, let language):
                     CodeBlockView(code: code, language: language)
-                        .padding(.top, 4)
-                case .think(let t, let done):
-                    let thinkOrdinalIndex: Int = {
-                        var count = 0
-                        for p in pieces.prefix(idx) {
-                            if case .think(_, _) = p { count += 1 }
-                        }
-                        return count
-                    }()
-                    let thinkKey = "message-\(msg.id.uuidString)-think-\(thinkOrdinalIndex)"
-                    if let viewModel = vm.rollingThoughtViewModels[thinkKey] {
+                        .padding(.top, entry.topPadding)
+                case .thinkExisting(let key):
+                    if let viewModel = vm.rollingThoughtViewModels[key] {
                         RollingThoughtBox(viewModel: viewModel)
-                        // Reduce gap after thought box so LaTeX-rendered boxes do not
-                        // create excessive whitespace before subsequent text.
-                            .padding(.top, prevIsTool ? 4 : 4)
-                    } else {
-                        // Avoid creating empty thought boxes which show "Waiting for thoughts..."
-                        if !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            let tempVM = RollingThoughtViewModel()
-                            RollingThoughtBox(viewModel: tempVM)
-                                .padding(.top, prevIsTool ? 4 : 4)
-                                .onAppear {
-                                    // Defer publishing to next runloop tick to avoid mutating during view update
-                                    DispatchQueue.main.async {
-                                        tempVM.fullText = t
-                                        tempVM.updateRollingLines()
-                                        tempVM.phase = done ? .complete : .streaming
-                                        if vm.rollingThoughtViewModels[thinkKey] == nil {
-                                            vm.rollingThoughtViewModels[thinkKey] = tempVM
-                                        }
-                                    }
-                                }
-                        }
+                            .padding(.top, entry.topPadding)
                     }
-                case .tool(let index):
-                    toolInlineView(index: index)
-                        .padding(.top, prevIsThink ? 4 : 4)
-                        .padding(.bottom, 2)
+                case .thinkNew(let text, let done, let key):
+                    let tempVM = RollingThoughtViewModel()
+                    RollingThoughtBox(viewModel: tempVM)
+                        .padding(.top, entry.topPadding)
+                        .onAppear {
+                            DispatchQueue.main.async {
+                                tempVM.fullText = text
+                                tempVM.updateRollingLines()
+                                tempVM.phase = done ? .complete : .streaming
+                                if vm.rollingThoughtViewModels[key] == nil {
+                                    vm.rollingThoughtViewModels[key] = tempVM
+                                }
+                            }
+                        }
+                case .tool(let call):
+                    ToolCallView(toolCall: call)
+                        .padding(.top, entry.topPadding)
+                        .padding(.bottom, entry.bottomPadding)
+                case .postToolWait:
+                    ProgressView()
+                        .scaleEffect(0.8)
+                        .padding(.top, entry.topPadding)
+                        .padding(.bottom, entry.bottomPadding)
                 }
             }
         }
     }
     
     private func copyMessageToPasteboard() {
+        let copyPayload = copyableMessageText()
 #if os(iOS) || os(visionOS)
-        UIPasteboard.general.string = msg.text
+        UIPasteboard.general.string = copyPayload
 #if os(iOS)
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        Haptics.impact(.light)
 #endif
 #elseif os(macOS)
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(msg.text, forType: .string)
+        NSPasteboard.general.setString(copyPayload, forType: .string)
 #endif
         copiedMessage = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
@@ -4903,35 +6092,129 @@ struct MessageView: View {
             }
         }
     }
+
+    private func copyableMessageText() -> String {
+        let pieces = parse(msg.text, toolCalls: msg.toolCalls)
+        var sections: [String] = []
+        sections.reserveCapacity(pieces.count)
+
+        var textAccumulator = ""
+
+        func flushTextAccumulator() {
+            let trimmed = textAccumulator.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                let sanitized = textAccumulator.trimmingCharacters(in: .newlines)
+                sections.append(sanitized)
+            }
+            textAccumulator.removeAll(keepingCapacity: true)
+        }
+
+        for piece in pieces {
+            switch piece {
+            case .text(let text):
+                textAccumulator.append(text)
+            case .code(let code, let language):
+                flushTextAccumulator()
+                let trimmedCode = code.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmedCode.isEmpty else { continue }
+                let lang = language?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let header = lang.isEmpty ? "```" : "```\(lang)"
+                var block = header + "\n" + code
+                if !code.hasSuffix("\n") {
+                    block.append("\n")
+                }
+                block.append("```")
+                sections.append(block)
+            case .think, .tool:
+                continue
+            }
+        }
+        flushTextAccumulator()
+
+        let combined = sections.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !combined.isEmpty {
+            return combined
+        }
+
+        return msg.text
+            .replacingOccurrences(of: "<think>", with: "")
+            .replacingOccurrences(of: "</think>", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
+    private func datasetBadge(_ name: String) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.accentColor)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Dataset")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text(name)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(colorScheme == .dark ? .white : .primary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.accentColor.opacity(colorScheme == .dark ? 0.22 : 0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.accentColor.opacity(0.25), lineWidth: 0.8)
+        )
+    }
+
+#if os(visionOS)
+    private func pinMessage() {
+        guard let sessionID = vm.activeSessionID else { return }
+        let note = pinnedStore.pin(message: msg, in: sessionID)
+        openWindow(id: VisionSceneID.pinnedCardWindow, value: note.id)
+    }
+#endif
     
     @ViewBuilder
     private func bubbleView(
         _ pieces: [ChatVM.Piece],
-        hasInlineTool: Bool,
-        hasWebRetrieveCall: Bool
+        hasWebRetrieveCall: Bool,
+        isSpotlighted: Bool
     ) -> some View {
+        let trimmedText = msg.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasExternalToolContent = (
+            (msg.toolCalls?.isEmpty == false) ||
+            msg.usedWebSearch == true ||
+            hasWebRetrieveCall
+        )
+        let shouldShowTokenLoadingIndicator =
+            msg.role == "🤖" &&
+            msg.streaming &&
+            trimmedText.isEmpty &&
+            !hasExternalToolContent
+
         VStack(alignment: .leading, spacing: 4) {
-            if !hasInlineTool, let toolCalls = msg.toolCalls, !toolCalls.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(toolCalls.filter { call in
-                        if hasWebRetrieveCall || msg.usedWebSearch == true {
-                            return call.toolName != "noema.web.retrieve"
-                        }
-                        return true
-                    }) { toolCall in
-                        ToolCallView(toolCall: toolCall)
-                    }
+            if msg.role == "🧑‍💻", let datasetName = datasetDisplayName {
+                datasetBadge(datasetName)
+            }
+
+            if shouldShowTokenLoadingIndicator {
+                HStack {
+                    ProgressView()
+                        .scaleEffect(0.85)
+                        .tint(.secondary)
                 }
-                .padding(.bottom, 2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 2)
             }
-            
-            if !hasInlineTool && (msg.usedWebSearch == true || hasWebRetrieveCall) {
-                webSearchSummaryView()
-                    .padding(.bottom, 2)
-                    .animation(.none, value: msg.text)
+
+            if !pieces.isEmpty {
+                piecesView(pieces)
             }
-            
-            piecesView(pieces)
         }
         .padding(12)
         .frame(
@@ -4941,27 +6224,50 @@ struct MessageView: View {
         .background(bubbleColor)
         .adaptiveCornerRadius(.large)
         .shadow(color: Color.black.opacity(0.1), radius: 1, x: 0, y: 1)
+        .overlay(
+            RoundedRectangle(cornerRadius: UIConstants.cornerRadius)
+                .stroke(Color.accentColor.opacity(isSpotlighted ? 0.9 : 0), lineWidth: isSpotlighted ? 3 : 0)
+        )
+#if os(macOS)
+        .textSelection(.enabled)
+#endif
+        .animation(.easeInOut(duration: 0.2), value: isSpotlighted)
     }
-    
+
     @ViewBuilder
     private func messageContainer(
         pieces: [ChatVM.Piece],
-        hasInlineTool: Bool,
-        hasWebRetrieveCall: Bool
+        hasWebRetrieveCall: Bool,
+        isSpotlighted: Bool
+    ) -> some View {
+        messageContainerBody(
+            pieces: pieces,
+            hasWebRetrieveCall: hasWebRetrieveCall,
+            isSpotlighted: isSpotlighted
+        )
+#if os(macOS)
+        .textSelection(.enabled)
+#endif
+    }
+
+    private func messageContainerBody(
+        pieces: [ChatVM.Piece],
+        hasWebRetrieveCall: Bool,
+        isSpotlighted: Bool
     ) -> some View {
         VStack(alignment: msg.role == "🧑‍💻" ? .trailing : .leading, spacing: 2) {
             if let paths = msg.imagePaths, !paths.isEmpty {
                 imagesView(paths: paths)
             }
-            
+
             HStack {
                 if msg.role == "🧑‍💻" { Spacer() }
-                
-                bubbleView(pieces, hasInlineTool: hasInlineTool, hasWebRetrieveCall: hasWebRetrieveCall)
-                
+
+                bubbleView(pieces, hasWebRetrieveCall: hasWebRetrieveCall, isSpotlighted: isSpotlighted)
+
                 if msg.role != "🧑‍💻" { Spacer() }
             }
-            
+
             if isAdvancedMode, msg.role == "🤖", let p = msg.perf {
                 let text = String(
                     format: "%.2f tok/sec · %d tokens · %.2fs to first token",
@@ -4974,12 +6280,12 @@ struct MessageView: View {
                     .foregroundColor(.secondary)
                     .padding(msg.role == "🧑‍💻" ? .trailing : .leading, 12)
             }
-            
+
             Text(msg.timestamp, style: .time)
                 .font(.caption2)
                 .foregroundColor(.secondary)
                 .padding(msg.role == "🧑‍💻" ? .trailing : .leading, 12)
-            
+
             if let citations = msg.citations, !citations.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
@@ -5024,22 +6330,26 @@ struct MessageView: View {
                 .padding(msg.role == "🧑‍💻" ? .trailing : .leading, 12)
             }
         }
+        .macWindowDragDisabled()
+#if os(macOS)
+        .environment(\.messageHoverCopySuppression, $suppressHoverCopy)
+#endif
     }
-    
+
     @ViewBuilder
     private func popupContainer(
         pieces: [ChatVM.Piece],
-        hasInlineTool: Bool,
-        hasWebRetrieveCall: Bool
+        hasWebRetrieveCall: Bool,
+        isSpotlighted: Bool
     ) -> some View {
         HStack {
             if msg.role == "🧑‍💻" { Spacer() }
-            
+
             VStack(alignment: .leading, spacing: 12) {
                 messageContainer(
                     pieces: pieces,
-                    hasInlineTool: hasInlineTool,
-                    hasWebRetrieveCall: hasWebRetrieveCall
+                    hasWebRetrieveCall: hasWebRetrieveCall,
+                    isSpotlighted: isSpotlighted
                 )
                 .allowsHitTesting(false)
                 .scaleEffect(1.02)
@@ -5081,21 +6391,19 @@ struct MessageView: View {
     
     var body: some View {
         let pieces = parse(msg.text, toolCalls: msg.toolCalls)
-        let hasInlineTool = pieces.contains { piece in
-            if case .tool(_) = piece { return true }
-            return false
-        }
         let hasWebRetrieveCall = msg.toolCalls?.contains { $0.toolName == "noema.web.retrieve" } ?? false
         
+        let isSpotlighted = vm.spotlightMessageID == msg.id
+
         ZStack(alignment: .center) {
             messageContainer(
                 pieces: pieces,
-                hasInlineTool: hasInlineTool,
-                hasWebRetrieveCall: hasWebRetrieveCall
+                hasWebRetrieveCall: hasWebRetrieveCall,
+                isSpotlighted: isSpotlighted
             )
             .opacity(showCopyPopup ? 0.25 : 1)
             .allowsHitTesting(!showCopyPopup)
-            
+
             if showCopyPopup {
                 ZStack {
                     Color.black.opacity(0.001)
@@ -5108,15 +6416,15 @@ struct MessageView: View {
                     
                     popupContainer(
                         pieces: pieces,
-                        hasInlineTool: hasInlineTool,
-                        hasWebRetrieveCall: hasWebRetrieveCall
+                        hasWebRetrieveCall: hasWebRetrieveCall,
+                        isSpotlighted: isSpotlighted
                     )
                 }
                 .zIndex(1)
             }
         }
         .frame(maxWidth: .infinity, alignment: msg.role == "🧑‍💻" ? .trailing : .leading)
-#if !os(visionOS)
+#if os(iOS)
         .onLongPressGesture(minimumDuration: 0.45) {
             copiedMessage = false
             performMediumImpact()
@@ -5125,27 +6433,129 @@ struct MessageView: View {
             }
         }
 #endif
-        .onChange(of: showCopyPopup) { _, newValue in
+#if os(macOS)
+        .overlay(alignment: msg.role == "🧑‍💻" ? .bottomTrailing : .bottomLeading) {
+            if hoverCopyVisible && !showCopyPopup && !suppressHoverCopy {
+                Button(action: copyMessageToPasteboard) {
+                    Label(copiedMessage ? "Copied!" : "Copy", systemImage: copiedMessage ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 13, weight: .semibold))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .foregroundStyle(Color.accentColor)
+                        .background(.thinMaterial, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .labelStyle(.titleAndIcon)
+                .accessibilityLabel("Copy message")
+                .offset(y: 20)
+                .transition(.opacity.combined(with: .scale))
+            }
+        }
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.18)) {
+                hoverCopyVisible = hovering
+            }
+            if !hovering {
+                suppressHoverCopy = false
+            }
+        }
+#endif
+#if os(visionOS)
+        .overlay(alignment: msg.role == "🧑‍💻" ? .bottomTrailing : .bottomLeading) {
+            if showInteractionOptions && !showCopyPopup {
+                HStack(spacing: 10) {
+                    Button(action: copyMessageToPasteboard) {
+                        Image(systemName: copiedMessage ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 18, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Copy message")
+
+                    Button(action: pinMessage) {
+                        Image(systemName: "pin")
+                            .font(.system(size: 18, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Pin message")
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(.thinMaterial, in: Capsule())
+                .offset(y: 26)
+                .transition(.opacity)
+            }
+        }
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.18)) {
+                hoverActive = hovering
+                if hovering {
+                    showInteractionOptions = true
+                } else if !isPressingMessage {
+                    showInteractionOptions = false
+                }
+            }
+        }
+        .onChangeCompat(of: isPressingMessage) { _, pressing in
+            withAnimation(.easeInOut(duration: 0.18)) {
+                if pressing {
+                    showInteractionOptions = true
+                } else if !hoverActive {
+                    showInteractionOptions = false
+                }
+            }
+        }
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.45)
+                .updating($isPressingMessage) { current, state, _ in
+                    state = current
+                }
+        )
+#endif
+        .onChangeCompat(of: showCopyPopup) { _, newValue in
             if !newValue {
                 copiedMessage = false
             }
+#if os(visionOS)
+            if newValue {
+                showInteractionOptions = false
+            }
+#endif
         }
-        .onChange(of: msg.text) { _, _ in
+        .onChangeCompat(of: msg.text) { _, _ in
             if showCopyPopup {
                 copiedMessage = false
             }
         }
-        .onChange(of: vm.msgs) { _, _ in
+        .onChangeCompat(of: vm.msgs) { _, _ in
             if showCopyPopup {
                 showCopyPopup = false
             }
         }
+#if os(iOS) || os(visionOS)
+        .fullScreenCover(isPresented: Binding(get: { expandedImagePath != nil }, set: { if !$0 { expandedImagePath = nil } })) {
+            if let p = expandedImagePath {
+                AttachmentPreview(path: p) { expandedImagePath = nil }
+            }
+        }
+#else
+        .sheet(isPresented: Binding(get: { expandedImagePath != nil }, set: { if !$0 { expandedImagePath = nil } })) {
+            if let p = expandedImagePath {
+                AttachmentPreview(path: p) { expandedImagePath = nil }
+                    .frame(minWidth: 560, minHeight: 420)
+            }
+        }
+#endif
 #if os(visionOS)
         .contextMenu {
             Button {
                 copyMessageToPasteboard()
             } label: {
                 Label("Copy", systemImage: "doc.on.doc")
+            }
+            Button {
+                pinMessage()
+            } label: {
+                Label("Pin", systemImage: "pin")
             }
         }
 #endif
@@ -5157,17 +6567,24 @@ struct MessageView: View {
         @EnvironmentObject var datasetManager: DatasetManager
         @EnvironmentObject var tabRouter: TabRouter
         @EnvironmentObject var walkthrough: GuidedWalkthroughManager
+        @AppStorage("isAdvancedMode") private var isAdvancedMode = false
         @FocusState private var inputFocused: Bool
         @State private var showSidebar = false
         @State private var showPercent = false
-        @AppStorage("defaultModelPath") private var defaultModelPath = ""
         @State private var sessionToDelete: ChatVM.Session?
         @State private var shouldAutoScrollToBottom: Bool = true
+        @State private var lastHapticMessageID: UUID?
         // Suggestion overlay state
         @State private var suggestionTriplet: [String] = ChatSuggestions.nextThree()
         @State private var suggestionsSessionID: UUID?
         @State private var showModelRequiredAlert = false
         @State private var quickLoadInProgress: LocalModel.ID?
+#if os(macOS)
+        @EnvironmentObject private var macChatChrome: MacChatChromeState
+        @State private var advancedSettings = ModelSettings()
+        @State private var suppressSidebarSave = false
+        @State private var datasetPillHovered = false
+#endif
         
         
         private struct ChatInputBox: View {
@@ -5178,50 +6595,109 @@ struct MessageView: View {
             let stop: () -> Void
             let canStop: Bool
             @EnvironmentObject var vm: ChatVM
+            @EnvironmentObject var modelManager: AppModelManager
             @EnvironmentObject var tabRouter: TabRouter
-            @State private var pickerItems: [PhotosPickerItem] = []
             @State private var showSmallCtxAlert: Bool = false
-            private let controlHeight: CGFloat = 48
-            private var glassStroke: LinearGradient {
-                LinearGradient(
-                    colors: [
-                        Color.white.opacity(0.7),
-                        Color.accentColor.opacity(0.4),
-                        Color.white.opacity(0.05)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
+            @State private var measuredHeight: CGFloat = 0
+            private struct InputHeightPreferenceKey: PreferenceKey {
+                static var defaultValue: CGFloat { 0 }
+                static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+            }
+            // Keep the input aligned with surrounding buttons; slightly shorter on macOS.
+            private let controlHeight: CGFloat = {
+#if os(macOS)
+                return 40
+#else
+                return 42
+#endif
+            }()
+            private let inputMaxHeight: CGFloat = {
+#if os(macOS)
+                return 132
+#else
+                return 124
+#endif
+            }()
+            private let inputVerticalPadding: CGFloat = {
+#if os(macOS)
+                return 4
+#else
+                return 4
+#endif
+            }()
+            private let inputOuterVerticalPadding: CGFloat = {
+#if os(macOS)
+                return 8
+#else
+                return 2
+#endif
+            }()
+
+            private var resolvedHeight: CGFloat {
+                let minContent = max(controlHeight - (inputOuterVerticalPadding * 2), 0)
+                let maxContent = max(inputMaxHeight - (inputOuterVerticalPadding * 2), minContent)
+                let clamped = min(max(measuredHeight, minContent), maxContent)
+                return clamped
+            }
+
+            private var measurementText: String {
+                text.isEmpty ? "Ask…" : text + " "
             }
             
             
             var body: some View {
                 HStack(spacing: 8) {
+#if os(macOS)
                     WebSearchButton()
                         .guideHighlight(.chatWebSearch)
+                        .padding(.trailing, 2)
+                    if UIConstants.showMultimodalUI && vm.supportsImageInput {
+                        VisionAttachmentButton()
+                            .padding(.trailing, 2)
+                    }
+#endif
+#if os(iOS) || os(visionOS)
+                    WebSearchButton()
+                        .guideHighlight(.chatWebSearch)
+                    if UIConstants.showMultimodalUI && vm.supportsImageInput {
+                        VisionAttachmentButton()
+                    }
+#endif
+                    let isChatReady = (vm.modelLoaded || modelManager.loadedModel != nil || modelManager.activeRemoteSession != nil)
                     VStack(spacing: 8) {
                         // Images displayed above the text field
                         if UIConstants.showMultimodalUI && vm.supportsImageInput && !vm.pendingImageURLs.isEmpty {
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 8) {
                                     ForEach(Array(vm.pendingImageURLs.prefix(5).enumerated()), id: \.offset) { idx, url in
-                                        if let ui = UIImage(contentsOfFile: url.path) {
-                                            ZStack(alignment: .topTrailing) {
-                                                Image(uiImage: ui)
-                                                    .resizable()
-                                                    .scaledToFill()
-                                                    .frame(width: 80, height: 80)
-                                                    .clipped()
-                                                    .cornerRadius(12)
-                                                Button(action: { vm.removePendingImage(at: idx) }) {
-                                                    Image(systemName: "xmark.circle.fill")
-                                                        .foregroundColor(.white)
-                                                        .font(.system(size: 16))
-                                                        .background(Color.black.opacity(0.6))
-                                                        .clipShape(Circle())
+                                        let thumbnail = vm.pendingThumbnail(for: url)
+                                        ZStack(alignment: .topTrailing) {
+                                            Group {
+                                                if let ui = thumbnail {
+                                                    Image(platformImage: ui)
+                                                        .resizable()
+                                                        .scaledToFill()
+                                                } else {
+                                                    // Lightweight placeholder while any thumb is missing
+                                                    Rectangle()
+                                                        .fill(Color.secondary.opacity(0.15))
+                                                        .overlay(
+                                                            ProgressView().scaleEffect(0.6)
+                                                        )
                                                 }
-                                                .offset(x: 6, y: -6)
                                             }
+                                            .frame(width: 80, height: 80)
+                                            .clipped()
+                                            .cornerRadius(12)
+
+                                            Button(action: { vm.removePendingImage(at: idx) }) {
+                                                Image(systemName: "xmark.circle.fill")
+                                                    .foregroundColor(.white)
+                                                    .font(.system(size: 16))
+                                                    .background(Color.black.opacity(0.6))
+                                                    .clipShape(Circle())
+                                            }
+                                            .offset(x: 6, y: -6)
                                         }
                                     }
                                 }
@@ -5233,88 +6709,80 @@ struct MessageView: View {
                             )
                         }
                         
-                        // Input area with photo picker and text field
+                        // Input area with vision attachments and multi-line text entry
                         HStack(spacing: 12) {
-                            if UIConstants.showMultimodalUI && vm.supportsImageInput {
-                                PhotosPicker(selection: $pickerItems, maxSelectionCount: max(0, 5 - vm.pendingImageURLs.count), matching: .images) {
-                                    Image(systemName: "photo.on.rectangle")
-                                        .font(.system(size: 18, weight: .semibold))
-                                        .padding(10)
-                                        .background(
-                                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                                .fill(.ultraThinMaterial)
-                                                .overlay(
-                                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                                        .stroke(glassStroke, lineWidth: 1)
-                                                )
-                                                .overlay(
-                                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                                        .stroke(Color.white.opacity(0.25), lineWidth: 0.5)
-                                                        .blendMode(.plusLighter)
-                                                )
-                                                .shadow(color: Color.black.opacity(0.1), radius: 12, x: 0, y: 6)
-                                        )
-                                }
-                                .onChange(of: pickerItems) { _, items in
-                                    Task { await loadPickedItems(items) }
-                                }
-                                .disabled(!vm.modelLoaded)
-                            }
-                            
                             ZStack(alignment: .topLeading) {
+#if os(iOS) || os(visionOS)
                                 TextField("Ask…", text: $text, axis: .vertical)
-                                    .lineLimit(1...5)
                                     .focused(focus)
-                                    .submitLabel(.send)
-                                    .disabled(!vm.modelLoaded)
+                                    .disabled(!isChatReady)
+                                    .textInputAutocapitalization(.sentences)
+                                    .lineLimit(1...6)
+                                    .textFieldStyle(.plain)
+                                    .fixedSize(horizontal: false, vertical: true)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                    .onSubmit {
-                                        guard vm.modelLoaded else {
-                                            focus.wrappedValue = false
-                                            showModelRequiredAlert = true
-                                            return
+                                    .frame(maxHeight: resolvedHeight, alignment: .topLeading)
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, inputVerticalPadding)
+                                    .accessibilityLabel(Text("Message input"))
+                                    .accessibilityHint("Double-tap Return to insert a new line. Use the Send button to send.")
+#else
+                                TextEditor(text: $text)
+                                    .focused(focus)
+                                    .disabled(!isChatReady)
+                                    .font(.body)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .frame(maxHeight: resolvedHeight, alignment: .topLeading)
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, inputVerticalPadding)
+                                    .scrollContentBackground(.hidden)
+                                    .background(Color.clear)
+                                    .accessibilityLabel(Text("Message input"))
+                                    .accessibilityHint("Double-tap Return to insert a new line. Use the Send button to send.")
+
+                                if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    Text("Ask…")
+                                        .foregroundColor(.secondary)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, inputVerticalPadding + 2)
+                                        .allowsHitTesting(false)
+                                        .accessibilityHidden(true)
+                                }
+#endif
+                                // Invisible measurement text keeps the control compact until content grows.
+                                Text(measurementText)
+                                    .font(.body)
+                                    .lineLimit(nil)
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, inputVerticalPadding)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(
+                                        GeometryReader { proxy in
+                                            Color.clear.preference(key: InputHeightPreferenceKey.self, value: proxy.size.height)
                                         }
-                                        if vm.isStreamingInAnotherSession {
-                                            vm.crossSessionSendBlocked = true
-                                            return
-                                        }
-                                        if UIConstants.showMultimodalUI && vm.supportsImageInput && !vm.pendingImageURLs.isEmpty && vm.contextLimit < 5000 {
-                                            showSmallCtxAlert = true
-                                        } else {
-                                            send()
-                                            text = ""
-                                        }
-                                    }
-                                
-                                if !vm.modelLoaded {
-                                    RoundedRectangle(cornerRadius: UIConstants.largeCornerRadius, style: .continuous)
+                                    )
+                                    .hidden()
+
+                                if !isChatReady {
+                                    RoundedRectangle(cornerRadius: UIConstants.extraLargeCornerRadius, style: .continuous)
                                         .fill(Color.clear)
-                                        .contentShape(RoundedRectangle(cornerRadius: UIConstants.largeCornerRadius, style: .continuous))
+                                        .contentShape(
+                                            RoundedRectangle(cornerRadius: UIConstants.extraLargeCornerRadius, style: .continuous)
+                                        )
                                         .onTapGesture {
                                             focus.wrappedValue = false
                                             showModelRequiredAlert = true
                                         }
                                 }
                             }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
+                            .onPreferenceChange(InputHeightPreferenceKey.self) { measuredHeight = $0 }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, inputOuterVerticalPadding)
                             .frame(minHeight: controlHeight,
-                                   maxHeight: vm.modelLoaded ? nil : controlHeight,
+                                   maxHeight: inputMaxHeight,
                                    alignment: .topLeading)
-                            .background(
-                                RoundedRectangle(cornerRadius: UIConstants.largeCornerRadius, style: .continuous)
-                                    .fill(.ultraThinMaterial)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: UIConstants.largeCornerRadius, style: .continuous)
-                                            .stroke(glassStroke, lineWidth: 1)
-                                    )
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: UIConstants.largeCornerRadius, style: .continuous)
-                                            .stroke(Color.white.opacity(0.35), lineWidth: 0.75)
-                                            .blendMode(.plusLighter)
-                                    )
-                                    .shadow(color: Color.black.opacity(0.12), radius: 18, x: 0, y: 10)
-                            )
+                            .frame(height: resolvedHeight + (inputOuterVerticalPadding * 2), alignment: .topLeading)
+                            .glassPill()
                             .frame(maxWidth: .infinity)
                         }
                     }
@@ -5329,9 +6797,10 @@ struct MessageView: View {
                                 )
                                 .foregroundColor(.white)
                         }
+                        .buttonStyle(.plain) // Avoid default gray button chrome behind the custom red pill
                     } else {
                         Button(action: {
-                            guard vm.modelLoaded else {
+                            guard isChatReady else {
                                 showModelRequiredAlert = true
                                 focus.wrappedValue = false
                                 return
@@ -5357,10 +6826,13 @@ struct MessageView: View {
                                 )
                                 .foregroundColor(.white)
                         }
-                        .disabled(!vm.modelLoaded || vm.isStreamingInAnotherSession || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .buttonStyle(.plain)
+                        .disabled(!isChatReady || vm.isStreamingInAnotherSession || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
-                .animation(.default, value: text)
+                // Avoid animating the entire input row on every keystroke,
+                // which caused attachment thumbnails to flicker.
+                // If animation is desired for send/stop swaps, animate those states specifically.
                 .alert("Finish current response", isPresented: Binding(
                     get: { vm.crossSessionSendBlocked },
                     set: { vm.crossSessionSendBlocked = $0 }
@@ -5387,21 +6859,14 @@ struct MessageView: View {
                     Text("Load a local model before chatting. You can download one from the Explore tab or load a model you've already installed.")
                 }
             }
-            
-            private func loadPickedItems(_ items: [PhotosPickerItem]) async {
-                guard vm.supportsImageInput, !items.isEmpty else { return }
-                let room = max(0, 5 - vm.pendingImageURLs.count)
-                for item in items.prefix(room) {
-                    if let data = try? await item.loadTransferable(type: Data.self), let ui = UIImage(data: data) {
-                        await vm.savePendingImage(ui)
-                    }
-                }
-                await MainActor.run { pickerItems.removeAll() }
-            }
+
         }
         
         var body: some View {
             NavigationStack {
+#if os(macOS)
+                macChatContainer
+#else
                 ZStack(alignment: .leading) {
                     chatContent
                         .guideHighlight(.chatCanvas)
@@ -5414,6 +6879,8 @@ struct MessageView: View {
                             .transition(.move(edge: .leading))
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+#if os(iOS) || os(visionOS)
                 .toolbar {
                     ToolbarItem(placement: .navigationBarLeading) {
                         Button {
@@ -5421,6 +6888,8 @@ struct MessageView: View {
                         } label: {
                             Image(systemName: "line.3.horizontal")
                         }
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 4)
                         .guideHighlight(.chatSidebarButton)
                     }
                     ToolbarItem(placement: .principal) {
@@ -5428,11 +6897,18 @@ struct MessageView: View {
                     }
                     ToolbarItem(placement: .navigationBarTrailing) {
                         Button { vm.startNewSession() } label: { Image(systemName: "plus") }
+                            .padding(.vertical, 6)
+                            .padding(.horizontal, 4)
                             .guideHighlight(.chatNewChatButton)
                     }
                 }
                 .navigationBarTitleDisplayMode(.inline)
+#endif
+#endif
             }
+#if os(macOS)
+            .navigationTitle("Chat")
+#endif
             .alert(item: $datasetManager.embedAlert) { info in
                 Alert(title: Text(info.message))
             }
@@ -5458,10 +6934,256 @@ struct MessageView: View {
                     .padding()
                 }
             }
+#if os(macOS)
+            .onAppear { syncSidebarSettings() }
+            .onChange(of: modelManager.loadedModel?.id) { _ in syncSidebarSettings() }
+            .onReceive(modelManager.$modelSettings) { _ in syncSidebarSettings() }
+            .onChange(of: advancedSettings) { newValue in
+                guard !suppressSidebarSave else { return }
+                persistSidebarSettings(newValue)
+            }
+            .onChange(of: isAdvancedMode) { newValue in
+                if !newValue {
+                    withAnimation(.easeInOut(duration: 0.2)) { macChatChrome.showAdvancedControls = false }
+                }
+            }
+#endif
         }
-        
+
+#if os(macOS)
+        private var macChatContainer: some View {
+            HStack(spacing: 0) {
+                macChatDrawer
+                Divider()
+                chatContent
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if isAdvancedMode && macChatChrome.showAdvancedControls {
+                    AdvancedSettingsSidebar(
+                        settings: $advancedSettings,
+                        model: modelManager.loadedModel,
+                        models: modelManager.downloadedModels,
+                        hide: { withAnimation(.easeInOut(duration: 0.2)) { macChatChrome.showAdvancedControls = false } }
+                    )
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        }
+
+        private var macChatDrawer: some View {
+            ZStack(alignment: .topLeading) {
+                AppTheme.sidebarBackground
+                    .glassifyIfAvailable(in: Rectangle())
+                    .ignoresSafeArea()
+
+                VStack(spacing: 0) {
+                    HStack(spacing: 8) {
+                        Text("Chats")
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Button(action: { vm.startNewSession() }) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 14, weight: .semibold))
+                        }
+                        .buttonStyle(.plain)
+                        .help("New Chat")
+                        .guideHighlight(.chatNewChatButton)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 14)
+                    .padding(.bottom, 10)
+
+                    Divider()
+                        .padding(.top, 4)
+
+                    ScrollView {
+                        LazyVStack(spacing: 4) {
+                            ForEach(vm.sessions) { session in
+                                drawerRow(for: session)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture { vm.select(session) }
+                                    .contextMenu {
+                                        Button(session.isFavorite ? "Remove Favorite" : "Favorite") {
+                                            vm.toggleFavorite(session)
+                                        }
+                                        Button(role: .destructive) {
+                                            sessionToDelete = session
+                                        } label: {
+                                            Label("Delete", systemImage: "trash")
+                                        }
+                                    }
+                            }
+                        }
+                        .padding(.top, 12)
+                        .padding(.horizontal, 8)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
+            .frame(width: 280)
+            .frame(maxHeight: .infinity, alignment: .bottom)
+            .guideHighlight(.chatSidebar)
+            .confirmationDialog(
+                "Delete chat \(sessionToDelete.map { drawerTitle(for: $0) } ?? "New chat")?",
+                isPresented: Binding(
+                    get: { sessionToDelete != nil },
+                    set: { if !$0 { sessionToDelete = nil } }
+                )
+            ) {
+                Button("Delete", role: .destructive) {
+                    if let session = sessionToDelete {
+                        vm.delete(session)
+                    }
+                    sessionToDelete = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    sessionToDelete = nil
+                }
+            }
+        }
+
+        private struct HideMacListBackgroundIfAvailable: ViewModifier {
+            func body(content: Content) -> some View {
+                if #available(macOS 13, *) {
+                    content.scrollContentBackground(.hidden)
+                } else {
+                    content
+                }
+            }
+        }
+
+        private func drawerRow(for session: ChatVM.Session) -> some View {
+            let isSelected = session.id == vm.activeSessionID
+            return VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(drawerTitle(for: session))
+                        .font(.subheadline.weight(isSelected ? .semibold : .medium))
+                        .lineLimit(1)
+                        .foregroundStyle(isSelected ? .primary : .secondary)
+
+                    if session.isFavorite {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.yellow)
+                    }
+
+                    Spacer(minLength: 0)
+                }
+
+                let preview = drawerPreview(for: session) ?? ""
+                Text(preview.isEmpty ? " " : preview)
+                    .font(.caption)
+                    .foregroundStyle(isSelected ? .secondary : .tertiary)
+                    .lineLimit(1)
+                    .opacity(preview.isEmpty ? 0 : 1)
+            }
+            .padding(.vertical, 10)
+            .padding(.horizontal, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(isSelected ? Color.accentColor.opacity(0.15) : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.accentColor.opacity(isSelected ? 0.2 : 0), lineWidth: 1)
+            )
+        }
+
+        private func drawerPreview(for session: ChatVM.Session) -> String? {
+            func stripThinkBlocks(_ text: String) -> String {
+                var result = text
+
+                while let start = result.range(of: "<think>", options: .caseInsensitive) {
+                    if let end = result.range(of: "</think>", options: .caseInsensitive, range: start.upperBound..<result.endIndex) {
+                        result.removeSubrange(start.lowerBound..<end.upperBound)
+                    } else {
+                        result.removeSubrange(start.lowerBound..<result.endIndex)
+                        break
+                    }
+                }
+
+                return result.replacingOccurrences(of: "</think>", with: "", options: .caseInsensitive)
+            }
+
+            func condense(_ text: String) -> String? {
+                let sanitized = stripThinkBlocks(text)
+                let condensed = sanitized
+                    .components(separatedBy: .whitespacesAndNewlines)
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " ")
+
+                guard !condensed.isEmpty else { return nil }
+
+                if condensed.count > 80 {
+                    let prefix = condensed.prefix(77)
+                    return prefix + "…"
+                }
+                return condensed
+            }
+
+            var fallback: String?
+
+            for message in session.messages.reversed() {
+                let roleLowercased = message.role.lowercased()
+                guard roleLowercased != "system" else { continue }
+                if message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
+
+                let isAssistant = roleLowercased == "assistant" || message.role == "🤖"
+                if isAssistant {
+                    if let finalText = vm.finalAnswerText(for: message),
+                       let condensed = condense(finalText) {
+                        return condensed
+                    }
+                    continue
+                }
+
+                if fallback == nil {
+                    fallback = condense(message.text)
+                }
+            }
+
+            return fallback
+        }
+
+        private func drawerTitle(for session: ChatVM.Session) -> String {
+            let trimmed = session.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? "New chat" : trimmed
+        }
+
+        private func syncSidebarSettings() {
+            guard let model = modelManager.loadedModel else {
+                suppressSidebarSave = true
+                advancedSettings = ModelSettings()
+                DispatchQueue.main.async { suppressSidebarSave = false }
+                return
+            }
+            let latest = modelManager.settings(for: model)
+            suppressSidebarSave = true
+            advancedSettings = latest
+            DispatchQueue.main.async { suppressSidebarSave = false }
+        }
+
+        private func persistSidebarSettings(_ settings: ModelSettings) {
+            guard let model = modelManager.loadedModel else { return }
+            modelManager.updateSettings(settings, for: model)
+            vm.applyEnvironmentVariables(from: settings)
+        }
+#endif
+
+        private var scrollBottomInset: CGFloat {
+#if os(macOS)
+            return 16
+#else
+            return 80
+#endif
+        }
+
         private var chatContent: some View {
-            return VStack {
+            return VStack(spacing: 0) {
+#if os(macOS)
+                macChatToolbar
+#endif
                 if let ds = modelManager.activeDataset, vm.currentModelFormat != .slm {
                     // Modern dataset indicator pill
                     HStack {
@@ -5480,6 +7202,26 @@ struct MessageView: View {
                                 .fill(Color.blue.gradient)
                         )
                         .shadow(color: Color.blue.opacity(0.3), radius: 4, x: 0, y: 2)
+#if os(macOS)
+                        .onHover { hovering in
+                            datasetPillHovered = hovering
+                        }
+                        .overlay(alignment: .trailing) {
+                            if datasetPillHovered {
+                                Button {
+                                    vm.setDatasetForActiveSession(nil)
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundColor(.white)
+                                        .shadow(color: .black.opacity(0.25), radius: 1, x: 0, y: 1)
+                                }
+                                .buttonStyle(.plain)
+                                .help("Stop using dataset")
+                                .padding(.trailing, 6)
+                            }
+                        }
+#endif
                         
                         Spacer()
                     }
@@ -5542,10 +7284,15 @@ struct MessageView: View {
                             }
                         }
                         .padding()
-                        .padding(.bottom, 80)
+                        .padding(.bottom, scrollBottomInset)
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .contentShape(Rectangle())
+#if canImport(UIKit) && !os(visionOS)
+                    // On iOS/iPadOS, stop auto-scrolling when the user drags the list.
+                    // Avoid attaching this drag gesture on macOS so text selection remains uninterrupted.
                     .simultaneousGesture(DragGesture().onChanged { _ in shouldAutoScrollToBottom = false })
+#endif
                     // Centered suggestions overlay for brand-new empty chats
                     .overlay(alignment: .center) {
                         let isEmptyChat = vm.msgs.first(where: { $0.role != "system" }) == nil
@@ -5601,9 +7348,27 @@ struct MessageView: View {
                             proxy.scrollTo(uuid, anchor: .top)
                         }
                     }
-                    .onChange(of: vm.msgs) { _, msgs in
+                    .onChangeCompat(of: vm.msgs) { _, msgs in
                         if shouldAutoScrollToBottom, let id = msgs.last?.id {
-                            withAnimation { proxy.scrollTo(id, anchor: .bottom) }
+                            // Use instant scroll during streaming for better performance,
+                            // animated scroll only when not actively streaming
+                            if vm.isStreaming {
+                                proxy.scrollTo(id, anchor: .bottom)
+                            } else {
+                                withAnimation { proxy.scrollTo(id, anchor: .bottom) }
+                            }
+                        }
+                        if let latest = msgs.last(where: { $0.role != "system" }) {
+                            if latest.id != lastHapticMessageID {
+                                lastHapticMessageID = latest.id
+                                // Light feedback for bot replies, slightly stronger for user sends.
+#if canImport(UIKit) && !os(visionOS)
+                                let style: UIImpactFeedbackGenerator.FeedbackStyle = latest.role == "🤖" ? .light : .medium
+                                Haptics.impact(style)
+#else
+                                Haptics.impact()
+#endif
+                            }
                         }
                     }
                     .onAppear {
@@ -5614,7 +7379,7 @@ struct MessageView: View {
                             suggestionsSessionID = vm.activeSessionID
                         }
                     }
-                    .onChange(of: vm.activeSessionID) { _, newID in
+                    .onChangeCompat(of: vm.activeSessionID) { _, newID in
                         // Rotate suggestions per new session if starting empty
                         let isEmpty = vm.msgs.first(where: { $0.role != "system" }) == nil
                         if isEmpty && newID != suggestionsSessionID {
@@ -5632,7 +7397,13 @@ struct MessageView: View {
                              canStop: vm.isStreaming)
                 .guideHighlight(.chatInput)
                 .opacity(vm.modelLoaded ? 1 : 0.6)
+#if os(macOS)
+                .padding(.horizontal, 20)
+                .padding(.top, 20)
+                .padding(.bottom, 6)
+#else
                 .padding()
+#endif
                 if isIndexing {
                     VStack(spacing: 4) {
                         HStack(spacing: 6) {
@@ -5653,8 +7424,36 @@ struct MessageView: View {
             } message: {
                 Text(vm.loadError ?? "")
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
-        
+
+#if os(macOS)
+        private var macChatToolbar: some View {
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    MacModelSelectorBar()
+                        .frame(minWidth: 340, idealWidth: 400, maxWidth: 460)
+                    Spacer()
+                    Button { vm.startNewSession() } label: {
+                        Image(systemName: "plus")
+                    }
+                    .padding(.vertical, 6)
+                    .help("New Chat")
+                    .buttonStyle(.plain)
+                    .guideHighlight(.chatNewChatButton)
+                }
+                .padding(.horizontal, 20)
+                .frame(height: 48)
+                Divider()
+            }
+            .background(AppTheme.windowBackground.opacity(0.5))
+            .glassifyIfAvailable(in: Rectangle())
+            .macWindowDragDisabled()
+            // Ensure toolbar sits visually above background visuals.
+            .zIndex(2)
+        }
+#endif
+
         private var modelHeader: some View {
             Group {
                 if let remote = modelManager.activeRemoteSession {
@@ -5663,11 +7462,15 @@ struct MessageView: View {
                             Text(remote.modelName)
                                 .font(.subheadline.weight(.semibold))
                                 .lineLimit(1)
+                                .truncationMode(.tail)
+                                .layoutPriority(10)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             Text(remote.backendName)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
+                        remoteConnectionIndicator(for: remote)
                         Button(action: {
                             performMediumImpact()
                             vm.deactivateRemoteSession()
@@ -5679,9 +7482,11 @@ struct MessageView: View {
                                 .clipShape(Circle())
                         }
                         .buttonStyle(.plain)
-                        Text(showPercent ?
-                             "\(Int(Double(vm.totalTokens) / vm.contextLimit * 100)) %" :
-                                "\(vm.totalTokens) tok")
+                        Text(
+                            showPercent
+                                ? "\(Int(Double(vm.totalTokens) / vm.contextLimit * 100)) %"
+                                : "\(vm.totalTokens) tok"
+                        )
                         .font(.caption2)
                         .monospacedDigit()
                         .padding(.horizontal, 6)
@@ -5709,9 +7514,11 @@ struct MessageView: View {
                                 .clipShape(Circle())
                         }
                         .buttonStyle(.plain)
-                        Text(showPercent ?
-                             "\(Int(Double(vm.totalTokens) / vm.contextLimit * 100)) %" :
-                                "\(vm.totalTokens) tok")
+                        Text(
+                            showPercent
+                                ? "\(Int(Double(vm.totalTokens) / vm.contextLimit * 100)) %"
+                                : "\(vm.totalTokens) tok"
+                        )
                         .font(.caption2)
                         .monospacedDigit()
                         .padding(.horizontal, 6)
@@ -5726,13 +7533,13 @@ struct MessageView: View {
                     let recents = quickLoadRecents
                     Menu {
                         if favourites.isEmpty && recents.isEmpty {
-                            Button("Open Model Library") {
+                            Button(LocalizedStringKey("Open Model Library")) {
                                 tabRouter.selection = .explore
                                 UserDefaults.standard.set(ExploreSection.models.rawValue, forKey: "exploreSection")
                             }
                         } else {
                             if !favourites.isEmpty {
-                                Section("Favorites") {
+                                Section(LocalizedStringKey("Favorites")) {
                                     ForEach(favourites, id: \.id) { model in
                                         Button {
                                             quickLoadIfPossible(model)
@@ -5743,7 +7550,7 @@ struct MessageView: View {
                                 }
                             }
                             if !recents.isEmpty {
-                                Section("Recent") {
+                                Section(LocalizedStringKey("Recent")) {
                                     ForEach(recents, id: \.id) { model in
                                         Button {
                                             quickLoadIfPossible(model)
@@ -5755,7 +7562,7 @@ struct MessageView: View {
                             }
                         }
                     } label: {
-                        Text("No model >")
+                        Text(LocalizedStringKey("No model >"))
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -5766,6 +7573,59 @@ struct MessageView: View {
             }
         }
         
+        private func remoteConnectionBadge(for session: ActiveRemoteSession) -> some View {
+            let color: Color
+            switch session.transport {
+            case .cloudRelay:
+                color = .teal
+            case .lan:
+                color = .green
+            case .direct:
+                color = .blue
+            }
+            return HStack(spacing: 6) {
+                Image(systemName: session.transport.symbolName)
+                Text(session.transport.label)
+                if session.streamingEnabled {
+                    Image(systemName: "waveform")
+                }
+            }
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(color.opacity(0.18), in: Capsule())
+            .foregroundColor(color)
+            .accessibilityLabel("Connection via \(session.transport.label)")
+        }
+        
+        
+        @ViewBuilder
+        private func remoteConnectionIndicator(for session: ActiveRemoteSession) -> some View {
+            if session.endpointType == .noemaRelay {
+                let color: Color = {
+                    switch session.transport {
+                    case .cloudRelay: return .teal
+                    case .lan: return .green
+                    case .direct: return .blue
+                    }
+                }()
+                HStack(spacing: 4) {
+                    Image(systemName: session.transport.symbolName)
+                        .font(.system(size: 12, weight: .semibold))
+                    if session.streamingEnabled {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                }
+                .padding(6)
+                .background(color.opacity(0.18), in: Capsule())
+                .foregroundStyle(color)
+                .accessibilityLabel("Connection via \(session.transport.label)")
+            } else {
+                remoteConnectionBadge(for: session)
+            }
+        }
+
         private var quickLoadFavourites: [LocalModel] {
             modelManager.favouriteModels(limit: modelManager.favouriteCapacity)
         }
@@ -5827,7 +7687,10 @@ struct MessageView: View {
                     }
                     return
 #else
-                    vm.loadError = "SLM models are not supported on this platform."
+                    vm.loadError = String(
+                        localized: "SLM models are not supported on this platform.",
+                        locale: LocalizationManager.preferredLocale()
+                    )
                     modelManager.loadedModel = nil
                     return
 #endif
@@ -5844,8 +7707,11 @@ struct MessageView: View {
                 let sizeBytes = Int64(model.sizeGB * 1_073_741_824.0)
                 let ctx = Int(settings.contextLength)
                 let layerHint: Int? = model.totalLayers > 0 ? model.totalLayers : nil
-                if !ModelRAMAdvisor.fitsInRAM(format: model.format, sizeBytes: sizeBytes, contextLength: ctx, layerCount: layerHint) {
-                    vm.loadError = "Model likely exceeds memory budget. Lower context size or use a smaller quant/model."
+                if !ModelRAMAdvisor.fitsInRAM(format: model.format, sizeBytes: sizeBytes, contextLength: ctx, layerCount: layerHint, moeInfo: model.moeInfo) {
+                    vm.loadError = String(
+                        localized: "Model likely exceeds memory budget. Lower context or choose a smaller quant.",
+                        locale: LocalizationManager.preferredLocale()
+                    )
                     modelManager.loadedModel = nil
                     return
                 }
@@ -5854,29 +7720,38 @@ struct MessageView: View {
                 switch model.format {
                 case .gguf:
                     var isDir: ObjCBool = false
-                    if FileManager.default.fileExists(atPath: loadURL.path, isDirectory: &isDir) {
-                        if isDir.boolValue {
-                            if let f = InstalledModelsStore.firstGGUF(in: loadURL) {
-                                loadURL = f
-                            } else {
-                                vm.loadError = "Model file missing (.gguf)"
-                                modelManager.loadedModel = nil
-                                return
+                        if FileManager.default.fileExists(atPath: loadURL.path, isDirectory: &isDir) {
+                            if isDir.boolValue {
+                                if let f = InstalledModelsStore.firstGGUF(in: loadURL) {
+                                    loadURL = f
+                                } else {
+                                    vm.loadError = String(
+                                        localized: "Model file missing (.gguf)",
+                                        locale: LocalizationManager.preferredLocale()
+                                    )
+                                    modelManager.loadedModel = nil
+                                    return
+                                }
+                            } else if loadURL.pathExtension.lowercased() != "gguf" || !InstalledModelsStore.isValidGGUF(at: loadURL) {
+                                if let f = InstalledModelsStore.firstGGUF(in: loadURL.deletingLastPathComponent()) {
+                                    loadURL = f
+                                } else {
+                                    vm.loadError = String(
+                                        localized: "Model file missing (.gguf)",
+                                        locale: LocalizationManager.preferredLocale()
+                                    )
+                                    modelManager.loadedModel = nil
+                                    return
+                                }
                             }
-                        } else if loadURL.pathExtension.lowercased() != "gguf" || !InstalledModelsStore.isValidGGUF(at: loadURL) {
-                            if let f = InstalledModelsStore.firstGGUF(in: loadURL.deletingLastPathComponent()) {
-                                loadURL = f
-                            } else {
-                                vm.loadError = "Model file missing (.gguf)"
-                                modelManager.loadedModel = nil
-                                return
-                            }
-                        }
                     } else {
                         if let alt = InstalledModelsStore.firstGGUF(in: InstalledModelsStore.baseDir(for: .gguf, modelID: model.modelID)) {
                             loadURL = alt
                         } else {
-                            vm.loadError = "Model path missing"
+                            vm.loadError = String(
+                                localized: "Model path missing",
+                                locale: LocalizationManager.preferredLocale()
+                            )
                             modelManager.loadedModel = nil
                             return
                         }
@@ -5891,7 +7766,10 @@ struct MessageView: View {
                         if FileManager.default.fileExists(atPath: dir.path, isDirectory: &d), d.boolValue {
                             loadURL = dir
                         } else {
-                            vm.loadError = "Model path missing"
+                            vm.loadError = String(
+                                localized: "Model path missing",
+                                locale: LocalizationManager.preferredLocale()
+                            )
                             modelManager.loadedModel = nil
                             return
                         }
@@ -5899,7 +7777,10 @@ struct MessageView: View {
                 case .slm:
                     return
                 case .apple:
-                    vm.loadError = "Unsupported model format"
+                    vm.loadError = String(
+                        localized: "Unsupported model format",
+                        locale: LocalizationManager.preferredLocale()
+                    )
                     modelManager.loadedModel = nil
                     return
                 }
@@ -5925,7 +7806,223 @@ struct MessageView: View {
                 }
             }
         }
-        
+
+#if os(macOS)
+        private struct AdvancedSettingsSidebar: View {
+            @Binding var settings: ModelSettings
+            let model: LocalModel?
+            let models: [LocalModel]
+            let hide: () -> Void
+
+            private var helperOptions: [LocalModel] {
+                guard let base = model else { return [] }
+                return models.filter { candidate in
+                    guard candidate.id != base.id else { return false }
+                    guard candidate.matchesArchitectureFamily(of: base) else { return false }
+                    let baseSize = base.sizeGB
+                    let candidateSize = candidate.sizeGB
+                    if baseSize > 0, candidateSize > 0, candidateSize - baseSize > 0.01 {
+                        return false
+                    }
+                    return true
+                }
+            }
+
+            private var format: ModelFormat? { model?.format }
+
+            private var supportsMinP: Bool { format == .gguf }
+            private var supportsPresencePenalty: Bool { format == .gguf }
+            private var supportsFrequencyPenalty: Bool { format == .gguf }
+            private var supportsSpeculativeDecoding: Bool {
+#if os(macOS)
+                // Hide speculative decoding controls on macOS
+                return false
+#elseif os(visionOS)
+                return false
+#else
+                return format == .gguf
+#endif
+            }
+
+            var body: some View {
+                VStack(spacing: 0) {
+                    HStack {
+                        Text("Advanced Controls")
+                            .font(.headline)
+                        Spacer()
+                        Button(action: hide) {
+                            Image(systemName: "sidebar.trailing")
+                                .imageScale(.medium)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Collapse controls")
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+
+                    Divider()
+
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 28) {
+                            samplingSection
+                            if supportsSpeculativeDecoding {
+                                speculativeSection
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 24)
+                    }
+                }
+                .frame(minWidth: 280, idealWidth: 320, maxWidth: 360, maxHeight: .infinity)
+                .background(Color(nsColor: .controlBackgroundColor))
+                .overlay(alignment: .leading) {
+                    Color.primary.opacity(0.08)
+                        .frame(width: 1)
+                        .ignoresSafeArea()
+                }
+            }
+
+            private var samplingSection: some View {
+                sidebarSection(title: "Sampling", systemImage: "dial.medium") {
+                    VStack(alignment: .leading, spacing: 20) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            sliderRow("Temperature", value: $settings.temperature, range: 0...2, step: 0.05)
+                            Text("Creativity: \(settings.temperature, format: .number.precision(.fractionLength(2))). Low values focus responses; high values add variety.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            sliderRow("Top-p", value: $settings.topP, range: 0...1, step: 0.01)
+                            Text("Top-p: \(settings.topP, format: .number.precision(.fractionLength(2)))")
+                                .font(.footnote.monospacedDigit())
+                        }
+
+                        Stepper(value: $settings.topK, in: 1...2048, step: 1) {
+                            Text("Top-k: \(settings.topK)")
+                        }
+
+                        if supportsMinP {
+                            VStack(alignment: .leading, spacing: 8) {
+                                sliderRow("Min-p", value: $settings.minP, range: 0...1, step: 0.01)
+                                Text("Min-p: \(settings.minP, format: .number.precision(.fractionLength(2)))")
+                                    .font(.footnote.monospacedDigit())
+                            }
+                        }
+
+                        Stepper(
+                            value: Binding(
+                                get: { Double(settings.repetitionPenalty) },
+                                set: { settings.repetitionPenalty = Float($0) }
+                            ),
+                            in: 0.8...2.0,
+                            step: 0.05
+                        ) {
+                            Text("Repetition penalty: \(Double(settings.repetitionPenalty), format: .number.precision(.fractionLength(2)))")
+                        }
+
+                        Stepper(value: $settings.repeatLastN, in: 0...4096, step: 16) {
+                            Text("Repeat last N tokens: \(settings.repeatLastN)")
+                        }
+
+                        if supportsPresencePenalty {
+                            Stepper(
+                                value: Binding(
+                                    get: { Double(settings.presencePenalty) },
+                                    set: { settings.presencePenalty = Float($0) }
+                                ),
+                                in: -2.0...2.0,
+                                step: 0.1
+                            ) {
+                                Text("Presence penalty: \(Double(settings.presencePenalty), format: .number.precision(.fractionLength(1)))")
+                            }
+                        }
+
+                        if supportsFrequencyPenalty {
+                            Stepper(
+                                value: Binding(
+                                    get: { Double(settings.frequencyPenalty) },
+                                    set: { settings.frequencyPenalty = Float($0) }
+                                ),
+                                in: -2.0...2.0,
+                                step: 0.1
+                            ) {
+                                Text("Frequency penalty: \(Double(settings.frequencyPenalty), format: .number.precision(.fractionLength(1)))")
+                            }
+                        }
+
+                        Text("Smooth loops and phrase echo by balancing repetition controls.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .disabled(model == nil)
+            }
+
+            private var speculativeSection: some View {
+                sidebarSection(title: "Speculative Decoding", systemImage: "bolt.fill") {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Speed up with a smaller helper model.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        Picker("Helper Model", selection: Binding(
+                            get: { settings.speculativeDecoding.helperModelID },
+                            set: { settings.speculativeDecoding.helperModelID = $0 }
+                        )) {
+                            Text("None").tag(String?.none)
+                            ForEach(helperOptions, id: \.id) { candidate in
+                                Text(candidate.name).tag(String?.some(candidate.id))
+                            }
+                        }
+
+                        if helperOptions.isEmpty {
+                            Text("Install another model with the same architecture and equal or smaller size to enable speculative decoding.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        if settings.speculativeDecoding.helperModelID != nil {
+                            Picker("Draft strategy", selection: $settings.speculativeDecoding.mode) {
+                                ForEach(ModelSettings.SpeculativeDecodingSettings.Mode.allCases) { mode in
+                                    Text(mode.title).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+
+                            Stepper(value: $settings.speculativeDecoding.value, in: 1...2048, step: 1) {
+                                switch settings.speculativeDecoding.mode {
+                                case .tokens:
+                                    Text("Draft tokens: \(settings.speculativeDecoding.value)")
+                                case .max:
+                                    Text("Draft window: \(settings.speculativeDecoding.value)")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+
+            private func sidebarSection<Content: View>(title: String, systemImage: String, @ViewBuilder content: () -> Content) -> some View {
+                VStack(alignment: .leading, spacing: 16) {
+                    Label(title, systemImage: systemImage)
+                        .font(.subheadline.weight(.semibold))
+                    content()
+                }
+            }
+
+            private func sliderRow(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double) -> some View {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(title)
+                        .font(.footnote.weight(.semibold))
+                    Slider(value: value, in: range, step: step)
+                        .padding(.vertical, 2)
+                }
+            }
+        }
+#endif
+
         private var sidebar: some View {
             return VStack(alignment: .leading) {
                 HStack {
@@ -5962,6 +8059,7 @@ struct MessageView: View {
             }
             .frame(maxHeight: .infinity)
             .background(Color(uiColor: .systemBackground))
+            .ignoresSafeArea(edges: .bottom)
         }
         
         
@@ -6068,7 +8166,7 @@ struct MessageView: View {
             }
         }
     }
-    
+
     // URLSession downloadWithProgress moved to URLSession+DownloadWithProgress.swift
     
     // Helper functions for global indexing overlay
@@ -6094,3 +8192,5 @@ struct MessageView: View {
     }
     
 }
+
+#endif

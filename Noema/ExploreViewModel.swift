@@ -1,4 +1,5 @@
 // ExploreViewModel.swift
+#if os(iOS) || os(tvOS) || os(visionOS) || os(macOS)
 import Foundation
 import Combine
 
@@ -19,7 +20,19 @@ final class ExploreViewModel: ObservableObject {
     @Published private(set) var canLoadMore = false
     @Published private(set) var isLoadingSearch = false
     @Published var searchError: String?
-    @Published var searchMode: ExploreSearchMode = ExploreSearchMode.gguf
+    @Published var searchMode: ExploreSearchMode = ExploreSearchMode.gguf {
+        didSet {
+#if os(visionOS)
+            // The SLM mode is not presented on visionOS; coerce back to GGUF/MLX if set.
+            if searchMode == .slm { searchMode = .gguf }
+#endif
+#if os(macOS)
+            if searchMode == .slm {
+                searchMode = DeviceGPUInfo.supportsGPUOffload ? .mlx : .gguf
+            }
+#endif
+        }
+    }
     
     // Filter manager for text/vision filtering
     private var filterManager: ModelTypeFilterManager?
@@ -28,6 +41,7 @@ final class ExploreViewModel: ObservableObject {
     private var searchTask: Task<Void, Never>?
     private var page = 0
     private var cancellables: Set<AnyCancellable> = []
+    private var prefetchedVisionRepos: Set<String> = []
 
     init(registry: any ModelRegistry) {
         self.registry = registry
@@ -49,20 +63,28 @@ final class ExploreViewModel: ObservableObject {
             }
             .store(in: &cancellables)
     }
+
+    deinit {
+        // Ensure any in-flight search is cancelled to avoid retaining self via task closures.
+        searchTask?.cancel()
+    }
     
     func setFilterManager(_ manager: ModelTypeFilterManager) {
         self.filterManager = manager
     }
 
-    func loadCurated() async {
+    func loadCurated(force: Bool = false) async {
+        if force { recommended.removeAll() }
         if recommended.isEmpty {
             let reg = registry
             if let list = try? await reg.curated() {
                 var seen = Set<String>()
                 let deduped = list.filter { seen.insert($0.id).inserted }
                 recommended = Self.prioritizeAuthors(in: deduped)
+                prefetchVisionStatus(for: recommended)
             }
         }
+        #if !os(macOS)
         if leapModels.isEmpty {
             let models = await LeapCatalogService.loadCatalog()
             // Hide VL (vision-capable) SLM bundles from the Explore SLM list
@@ -70,6 +92,7 @@ final class ExploreViewModel: ObservableObject {
             leapModels = nonVision
             filteredLeap = nonVision
         }
+        #endif
     }
 
     func details(for id: String) async -> ModelDetails? {
@@ -108,22 +131,21 @@ final class ExploreViewModel: ObservableObject {
         var unfilteredResults: [ModelRecord] = []
         var pageCount = 0
         
-        // Determine if we should include vision models based on search mode and current filter
-        var includeVisionModels = mode == .gguf // Default behavior
+        // Determine if we should include vision models based on search mode and UI filter.
+        // In MLX and GGUF modes, default to fetching both pipelines; the format filter
+        // is applied client‑side. When the user selects the Vision filter, restrict
+        // to vision pipeline only; when Text is selected, restrict to text‑generation only.
+        var includeVisionModels = (mode == .gguf || mode == .mlx)
         var visionOnly = false
-        
-        // Override based on current filter if available
-        if let filterManager = filterManager {
-            switch filterManager.filter {
-            case .all:
-                includeVisionModels = mode == .gguf // Keep default behavior
-                visionOnly = false
-            case .text:
-                includeVisionModels = false // Never include vision models for text-only filter
-                visionOnly = false
+        if let fm = filterManager, UIConstants.showMultimodalUI {
+            switch fm.filter {
             case .vision:
-                includeVisionModels = false // Don't include text models
-                visionOnly = true // Only vision models
+                includeVisionModels = true
+                visionOnly = true
+            case .text:
+                includeVisionModels = false
+            case .all:
+                includeVisionModels = true
             }
         }
         
@@ -132,14 +154,24 @@ final class ExploreViewModel: ObservableObject {
                 pageCount += 1
                 unfilteredResults.append(rec)
                 
-                // Apply filtering based on mode, but keep track of all results
+                // Apply filtering based on mode and, if set, the Vision/Text filter.
                 var shouldInclude = false
-                if mode == .gguf {
-                    // For GGUF mode, include only models explicitly marked as GGUF
-                    shouldInclude = rec.formats.contains(.gguf)
-                } else if mode == .mlx {
-                    // For MLX mode, prefer mlx-community but also show MLX format models
-                    shouldInclude = rec.id.hasPrefix("mlx-community/") || rec.formats.contains(.mlx)
+                let isVLM = (rec.pipeline_tag == "image-text-to-text")
+                switch mode {
+                case .gguf:
+                    // In GGUF mode, only allow repos that advertise GGUF.
+                    // If Vision filter is active, require VLM as well.
+                    shouldInclude = rec.formats.contains(.gguf) && (!visionOnly || isVLM)
+                case .mlx:
+                    // In MLX mode, allow explicit MLX formats and well-known MLX namespaces.
+                    // If Vision filter is active, require VLM as well.
+                    let matchesMLX = rec.formats.contains(.mlx)
+                        || rec.id.hasPrefix("mlx-community/")
+                        || rec.id.hasPrefix("lmstudio-community/")
+                    shouldInclude = matchesMLX && (!visionOnly || isVLM)
+                case .slm:
+                    // SLM is not used for search; keep false.
+                    shouldInclude = false
                 }
                 
                 #if DEBUG
@@ -170,10 +202,10 @@ final class ExploreViewModel: ObservableObject {
             }
 
         }
-        
-        // If we got no results after filtering, only show all results for non-GGUF modes
-        if fetched.isEmpty && !unfilteredResults.isEmpty && mode != .gguf {
-            print("[ExploreViewModel] No filtered results for '\(query)' in \(mode) mode, showing all \(unfilteredResults.count) results")
+    
+        // MLX should be a strict filter on every platform (macOS and iOS), matching user expectations.
+        if fetched.isEmpty && !unfilteredResults.isEmpty && mode == .slm {
+            print("[ExploreViewModel] No filtered results for '\(query)' in SLM mode, showing all \(unfilteredResults.count) results")
             for rec in unfilteredResults {
                 if existing.insert(rec.id).inserted {
                     fetched.append(rec)
@@ -189,6 +221,7 @@ final class ExploreViewModel: ObservableObject {
         searchResults = Self.prioritizeAuthors(in: searchResults)
         canLoadMore = pageCount == 50
         isLoadingSearch = false
+        prefetchVisionStatus(for: searchResults)
     }
 
     func loadNextPage() {
@@ -204,6 +237,22 @@ final class ExploreViewModel: ObservableObject {
     }
 
     func toggleMode() {
+#if os(visionOS)
+        // Cycle between GGUF and MLX only; SLM is not offered on visionOS.
+        switch searchMode {
+        case .gguf:
+            searchMode = .mlx
+        default:
+            searchMode = .gguf
+        }
+#elseif os(macOS)
+        switch searchMode {
+        case .gguf:
+            searchMode = .mlx
+        case .mlx, .slm:
+            searchMode = .gguf
+        }
+#else
         if !DeviceGPUInfo.supportsGPUOffload {
             // Pre-A13: skip MLX entirely; cycle between GGUF and SLM only
             switch searchMode {
@@ -225,12 +274,37 @@ final class ExploreViewModel: ObservableObject {
                 searchMode = .gguf
             }
         }
+#endif
 
         handleSearchInput(searchText)
     }
 
     func updateRegistry(_ reg: any ModelRegistry) {
         registry = reg
+    }
+
+    private func prefetchVisionStatus(for records: [ModelRecord]) {
+        guard let filterManager else { return }
+        let token = UserDefaults.standard.string(forKey: "huggingFaceToken")?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let authToken = (token?.isEmpty ?? true) ? nil : token
+        // Prefetch for GGUF/MLX repos and also any with an explicit VLM pipeline tag so
+        // Vision mode results on iOS/macOS can resolve quickly.
+        let repos = records
+            .filter { $0.formats.contains(.gguf) || $0.formats.contains(.mlx) || ($0.pipeline_tag == "image-text-to-text") }
+            .map(\.id)
+            .filter { !prefetchedVisionRepos.contains($0) }
+        guard !repos.isEmpty else { return }
+        prefetchedVisionRepos.formUnion(repos)
+        Task {
+            for repo in repos.prefix(24) {
+                let known = await MainActor.run { filterManager.knownVisionStatus(for: repo) }
+                if known != nil { continue }
+                let isVision = await VisionModelDetector.isVisionModel(repoId: repo, token: authToken)
+                await MainActor.run {
+                    filterManager.updateVisionStatus(repoId: repo, isVision: isVision)
+                }
+            }
+        }
     }
 }
 
@@ -263,3 +337,4 @@ private extension Array {
         return (first, second)
     }
 }
+#endif

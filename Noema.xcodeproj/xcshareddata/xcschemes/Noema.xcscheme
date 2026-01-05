@@ -36,7 +36,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "642CDB462E231968009017C6"
-               BuildableName = "NoemaTests.xctest"
+               BuildableName = "Noema.xctest"
                BlueprintName = "NoemaTests"
                ReferencedContainer = "container:Noema.xcodeproj">
             </BuildableReference>
@@ -47,7 +47,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "642CDB502E231968009017C6"
-               BuildableName = "NoemaUITests.xctest"
+               BuildableName = "Noema.xctest"
                BlueprintName = "NoemaUITests"
                ReferencedContainer = "container:Noema.xcodeproj">
             </BuildableReference>

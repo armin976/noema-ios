@@ -1,7 +1,10 @@
 import SwiftUI
 import RollingThought
+#if canImport(UIKit)
+import UIKit
+#endif
 
-#if !os(visionOS)
+#if canImport(UIKit) && !os(visionOS)
 typealias ChatView = MessageView.ChatView
 
 /// Hosts the main tabs with the default system tab bar.
@@ -14,7 +17,6 @@ struct MainView: View {
     @EnvironmentObject private var downloadController: DownloadController
     @EnvironmentObject private var walkthrough: GuidedWalkthroughManager
     @AppStorage("offGrid") private var offGrid = false
-    @AppStorage("defaultModelPath") private var defaultModelPath = ""
     @State private var didAutoLoad = false
 
     private let mainGuideSteps: Set<GuidedWalkthroughManager.Step> = [
@@ -50,7 +52,7 @@ struct MainView: View {
                     .environmentObject(tabRouter)
                     .environmentObject(downloadController)
                     .environmentObject(walkthrough)
-                    .tabItem { Label("Chat", systemImage: "message.fill") }
+                    .tabItem { Label(LocalizedStringKey("Chat"), systemImage: "message.fill") }
 
                 StoredView()
                     .tag(MainTab.stored)
@@ -60,7 +62,7 @@ struct MainView: View {
                     .environmentObject(tabRouter)
                     .environmentObject(downloadController)
                     .environmentObject(walkthrough)
-                    .tabItem { Label("Stored", systemImage: "externaldrive") }
+                    .tabItem { Label(LocalizedStringKey("Stored"), systemImage: "externaldrive") }
 
                 if !offGrid {
                     ExploreContainerView()
@@ -71,7 +73,7 @@ struct MainView: View {
                         .environmentObject(tabRouter)
                         .environmentObject(downloadController)
                         .environmentObject(walkthrough)
-                        .tabItem { Label("Explore", systemImage: "safari") }
+                        .tabItem { Label(LocalizedStringKey("Explore"), systemImage: "safari") }
                 }
 
                 SettingsView()
@@ -82,7 +84,7 @@ struct MainView: View {
                     .environmentObject(tabRouter)
                     .environmentObject(downloadController)
                     .environmentObject(walkthrough)
-                    .tabItem { Label("Settings", systemImage: "gearshape") }
+                    .tabItem { Label(LocalizedStringKey("Settings"), systemImage: "gearshape") }
             }
 
             DownloadOverlay()
@@ -109,14 +111,15 @@ struct MainView: View {
         .sheet(isPresented: $downloadController.showPopup) {
             DownloadListPopup()
                 .environmentObject(downloadController)
+                .presentationDetents([.fraction(0.5)])
         }
-        .task { await autoLoad() }
         .onAppear {
             modelManager.bind(datasetManager: datasetManager)
             downloadController.configure(modelManager: modelManager, datasetManager: datasetManager)
             datasetManager.bind(downloadController: downloadController)
             chatVM.modelManager = modelManager
             chatVM.datasetManager = datasetManager
+            Task { await autoLoad() }
             // Don't automatically initialize embedding model or select datasets
             // User must explicitly choose to use a dataset
             // Load persisted rolling thought boxes, if any
@@ -144,6 +147,32 @@ struct MainView: View {
                 for (key, vm) in chatVM.rollingThoughtViewModels {
                     vm.saveState(forKey: "RollingThought." + key)
                 }
+                // Free GPU/CPU resources when app goes to background
+                if !chatVM.isStreaming {
+                    Task { await chatVM.unload() }
+                }
+                // If the embedder isn't actively running, unload it too to reduce memory pressure.
+                Task.detached {
+                    if await EmbeddingModel.shared.activeOperationsCount == 0 {
+                        await EmbeddingModel.shared.unload()
+                    }
+                    await DatasetRetriever.shared.clearCache()
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+            // Under heavy downloads + indexing, iPadOS can get memory pressure during rotation/background snapshots.
+            // Proactively unload optional caches/backends to avoid jetsam / UIKit crashes.
+            Task.detached {
+                if await EmbeddingModel.shared.activeOperationsCount == 0 {
+                    await EmbeddingModel.shared.unload()
+                }
+                await DatasetRetriever.shared.clearCache()
+                await MainActor.run {
+                    if !chatVM.isStreaming {
+                        Task { await chatVM.unload() }
+                    }
+                }
             }
         }
     }
@@ -152,33 +181,7 @@ struct MainView: View {
     private func autoLoad() async {
         guard !didAutoLoad else { return }
         didAutoLoad = true
-
-        // If a previous bypassed load crashed the app, skip autoload and inform the user
-        if UserDefaults.standard.bool(forKey: "bypassRAMLoadPending") {
-            UserDefaults.standard.set(false, forKey: "bypassRAMLoadPending")
-            modelManager.refresh()
-            chatVM.loadError = "Previous model failed to load because it likely exceeded memory. Lower context size or choose a smaller model."
-            return
-        }
-
-        guard !chatVM.modelLoaded, !chatVM.loading else { return }
-        modelManager.refresh()
-        // Only autoload when a default model path is explicitly set
-        guard !defaultModelPath.isEmpty,
-              let model = modelManager.downloadedModels.first(where: { $0.url.path == defaultModelPath }) else { return }
-
-        let settings = modelManager.settings(for: model)
-        // Mark pending so if the app crashes during autoload, we won't autoload on next launch
-        UserDefaults.standard.set(true, forKey: "bypassRAMLoadPending")
-        await chatVM.unload()
-        if await chatVM.load(url: model.url, settings: settings, format: model.format) {
-            modelManager.updateSettings(settings, for: model)
-            modelManager.markModelUsed(model)
-        } else {
-            modelManager.loadedModel = nil
-        }
-        // Clear pending flag if we survived the load attempt
-        UserDefaults.standard.set(false, forKey: "bypassRAMLoadPending")
+        await StartupLoader.performStartupLoad(chatVM: chatVM, modelManager: modelManager, offGrid: offGrid)
     }
 }
 #endif

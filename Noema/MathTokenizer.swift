@@ -18,6 +18,104 @@ public enum MathToken: Equatable {
 }
 
 public struct MathTokenizer {
+    // MARK: - Minimal inline LaTeX heuristics (no $ delimiters)
+    /// Splits a plain text run into `.text` and `.inline` tokens by recognizing
+    /// specific TeX macros even when they are not wrapped in `$...` or `\(...\)`.
+    ///
+    /// Currently supported:
+    /// - `\frac{numerator}{denominator}` (ends the inline span at the closing brace
+    ///   of the second argument, even when additional prose follows immediately).
+    ///
+    /// This is conservative and only fires when both brace groups are complete.
+    /// Malformed macros are left as plain text.
+    public static func splitHeuristicInlineLatex(in text: String) -> [MathToken] {
+        guard !text.isEmpty else { return [] }
+
+        // Helper: find matching closing brace for a group that starts at `openIdx`.
+        func findMatchingBrace(in s: String, from openIdx: String.Index) -> String.Index? {
+            precondition(s[openIdx] == "{", "must start at '{'")
+            var depth = 0
+            var i = openIdx
+            let end = s.endIndex
+            while i < end {
+                let ch = s[i]
+                if ch == "\\" { // skip escaped next character
+                    let next = s.index(after: i)
+                    if next < end { i = s.index(after: next); continue }
+                }
+                if ch == "{" { depth += 1 }
+                if ch == "}" {
+                    depth -= 1
+                    if depth == 0 { return i }
+                }
+                if i < end { i = s.index(after: i) }
+            }
+            return nil
+        }
+
+        var tokens: [MathToken] = []
+        var cursor = text.startIndex
+        var lastEmit = text.startIndex
+        let end = text.endIndex
+
+        while cursor < end {
+            let remain = text[cursor..<end]
+            // Support \frac, \dfrac, \tfrac variants
+            let macroLen: Int? = {
+                if remain.hasPrefix("\\frac") { return 5 }
+                if remain.hasPrefix("\\dfrac") { return 6 }
+                if remain.hasPrefix("\\tfrac") { return 6 }
+                return nil
+            }()
+            if let mlen = macroLen {
+                // Move past the fraction macro
+                var i = text.index(cursor, offsetBy: mlen)
+                // Skip optional whitespace
+                while i < end, text[i].isWhitespace { i = text.index(after: i) }
+                guard i < end, text[i] == "{" else {
+                    cursor = text.index(after: cursor)
+                    continue
+                }
+                // Parse numerator
+                guard let numClose = findMatchingBrace(in: text, from: i) else {
+                    cursor = text.index(after: cursor)
+                    continue
+                }
+                var j = text.index(after: numClose)
+                while j < end, text[j].isWhitespace { j = text.index(after: j) }
+                guard j < end, text[j] == "{" else {
+                    cursor = text.index(after: cursor)
+                    continue
+                }
+                // Parse denominator
+                guard let denClose = findMatchingBrace(in: text, from: j) else {
+                    cursor = text.index(after: cursor)
+                    continue
+                }
+                // We have a complete \frac{..}{..}. Emit preceding text then the inline span.
+                if lastEmit < cursor { tokens.append(.text(String(text[lastEmit..<cursor]))) }
+
+                let latex = String(text[cursor...denClose])
+                tokens.append(.inline(stripBoxing(latex)))
+                cursor = text.index(after: denClose)
+                lastEmit = cursor
+                continue
+            }
+            cursor = text.index(after: cursor)
+        }
+        // Append any tail text
+        if lastEmit < end { tokens.append(.text(String(text[lastEmit..<end]))) }
+        // If no heuristic match, return a single text token
+        if tokens.isEmpty { return [.text(text)] }
+        // Merge adjacent text tokens
+        var merged: [MathToken] = []
+        for t in tokens {
+            if case .text(let s) = t, case .text(let prev)? = merged.last {
+                merged.removeLast(); merged.append(.text(prev + s))
+            } else { merged.append(t) }
+        }
+        return merged
+    }
     /// Removes LaTeX boxing macros while preserving their contents.
     /// Supported patterns:
     /// - \boxed{arg}

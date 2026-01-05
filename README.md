@@ -67,10 +67,66 @@ Run on your device. Because the app uses on-device model execution, you must dep
 
 Once the app launches, visit the Explore tab to search and install a model. You can then browse the Datasets tab to import textbooks or add your own documents. The Settings tab exposes advanced options including context length, tool-calling and offline mode.
 
+#### macOS debug builds
+
+When running the macOS helper target (`NoemaMac`) from Xcode you may encounter a crash complaining that `llama.framework` could not be loaded because the process and framework have different Team IDs. We now disable the hardened-runtime library validation requirement for the **Debug** build of `NoemaMac`, allowing Xcode to load the embedded third-party framework without additional manual codesigning. Release builds keep library validation enabled, so if you distribute the Mac app you should continue re-signing `llama.framework` with your production certificate (the `scripts/resign-llama.sh` build phase still performs that work automatically).
+
 ### Configuration
 - **Brave Search** – provide a proxy URL via the `BRAVE_SEARCH_PROXY_URL` environment variable or add `BraveSearchProxyURL` to your Info.plist. Without this configuration the web search tool remains disabled.
 - **RevenueCat Purchases** – supply your key with the `REVENUECAT_API_KEY` environment variable or `RevenueCatAPIKey` in Info.plist if you enable subscriptions.
 - **Server mode** – optionally set `LLAMA_SERVER_URL` to point to a llama.cpp server if you prefer remote inference.
+
+---
+
+## Vision (Images) with llama.cpp
+
+Noema supports vision-capable GGUF models via its embedded llama.cpp runner. If you want a quick sanity check from the command line, here are minimal examples that match how Noema wires things under the hood.
+
+Minimal working command:
+
+```
+llama-cli \
+  -m /path/to/vision-model.gguf \
+  --mmproj /path/to/matching-projector.gguf \
+  --image /path/to/photo.jpg \
+  -p "Describe the scene."
+```
+
+With sensible performance knobs:
+
+```
+llama-cli \
+  -m /path/to/vision-model.gguf \
+  --mmproj /path/to/matching-projector.gguf \
+  --image /path/to/photo.jpg \
+  -p "Describe the scene." \
+  -c 8192 \
+  -t 8 \
+  -ngl 99
+```
+
+Multiple images (repeat `--image` in the order you want the model to see them):
+
+```
+llama-cli \
+  -m /path/to/vision-model.gguf \
+  --mmproj /path/to/matching-projector.gguf \
+  --image img1.jpg \
+  --image img2.png \
+  -p "Compare the two images."
+```
+
+Order of operations in Noema (mirrors the CLI):
+
+1. Pick a vision-capable GGUF and its matching projector GGUF.
+2. Load the model. If the GGUF doesn’t embed a projector, Noema will auto‑discover a sibling `*.gguf` projector or use the one you configured.
+3. Attach one or more images; Noema preserves the order. Up to five per message.
+4. Type your text prompt and send.
+5. Tune performance in Settings: context (`-c` → `LLAMA_CONTEXT_SIZE`), threads (`-t` → `LLAMA_THREADS`), and GPU offload on Apple Silicon (`-ngl` → `LLAMA_N_GPU_LAYERS`).
+
+Notes:
+- You do not need to resize images yourself; llama.cpp preprocesses each image to what the model expects.
+- Projectors: If your llama.cpp build supports external projectors, Noema passes `mmproj` to the runner. If not, use merged VLM weights.
 
 ---
 

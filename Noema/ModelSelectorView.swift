@@ -1,6 +1,8 @@
 // ModelSelectorView.swift
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
 #if canImport(LeapSDK)
 import LeapSDK
 #endif
@@ -15,6 +17,7 @@ struct LocalModel: Identifiable, Hashable {
     let url: URL
     let quant: String
     let architecture: String
+    let architectureFamily: String
     let format: ModelFormat
     let sizeGB: Double
     var isMultimodal: Bool
@@ -26,9 +29,10 @@ struct LocalModel: Identifiable, Hashable {
     var lastUsedDate: Date?
     var isFavourite: Bool = false
     var totalLayers: Int
+    var moeInfo: MoEInfo? = nil
 }
 
-
+#if canImport(UIKit)
 struct ModelSelectorView: View {
     @EnvironmentObject var vm: ChatVM
     @EnvironmentObject var modelManager: AppModelManager
@@ -67,7 +71,7 @@ struct ModelSelectorView: View {
                                 .cornerRadius(UIConstants.extraLargeCornerRadius)
                             Button(action: {
 #if canImport(UIKit) && !os(visionOS)
-                                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                Haptics.impact(.medium)
 #endif
                                 modelManager.loadedModel = nil
                                 Task { await vm.unload() }
@@ -79,7 +83,7 @@ struct ModelSelectorView: View {
                         .transition(.opacity)
                     } else {
                         HStack {
-                            Text("No model loaded")
+                            Text(LocalizedStringKey("No model loaded"))
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(12)
                                 .background(Color(uiColor: .systemGray6))
@@ -95,7 +99,7 @@ struct ModelSelectorView: View {
                 }
                 .padding(.horizontal)
                 .animation(.easeInOut, value: modelManager.loadedModel)
-                .onChange(of: vm.loading) { _, loading in
+                .onChangeCompat(of: vm.loading) { _, loading in
                     if loading {
                         startProgressAnimation()
                     } else {
@@ -107,15 +111,15 @@ struct ModelSelectorView: View {
                     .environmentObject(modelManager)
                     .environmentObject(tabRouter)
                     .environmentObject(datasetManager)
-                Picker("Mode", selection: $isAdvancedMode) {
-                    Text("Simple").tag(false)
-                    Text("Advanced").tag(true)
+                Picker(LocalizedStringKey("Mode"), selection: $isAdvancedMode) {
+                    Text(LocalizedStringKey("Simple")).tag(false)
+                    Text(LocalizedStringKey("Advanced")).tag(true)
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
                 .padding(.bottom, 8)
             }
-            .navigationTitle("My Models")
+            .navigationTitle(LocalizedStringKey("My Models"))
             .navigationBarTitleDisplayMode(.inline)
         }
         .alert(item: $datasetManager.embedAlert) { info in
@@ -168,22 +172,30 @@ struct ModelListView: View {
     enum SortOption: String, CaseIterable, Identifiable {
         case recent = "Recent"
         case size = "Size"
+        
+        var localizedName: LocalizedStringKey {
+            switch self {
+            case .recent: return LocalizedStringKey("Recent")
+            case .size: return LocalizedStringKey("Size")
+            }
+        }
 
         var id: String { rawValue }
     }
 
     var body: some View {
         List {
-            Picker("Sort", selection: $sort) {
+            Picker(LocalizedStringKey("Sort"), selection: $sort) {
                 ForEach(SortOption.allCases) { option in
-                    Text(option.rawValue).tag(option)
+                    Text(option.localizedName).tag(option)
                 }
             }
             .pickerStyle(.segmented)
+            .labelsHidden()
             .padding(.vertical, 4)
             .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
             .listRowSeparator(.hidden)
-            Section(header: Text("Your Models")) {
+            Section(header: Text(LocalizedStringKey("Your Models"))) {
                 ForEach(sortedModels, id: \.id) { model in
                     let row = ModelRow(
                         model: model,
@@ -207,12 +219,10 @@ struct ModelListView: View {
                         }
                 }
             }
-
-            Section(header: Text("Your Datasets")) {
+            Section(header: Text(LocalizedStringKey("Your Datasets"))) {
                 ForEach(modelManager.downloadedDatasets) { ds in
                     let disabledForSLM = vm.isSLMModel
-                    let disabledForRemote = modelManager.activeRemoteSession != nil
-                    let isDisabled = disabledForSLM || disabledForRemote
+                    let isDisabled = disabledForSLM
                     DatasetRow(dataset: ds, indexing: datasetManager.indexingDatasetID == ds.datasetID)
                         .contentShape(Rectangle())
                         .onTapGesture {
@@ -228,7 +238,7 @@ struct ModelListView: View {
 
             Section {
                 HStack {
-                    Toggle("Manually choose model load parameters", isOn: $manualParams)
+                    Toggle(LocalizedStringKey("Manually choose model load parameters"), isOn: $manualParams)
                     Button {
                         showInfo = true
                     } label: {
@@ -240,10 +250,10 @@ struct ModelListView: View {
         }
         .onAppear { modelManager.refresh(); models = modelManager.downloadedModels }
         .onReceive(modelManager.$downloadedModels) { models = $0 }
-        .alert("Model Load Parameters", isPresented: $showInfo) {
-            Button("OK", role: .cancel) {}
+        .alert(LocalizedStringKey("Model Load Parameters"), isPresented: $showInfo) {
+            Button(LocalizedStringKey("OK"), role: .cancel) {}
         } message: {
-            Text("When enabled, you will be asked to choose parameters every time a model loads.")
+            Text(LocalizedStringKey("When enabled, you will be asked to choose parameters every time a model loads."))
         }
         .sheet(item: $selectedModel) { model in
             ModelSettingsView(model: model) { settings in
@@ -252,40 +262,40 @@ struct ModelListView: View {
             .environmentObject(modelManager)
             .environmentObject(vm)
         }
-        .alert("Load Failed", isPresented: Binding(get: { vm.loadError != nil }, set: { _ in vm.loadError = nil })) {
-            Button("OK", role: .cancel) {}
+        .alert(LocalizedStringKey("Load Failed"), isPresented: Binding(get: { vm.loadError != nil }, set: { _ in vm.loadError = nil })) {
+            Button(LocalizedStringKey("OK"), role: .cancel) {}
         } message: {
             Text(vm.loadError ?? "")
         }
         .confirmationDialog(
-            "Model doesn't support GPU offload",
+            LocalizedStringKey("Model doesn't support GPU offload"),
             isPresented: $showOffloadWarning,
             titleVisibility: .visible
         ) {
-            Button("Load") {
+            Button(LocalizedStringKey("Load")) {
                 if let (model, settings) = pendingLoad {
                     startLoad(for: model, settings: settings, bypassWarning: true)
                     pendingLoad = nil
                 }
             }
-            Button("Don't show again") {
+            Button(LocalizedStringKey("Don't show again")) {
                 hideGGUFOffloadWarning = true
                 if let (model, settings) = pendingLoad {
                     startLoad(for: model, settings: settings, bypassWarning: true)
                     pendingLoad = nil
                 }
             }
-            Button("Cancel", role: .cancel) {
+            Button(LocalizedStringKey("Cancel"), role: .cancel) {
                 pendingLoad = nil
             }
         } message: {
             if DeviceGPUInfo.supportsGPUOffload {
-                Text("This model doesn't support GPU offload and generation speed will be significantly slower. Consider switching to an MLX model.")
+                Text(LocalizedStringKey("This model doesn't support GPU offload and generation speed will be significantly slower. Consider switching to an MLX model."))
             } else {
-                Text("This model doesn't support GPU offload and generation speed will be significantly slower. Fastest option on this device: use an SLM (Leap) model.")
+                Text(LocalizedStringKey("This model doesn't support GPU offload and generation speed will be significantly slower. Fastest option on this device: use an SLM (Leap) model."))
             }
         }
-        }
+    }
 
     /// Models that are downloaded
     var filteredModels: [LocalModel] {
@@ -332,7 +342,8 @@ struct ModelListView: View {
                 }
                 loadingModelID = nil
 #else
-                vm.loadError = "SLM models are not supported on this platform."
+                let locale = LocalizationManager.preferredLocale()
+                vm.loadError = String(localized: "SLM models are not supported on this platform.", locale: locale)
                 modelManager.loadedModel = nil
                 loadingModelID = nil
 #endif
@@ -347,8 +358,9 @@ struct ModelListView: View {
                     let sizeBytes = Int64(model.sizeGB * 1_073_741_824.0)
                     let ctx = Int(settings.contextLength)
                     let layerHint: Int? = model.totalLayers > 0 ? model.totalLayers : nil
-                    if !ModelRAMAdvisor.fitsInRAM(format: model.format, sizeBytes: sizeBytes, contextLength: ctx, layerCount: layerHint) {
-                        vm.loadError = "Model likely exceeds memory budget. Lower context size or use a smaller quant/model."
+                    if !ModelRAMAdvisor.fitsInRAM(format: model.format, sizeBytes: sizeBytes, contextLength: ctx, layerCount: layerHint, moeInfo: model.moeInfo) {
+                        let locale = LocalizationManager.preferredLocale()
+                        vm.loadError = String(localized: "Model likely exceeds memory budget. Lower context or choose a smaller quant.", locale: locale)
                         loadingModelID = nil
                         return
                     }
@@ -365,7 +377,8 @@ struct ModelListView: View {
                             if let f = InstalledModelsStore.firstGGUF(in: loadURL) {
                                 loadURL = f
                             } else {
-                                vm.loadError = "Model file missing (.gguf)"
+                                let locale = LocalizationManager.preferredLocale()
+                                vm.loadError = String(localized: "Model file missing (.gguf)", locale: locale)
                                 modelManager.loadedModel = nil
                                 loadingModelID = nil
                                 return
@@ -375,7 +388,8 @@ struct ModelListView: View {
                             if let f = InstalledModelsStore.firstGGUF(in: loadURL.deletingLastPathComponent()) {
                                 loadURL = f
                             } else {
-                                vm.loadError = "Model file missing (.gguf)"
+                                let locale = LocalizationManager.preferredLocale()
+                                vm.loadError = String(localized: "Model file missing (.gguf)", locale: locale)
                                 modelManager.loadedModel = nil
                                 loadingModelID = nil
                                 return
@@ -386,7 +400,8 @@ struct ModelListView: View {
                         if let alt = InstalledModelsStore.firstGGUF(in: InstalledModelsStore.baseDir(for: .gguf, modelID: model.modelID)) {
                             loadURL = alt
                         } else {
-                            vm.loadError = "Model path missing"
+                            let locale = LocalizationManager.preferredLocale()
+                            vm.loadError = String(localized: "Model path missing", locale: locale)
                             modelManager.loadedModel = nil
                             loadingModelID = nil
                             return
@@ -400,14 +415,15 @@ struct ModelListView: View {
                         var d: ObjCBool = false
                         let dir = InstalledModelsStore.baseDir(for: .mlx, modelID: model.modelID)
                         if FileManager.default.fileExists(atPath: dir.path, isDirectory: &d), d.boolValue {
-                            loadURL = dir
-                        } else {
-                            vm.loadError = "Model path missing"
-                            modelManager.loadedModel = nil
-                            loadingModelID = nil
-                            return
-                        }
+                        loadURL = dir
+                    } else {
+                        let locale = LocalizationManager.preferredLocale()
+                        vm.loadError = String(localized: "Model path missing", locale: locale)
+                        modelManager.loadedModel = nil
+                        loadingModelID = nil
+                        return
                     }
+                }
                 case .slm:
                     break
                 case .apple:
@@ -422,8 +438,9 @@ struct ModelListView: View {
 
                 var clamped = settings
                 clamped.contextLength = max(1, clamped.contextLength)
-                if model.format == .gguf && model.totalLayers > 0 {
-                    if clamped.gpuLayers >= 0 {
+                if model.format == .gguf {
+                    // Only clamp GPU layers when we actually know totalLayers for this model.
+                    if model.totalLayers > 0, clamped.gpuLayers >= 0 {
                         clamped.gpuLayers = min(max(0, clamped.gpuLayers), model.totalLayers)
                     }
                 }
@@ -448,94 +465,8 @@ struct ModelListView: View {
             }
         }
     }
+
 }
-
-struct ModelRow: View {
-    let model: LocalModel
-    let isLoading: Bool
-    var isLoaded: Bool = false
-    let loadAction: () -> Void
-    @EnvironmentObject var vm: ChatVM
-
-    var body: some View {
-        let displayName: String = {
-            if model.quant.isEmpty {
-                return model.name
-            } else {
-                return model.name
-                    .replacingOccurrences(of: "-\(model.quant)", with: "")
-                    .replacingOccurrences(of: ".\(model.quant)", with: "")
-            }
-        }()
-
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 4) {
-                    if model.isFavourite {
-                        Image(systemName: "star.fill")
-                            .foregroundStyle(.yellow)
-                    }
-                    Text(displayName)
-                        .fontWeight(.medium)
-                    if model.isReasoningModel {
-                        Image(systemName: "brain")
-                            .foregroundColor(.purple)
-                    }
-                    if UIConstants.showMultimodalUI && model.isMultimodal {
-                        Image(systemName: "eye")
-                    }
-                    if model.isToolCapable {
-                        Image(systemName: "hammer")
-                            .foregroundColor(.blue)
-                    }
-                }
-                Text(model.modelID.split(separator: "/").first.map(String.init) ?? model.modelID)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 6) {
-                    if model.format != .slm {
-                        Text(QuantExtractor.shortLabel(from: model.quant, format: model.format))
-                            .font(.caption2)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(Color.accentColor.opacity(0.2)))
-                    }
-                    Text(model.format.rawValue)
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(model.format.tagGradient)
-                        .clipShape(Capsule())
-                        .foregroundColor(.white)
-                }
-            }
-            Spacer()
-            Text(String(format: "%.1f GB", model.sizeGB))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if !isLoaded {
-                Button(action: {
-#if canImport(UIKit) && !os(visionOS)
-                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-#endif
-                    loadAction()
-                }) {
-                    if isLoading { ProgressView() } else { Text("Load") }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isLoading || vm.loading)
-            } else {
-                Label("Loaded", systemImage: "checkmark.circle.fill")
-                    .font(.caption)
-                    .foregroundColor(.green)
-            }
-        }
-        .padding(.vertical, 4)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(model.name), size \(String(format: "%.1f", model.sizeGB)) gigabytes")
-    }
-}
-
 struct ModelDetailView: View {
     let model: LocalModel
     @EnvironmentObject var vm: ChatVM
@@ -554,20 +485,20 @@ struct ModelDetailView: View {
                 }
                 Label(String(format: "Size: %.1f GB", model.sizeGB), systemImage: "externaldrive")
             }
-            Section("Actions") {
-                Button("Delete") {
+            Section(LocalizedStringKey("Actions")) {
+                Button(LocalizedStringKey("Delete")) {
                     showDeleteConfirm = true
                 }
 
-                Button(model.isFavourite ? "Unmark Favorite" : "Mark as Favorite") {
+                Button(model.isFavourite ? LocalizedStringKey("Unmark Favorite") : LocalizedStringKey("Mark as Favorite")) {
                     if !modelManager.toggleFavourite(model) {
                         showFavouriteLimitAlert = true
                     }
                 }
             }
         }
-        .alert("Delete \(model.name)?", isPresented: $showDeleteConfirm) {
-            Button("Delete", role: .destructive) {
+        .alert(String.localizedStringWithFormat(String(localized: "Delete %@?"), model.name), isPresented: $showDeleteConfirm) {
+            Button(LocalizedStringKey("Delete"), role: .destructive) {
                 Task {
                     if modelManager.loadedModel?.id == model.id {
                         await vm.unload()
@@ -576,15 +507,18 @@ struct ModelDetailView: View {
                     dismiss()
                 }
             }
-            Button("Cancel", role: .cancel) { showDeleteConfirm = false }
+            Button(LocalizedStringKey("Cancel"), role: .cancel) { showDeleteConfirm = false }
         }
-        .alert("Favorite Limit Reached", isPresented: $showFavouriteLimitAlert) {
-            Button("OK", role: .cancel) {}
+        .alert(LocalizedStringKey("Favorite Limit Reached"), isPresented: $showFavouriteLimitAlert) {
+            Button(LocalizedStringKey("OK"), role: .cancel) {}
         } message: {
-            Text("You can only favorite up to three models.")
+            Text(LocalizedStringKey("You can only favorite up to three models."))
         }
     }
 }
+
+// Close UIKit-only view definitions.
+#endif
 
 extension LocalModel {
     static func loadInstalled(store: InstalledModelsStore) -> [LocalModel] {
@@ -606,12 +540,14 @@ extension LocalModel {
                 name = item.modelID.split(separator: "/").last.map(String.init) ?? item.modelID
             }
             let finalURL = item.url
+            let architectureLabels = Self.architectureLabels(for: finalURL, format: item.format, modelID: item.modelID)
             return LocalModel(
                 modelID: item.modelID,
                 name: name,
                 url: finalURL,
                 quant: item.quantLabel,
-                architecture: item.modelID,
+                architecture: architectureLabels.display,
+                architectureFamily: architectureLabels.family,
                 format: item.format,
                 sizeGB: Double(item.sizeBytes) / 1_073_741_824.0,
                 isMultimodal: item.isMultimodal,
@@ -620,7 +556,8 @@ extension LocalModel {
                 downloadDate: item.installDate,
                 lastUsedDate: item.lastUsed,
                 isFavourite: favs.contains(item.url.path),
-                totalLayers: layers
+                totalLayers: layers,
+                moeInfo: item.moeInfo
 
             )
         }
@@ -642,6 +579,85 @@ private extension LocalModel {
     }
 }
 
+extension LocalModel {
+    static func architectureLabels(for url: URL, format: ModelFormat, modelID: String) -> (display: String, family: String) {
+        let fallbackBase = fallbackArchitectureFamily(for: modelID)
+        var display = fallbackBase
+        var family = fallbackBase.lowercased()
+        var scanSource = "fallback"
+        var rawArchitecture: String?
+
+        switch format {
+        case .gguf:
+            if let info = GGUFMetadata.architectureInfo(at: url) {
+                let trimmedArch = info.architecture.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedArch.isEmpty {
+                    family = trimmedArch.lowercased()
+                    if display.isEmpty { display = trimmedArch }
+                }
+                if let name = info.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+                    display = name
+                } else if !trimmedArch.isEmpty {
+                    display = trimmedArch
+                }
+                scanSource = "gguf-metadata"
+                rawArchitecture = trimmedArch.isEmpty ? nil : trimmedArch
+            }
+        case .mlx:
+            if let info = MLXMetadata.architectureInfo(at: url) {
+                let trimmedFamily = info.family.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedFamily.isEmpty {
+                    family = trimmedFamily.lowercased()
+                    if display.isEmpty { display = trimmedFamily }
+                }
+                if let displayName = info.display?.trimmingCharacters(in: .whitespacesAndNewlines), !displayName.isEmpty {
+                    display = displayName
+                }
+                scanSource = "mlx-metadata"
+                rawArchitecture = trimmedFamily.isEmpty ? nil : trimmedFamily
+            }
+        case .slm, .apple:
+            break
+        }
+
+        if family.isEmpty {
+            family = fallbackBase.isEmpty ? "unknown" : fallbackBase.lowercased()
+        }
+        if display.isEmpty {
+            display = fallbackBase.isEmpty ? modelID : fallbackBase
+        }
+
+        let logKey = "\(url.path)|\(format.rawValue)"
+        let message = "[ArchitectureScan] modelID=\(modelID) format=\(format.rawValue) source=\(scanSource) display=\"\(display)\" family=\"\(family)\" raw=\"\(rawArchitecture ?? "<none>")\" path=\(url.lastPathComponent)"
+        Task {
+            await ArchitectureScanSessionTracker.shared.logOnce(key: logKey, message: message)
+        }
+
+        return (display, family)
+    }
+
+    private static func fallbackArchitectureFamily(for modelID: String) -> String {
+        let trimmed = modelID.split(separator: "/").last.map(String.init) ?? modelID
+        return trimmed.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func matchesArchitectureFamily(of other: LocalModel) -> Bool {
+        architectureFamily.caseInsensitiveCompare(other.architectureFamily) == .orderedSame
+    }
+}
+
+private actor ArchitectureScanSessionTracker {
+    static let shared = ArchitectureScanSessionTracker()
+
+    private var loggedKeys: Set<String> = []
+
+    func logOnce(key: String, message: String) async {
+        if loggedKeys.insert(key).inserted {
+            await logger.log(message)
+        }
+    }
+}
+
 extension Array where Element == LocalModel {
     /// Removes duplicate models based on their file URL while preserving order.
     func removingDuplicateURLs() -> [LocalModel] {
@@ -657,6 +673,8 @@ extension Array where Element == LocalModel {
     }
 }
 
+#if canImport(UIKit)
 #Preview {
     ModelSelectorView()
 }
+#endif

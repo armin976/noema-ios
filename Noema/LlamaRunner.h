@@ -9,7 +9,7 @@ typedef void (^LlamaErrorHandler)(NSError *error);
 
 // Vision probe result codes for callers to distinguish failure reasons
 typedef NS_ENUM(NSInteger, LlamaVisionProbe) {
-	LlamaVisionProbeUnavailable = -1,   // vision not compiled (no llava/clip)
+	LlamaVisionProbeUnavailable = -1,   // vision not available in this build
 	LlamaVisionProbeNoProjector = -2,   // model loaded but missing projector / not a VLM
 	LlamaVisionProbeOK           =  1   // vision embeddings working
 };
@@ -34,6 +34,9 @@ typedef struct {
 } NOEMAKVCacheConfig;
 
 @interface LlamaRunner : NSObject
+// Returns YES if the current process exports known vision symbols discovered via dlsym,
+// regardless of whether headers were available at compile time.
++ (BOOL)runtimeHasVisionSymbols;
 - (nullable instancetype)initWithModelPath:(NSString *)modelPath
                        nCtxTokens:(int)nCtx
                        nGpuLayers:(int)nGpu
@@ -67,8 +70,9 @@ typedef struct {
                       onDone:(LlamaDoneHandler)onDone
                      onError:(LlamaErrorHandler)onError;
 
-// New API: optional image paths for multimodal prompts. For now, images are not processed
-// by the llama.cpp backend in this runner; callers should pass nil when unsupported.
+// New API: optional image paths for multimodal prompts. In this configuration we do not
+// process images in-process; callers should pass nil here and prefer routing vision
+// requests through a server using the OpenAI-compatible chat API with base64 image URLs.
 - (void)generateWithPrompt:(NSString *)prompt
                 imagePaths:(nullable NSArray<NSString *> *)imagePaths
                  maxTokens:(int)maxTokens
@@ -76,11 +80,11 @@ typedef struct {
                     onDone:(LlamaDoneHandler)onDone
                    onError:(LlamaErrorHandler)onError;
 
-// Whether this build has llama.cpp vision ops (llava/clip) compiled in.
+// Whether vision ops appear to be present in the linked binary (runtime symbol probe).
 - (BOOL)hasVisionOps;
 
-// Runtime probe: attempts to create a dummy image embed to verify projector presence.
-// Returns LlamaVisionProbe codes defined above.
+// Runtime probe placeholder. Without depending on example headers we cannot safely
+// attempt an image embed here. This returns Unavailable in non-vendored builds.
 - (LlamaVisionProbe)probeVision;
 
 // Request cancellation of any in-flight generation. Safe to call from any thread.
@@ -94,5 +98,3 @@ typedef struct {
 @end
 
 NS_ASSUME_NONNULL_END
-
-

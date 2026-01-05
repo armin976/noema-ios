@@ -1,4 +1,5 @@
 // IndexingNotificationView.swift
+#if canImport(UIKit)
 import SwiftUI
 import UIKit
 
@@ -290,3 +291,48 @@ private func isPluggedIn() -> Bool {
     let state = UIDevice.current.batteryState
     return state == .charging || state == .full
 }
+
+#elseif os(macOS)
+
+import SwiftUI
+
+struct IndexingNotificationView: View {
+    @ObservedObject var datasetManager: DatasetManager
+
+    private var activeStatus: (dataset: LocalDataset, status: DatasetProcessingStatus)? {
+        guard let id = datasetManager.indexingDatasetID,
+              let dataset = datasetManager.datasets.first(where: { $0.datasetID == id }),
+              let status = datasetManager.processingStatus[id] else {
+            return nil
+        }
+        return (dataset, status)
+    }
+
+    var body: some View {
+        if let info = activeStatus {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    ProgressView(value: info.status.progress)
+                        .progressViewStyle(.linear)
+                        .frame(maxWidth: 140)
+                    Text("\(Int(info.status.progress * 100))%")
+                        .font(.caption)
+                        .monospacedDigit()
+                }
+                Text("Indexing \(info.dataset.name)")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                Text(info.status.message ?? info.status.stage.rawValue.capitalized)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(.thinMaterial)
+            )
+        }
+    }
+}
+
+#endif

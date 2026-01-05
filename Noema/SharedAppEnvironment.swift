@@ -1,5 +1,8 @@
 import SwiftUI
+
+#if canImport(UIKit)
 import UIKit
+#endif
 
 #if canImport(MLX)
 import MLX

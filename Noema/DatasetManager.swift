@@ -49,9 +49,7 @@ final class DatasetManager: ObservableObject {
     }
 
     init() {
-        // Clear any previously selected dataset on app startup
-        // User must explicitly select a dataset each session
-        selectedDatasetID = ""
+        // Persist dataset selection across launches; only clear when the user disables it.
         reloadFromDisk()
         // Run a single auto-index scan on first app launch only
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
@@ -123,34 +121,30 @@ final class DatasetManager: ObservableObject {
                 }
             }
         }
-        datasets = found
-        // Preserve any in-flight processing status to avoid UI flicker when refreshing from disk.
-        // Only set to completed if indexed on disk; only clear entries for datasets no longer present.
+        // Compute new status and publish all changes on the next runloop tick
+        // to avoid nested SwiftUI view updates warnings.
         let embedded = Set(embeddedDatasetIDsRaw.split(separator: ",").map(String.init))
-        var newStatus: [String: DatasetProcessingStatus] = [:]
+        var computedStatus: [String: DatasetProcessingStatus] = [:]
         for ds in found {
             if let existing = processingStatus[ds.datasetID], existing.stage != .completed {
-                // Keep ongoing progress; it will be updated by the pipeline callback
-                newStatus[ds.datasetID] = existing
+                computedStatus[ds.datasetID] = existing
             } else if ds.isIndexed {
                 if !embedded.contains(ds.datasetID) { markEmbedded(ds.datasetID) }
-                newStatus[ds.datasetID] = DatasetProcessingStatus(stage: .completed, progress: 1.0, message: "Ready", etaSeconds: 0)
-            } else {
-                // Not indexed and no existing progress; omit status
+                computedStatus[ds.datasetID] = DatasetProcessingStatus(stage: .completed, progress: 1.0, message: "Ready", etaSeconds: 0)
             }
         }
-        processingStatus = newStatus
-        // Keep lastStatusByID consistent with the currently visible statuses
-        lastStatusByID = newStatus
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.datasets = found
+            self.processingStatus = computedStatus
+            self.lastStatusByID = computedStatus
 
-        // If a dataset finished indexing (or was removed) while the app was off,
-        // clear any stale indexing flags so UI elements like the chat input box
-        // are re-enabled.
-        if let current = indexingDatasetID {
-            let stillIndexing = datasets.contains { $0.datasetID == current && !$0.isIndexed }
-            if !stillIndexing {
-                indexingDatasetID = nil
-                persistedIndexingDatasetID = ""
+            if let current = self.indexingDatasetID {
+                let stillIndexing = self.datasets.contains { $0.datasetID == current && !$0.isIndexed }
+                if !stillIndexing {
+                    self.indexingDatasetID = nil
+                    self.persistedIndexingDatasetID = ""
+                }
             }
         }
 
@@ -195,16 +189,15 @@ final class DatasetManager: ObservableObject {
     }
 
     func select(_ ds: LocalDataset?) {
-        selectedDatasetID = ds?.datasetID ?? ""
-        // Reflect dataset active/idle state in UserDefaults keys used by WebToolGate
-        // so backends that are not on the main actor can gate tool usage reliably.
-        let d = UserDefaults.standard
-        if let id = ds?.datasetID, !id.isEmpty {
-            d.set(id, forKey: "selectedDatasetID")
-        } else {
-            d.set("", forKey: "selectedDatasetID")
+        let nextID = ds?.datasetID ?? ""
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.selectedDatasetID = nextID
+            // Reflect dataset active/idle state in UserDefaults keys used by WebToolGate
+            let d = UserDefaults.standard
+            d.set(nextID, forKey: "selectedDatasetID")
+            self.reloadFromDisk()
         }
-        reloadFromDisk()
         // Do not auto-download/embedder or auto-index here; user must trigger manually in UI.
     }
 
@@ -294,6 +287,9 @@ final class DatasetManager: ObservableObject {
                     self.indexingDatasetID = nil
                     self.persistedIndexingDatasetID = ""
                     self.reloadFromDisk()
+                    // Milestone: dataset embedded successfully (enables RAG). Do not prompt yet;
+                    // we’ll prompt after a successful chat turn or other milestone.
+                    ReviewPrompter.shared.noteDatasetEmbedded()
                 }
                 self.indexingTasks[ds.datasetID] = nil
             }
@@ -447,37 +443,45 @@ final class DatasetManager: ObservableObject {
                 let base = u.deletingPathExtension().lastPathComponent
                 return DatasetManager.humanizeFileName(base)
             }
-            return "Imported Dataset"
+            return String(localized: "Imported Dataset", locale: LocalizationManager.preferredLocale())
         }()
 
         // Build destination directory
         let (datasetID, destDir) = DatasetManager.makeImportedDatasetDir(named: defaultName)
 
-        // Ensure folders
-        do {
-            try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
-        } catch {
-            return nil
-        }
-
-        // Copy picked files
-        for url in picked {
-            _ = url.startAccessingSecurityScopedResource()
-            defer { url.stopAccessingSecurityScopedResource() }
+        // Copy can be slow (especially with many files / iCloud Drive). Keep it off the main actor
+        // so rotations and app switching don't trip watchdog terminations.
+        let copiedAny: Bool = await Task.detached(priority: .userInitiated) {
+            let fm = FileManager.default
             do {
-                let dest = destDir.appendingPathComponent(url.lastPathComponent)
-                if FileManager.default.fileExists(atPath: dest.path) {
-                    try FileManager.default.removeItem(at: dest)
-                }
-                try FileManager.default.copyItem(at: url, to: dest)
+                try fm.createDirectory(at: destDir, withIntermediateDirectories: true)
             } catch {
-                // Best-effort: continue copying other files
+                return false
             }
-        }
 
-        // Persist human-readable title for display
-        let titleURL = destDir.appendingPathComponent("title.txt")
-        try? defaultName.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8)?.write(to: titleURL)
+            var didCopy = false
+            for url in picked {
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                do {
+                    let dest = destDir.appendingPathComponent(url.lastPathComponent)
+                    if fm.fileExists(atPath: dest.path) {
+                        try fm.removeItem(at: dest)
+                    }
+                    try fm.copyItem(at: url, to: dest)
+                    didCopy = true
+                } catch {
+                    // Best-effort: continue copying other files
+                }
+            }
+
+            // Persist human-readable title for display
+            let titleURL = destDir.appendingPathComponent("title.txt")
+            try? defaultName.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8)?.write(to: titleURL)
+            return didCopy
+        }.value
+
+        guard copiedAny else { return nil }
 
         // Refresh in-memory list and return the created dataset
         reloadFromDisk()
@@ -526,21 +530,54 @@ final class DatasetManager: ObservableObject {
     }
 }
 
+#if canImport(UIKit) || os(macOS)
 struct DatasetRow: View {
     let dataset: LocalDataset
     let indexing: Bool
     @EnvironmentObject var datasetManager: DatasetManager
     @EnvironmentObject var modelManager: AppModelManager
+    @Environment(\.locale) private var locale
+    #if os(macOS)
+    @State private var isHovered = false
+    #endif
     var body: some View {
-        HStack {
+        HStack(spacing: 12) {
             Image(systemName: "doc.richtext")
-            VStack(alignment: .leading) {
-                Text(dataset.name).font(.headline)
-                Text(dataset.source).font(.caption).foregroundStyle(.secondary)
+                .font(.system(size: 20))
+                .foregroundStyle(AppTheme.secondaryText)
+            
+            VStack(alignment: .leading, spacing: 4) {
+                Text(dataset.name)
+                    .font(FontTheme.body)
+                    .fontWeight(.medium)
+                    .foregroundStyle(AppTheme.text)
+                Text(dataset.source)
+                    .font(FontTheme.caption)
+                    .foregroundStyle(AppTheme.secondaryText)
             }
             Spacer()
             statusView
         }
+        .padding(.vertical, 8)
+        #if os(macOS)
+        .overlay(alignment: .topTrailing) {
+            if isHovered {
+                Button {
+                    try? datasetManager.delete(dataset)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                        .font(.system(size: 16))
+                        .padding(4)
+                }
+                .buttonStyle(.plain)
+                .help("Delete dataset")
+            }
+        }
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        #endif
     }
 
     @ViewBuilder
@@ -548,30 +585,46 @@ struct DatasetRow: View {
         let status = datasetManager.processingStatus[dataset.datasetID]
         let isProcessing = indexing || (status != nil && status?.stage != .completed)
         VStack(alignment: .trailing, spacing: 4) {
-            Text(String(format: "%.0f MB", dataset.sizeMB))
-                .font(.footnote).foregroundStyle(.secondary)
+            Text(localizedFileSizeString(bytes: Int64(dataset.sizeMB * 1_048_576.0), locale: locale))
+                .font(FontTheme.caption)
+                .foregroundStyle(AppTheme.secondaryText)
+            
             if isProcessing, let s = status {
-                ZStack {
-                    Circle().stroke(Color.gray.opacity(0.3), lineWidth: 3).frame(width: 22, height: 22)
-                    Circle()
-                        .trim(from: 0, to: CGFloat(max(0, min(1, s.progress))))
-                        .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                        .frame(width: 22, height: 22)
-                    Text("\(Int(s.progress * 100))")
-                        .font(.system(size: 9)).monospacedDigit()
+                HStack(spacing: 6) {
+                    ZStack {
+                        Circle().stroke(Color.gray.opacity(0.3), lineWidth: 3).frame(width: 16, height: 16)
+                        Circle()
+                            .trim(from: 0, to: CGFloat(max(0, min(1, s.progress))))
+                            .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                            .rotationEffect(.degrees(-90))
+                            .frame(width: 16, height: 16)
+                    }
+                    Text("\(Int(s.progress * 100))%")
+                        .font(FontTheme.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(AppTheme.secondaryText)
                 }
+                
                 Text(stageLabel(s.stage))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(FontTheme.caption)
+                    .foregroundStyle(AppTheme.secondaryText)
                 if let m = s.message, !m.isEmpty {
                     Text(m)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(FontTheme.caption)
+                        .foregroundStyle(AppTheme.secondaryText)
+                        .lineLimit(1)
                 }
             } else if modelManager.activeDataset?.datasetID == dataset.datasetID {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(Color.accentColor)
+                HStack(spacing: 4) {
+                    Image(systemName: "checkmark.circle.fill")
+                    Text("Active")
+                }
+                .font(FontTheme.caption)
+                .foregroundStyle(Color.accentColor)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.accentColor.opacity(0.1))
+                .clipShape(Capsule())
             }
         }
     }
@@ -586,3 +639,4 @@ struct DatasetRow: View {
         }
     }
 }
+#endif

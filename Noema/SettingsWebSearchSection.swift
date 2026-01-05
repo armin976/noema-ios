@@ -14,10 +14,10 @@ struct SettingsWebSearchSection: View {
                         Image(systemName: "questionmark.circle").foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("What is Web Search button?")
+                    .accessibilityLabel(Text("What is Web Search button?"))
                 }
             }
-            .onChange(of: settings.webSearchEnabled) { _, on in
+            .onChangeCompat(of: settings.webSearchEnabled) { _, on in
                 if !on { settings.webSearchArmed = false }
             }
             .tint(.blue)

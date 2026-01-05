@@ -7,10 +7,12 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
+#include <cstdio>
 #include <type_traits>
 // Build-time configuration for llama.cpp capabilities
 #import "NoemaLlamaConfig.h"
 #import "LlamaBackendManager.h"
+#include <dlfcn.h>
 #if __has_include(<llama/llama.h>)
 #import <llama/llama.h>
 #elif __has_include(<LlamaFramework/llama.h>)
@@ -19,22 +21,9 @@
 #import "llama.h"
 #endif
 
-// Optional vision headers (present in vision-enabled llama builds)
-#if __has_include(<llama/llava.h>)
-#include <llama/llava.h>
-#define NOEMA_HAS_LLAVA 1
-#elif __has_include("llava.h")
-#include "llava.h"
-#define NOEMA_HAS_LLAVA 1
-#endif
-
-#if __has_include(<llama/clip.h>)
-#include <llama/clip.h>
-#define NOEMA_HAS_CLIP 1
-#elif __has_include("clip.h")
-#include "clip.h"
-#define NOEMA_HAS_CLIP 1
-#endif
+// Intentionally avoid including example vision headers (llava/clip/mtmd). We rely solely on
+// the public C API in llama.h. If vision is needed, higher layers should prefer the server
+// route that accepts base64 image URLs.
 
 // Compatibility shims for clearing the KV cache across llama.cpp versions.
 #if defined(__APPLE__)
@@ -222,43 +211,9 @@ static int noema_llava_prime_with_images(
     llama_context * ctx,
     const std::vector<std::string> & image_paths,
     int n_threads) {
-#if defined(NOEMA_HAS_LLAVA) && defined(NOEMA_HAS_CLIP)
-    if (!model || !ctx || image_paths.empty()) { return 0; }
-    int total_prefix = 0;
-    for (const auto & path : image_paths) {
-        // Load image into CLIP-friendly buffer
-        struct clip_image_u8 img_u8 = {0};
-        bool ok_load = clip_image_load_from_file(path.c_str(), &img_u8);
-        if (!ok_load) {
-            return -1;
-        }
-        struct clip_image_f32 img_f32 = {0};
-        bool ok_f32 = clip_image_f32_from_u8(&img_f32, &img_u8);
-        clip_image_u8_free(&img_u8);
-        if (!ok_f32) {
-            clip_image_f32_free(&img_f32);
-            return -1;
-        }
-        // Create image embed using the current llama model (expects integrated mmproj in GGUF)
-        struct llava_image_embed * embed = nullptr;
-        bool ok_embed = llava_image_embed_make_with_model(model, &img_f32, /*n_images*/ 1, &embed, n_threads);
-        clip_image_f32_free(&img_f32);
-        if (!ok_embed || embed == nullptr) {
-            if (embed) { llava_image_embed_free(embed); }
-            // Return a specific error code for "not a vision model"
-            return -2;
-        }
-        // Evaluate/embed into llama context; obtain prefix token count if available
-        int n_pfx = llava_eval_image_embed(ctx, embed);
-        if (n_pfx < 0) { n_pfx = 0; }
-        total_prefix += n_pfx;
-        llava_image_embed_free(embed);
-    }
-    return total_prefix;
-#else
     (void)model; (void)ctx; (void)image_paths; (void)n_threads;
+    // No in-process vision in this build; handled at app layer via server mode.
     return -1;
-#endif
 }
 
 // Construct a robust default sampler chain.
@@ -266,14 +221,83 @@ static int noema_llava_prime_with_images(
 // Optional top-p/typical lines are left commented with min_keep = 1 for safe experimentation.
 static llama_sampler * noema_make_default_sampler() {
   auto *chain = llama_sampler_chain_init(llama_sampler_chain_default_params());
-  llama_sampler_chain_add(chain, llama_sampler_init_temp(0.7f));
-  llama_sampler_chain_add(chain, llama_sampler_init_top_k(40));
-  // Optional samplers (enable one, keep values loose, and do not stack tightly):
-  // llama_sampler_chain_add(chain, llama_sampler_init_top_p(0.90f, 1));
-  // llama_sampler_chain_add(chain, llama_sampler_init_typical(1.0f, 1));
-  // Add greedy sampler to the chain so a greedy fallback is available inside the chain
+
+  const char *envTemp = getenv("NOEMA_TEMPERATURE");
+  float temp = 0.7f;
+  if (envTemp && envTemp[0] != '\0') {
+    temp = strtof(envTemp, nullptr);
+    if (temp <= 0.0f) temp = 0.1f;
+  }
+  llama_sampler_chain_add(chain, llama_sampler_init_temp(temp));
+
+  const char *envTopK = getenv("NOEMA_TOP_K");
+  int top_k = 40;
+  if (envTopK && envTopK[0] != '\0') {
+    top_k = std::max(1, atoi(envTopK));
+  }
+  llama_sampler_chain_add(chain, llama_sampler_init_top_k(top_k));
+
+  const char *envTopP = getenv("NOEMA_TOP_P");
+  if (envTopP && envTopP[0] != '\0') {
+    float top_p = strtof(envTopP, nullptr);
+    if (top_p > 0.0f && top_p <= 1.0f) {
+      llama_sampler_chain_add(chain, llama_sampler_init_top_p(top_p, 1));
+    }
+  }
+
+  const char *envMinP = getenv("NOEMA_MIN_P");
+  if (envMinP && envMinP[0] != '\0') {
+    float min_p = strtof(envMinP, nullptr);
+    if (min_p > 0.0f && min_p <= 1.0f) {
+      llama_sampler_chain_add(chain, llama_sampler_init_min_p(min_p, 1));
+    }
+  }
+
+  const char *envRepeatPenalty = getenv("NOEMA_REPEAT_PENALTY");
+  const char *envFrequencyPenalty = getenv("NOEMA_FREQUENCY_PENALTY");
+  const char *envPresencePenalty = getenv("NOEMA_PRESENCE_PENALTY");
+  const char *envRepeatLastN = getenv("NOEMA_REPEAT_LAST_N");
+  float repeat_penalty = envRepeatPenalty ? strtof(envRepeatPenalty, nullptr) : 1.1f;
+  float frequency_penalty = envFrequencyPenalty ? strtof(envFrequencyPenalty, nullptr) : 0.0f;
+  float presence_penalty = envPresencePenalty ? strtof(envPresencePenalty, nullptr) : 0.0f;
+  int repeat_last_n = envRepeatLastN ? std::max(0, atoi(envRepeatLastN)) : 64;
+  // Recent llama.cpp releases changed the penalty sampler signature to take penalty_last_n first
+  // and removed the explicit newline toggle, so we just forward the configured values.
+  llama_sampler_chain_add(chain, llama_sampler_init_penalties(
+      repeat_last_n,
+      repeat_penalty,
+      frequency_penalty,
+      presence_penalty));
+
   llama_sampler_chain_add(chain, llama_sampler_init_greedy());
   return chain;
+}
+
+static void noema_prepare_moe_overrides(std::vector<llama_model_kv_override> &out, bool verbose) {
+  out.clear();
+  const char *env = getenv("LLAMA_MOE_EXPERTS");
+  if (env == nullptr || env[0] == '\0') {
+    return;
+  }
+  int value = atoi(env);
+  if (value <= 0) {
+    return;
+  }
+
+  llama_model_kv_override entry = {};
+  entry.tag = LLAMA_KV_OVERRIDE_TYPE_INT;
+  snprintf(entry.key, sizeof(entry.key), "%s", "llama.expert_used_count");
+  entry.val_i64 = value;
+  out.push_back(entry);
+
+  llama_model_kv_override terminator = {};
+  terminator.tag = LLAMA_KV_OVERRIDE_TYPE_INT;
+  terminator.key[0] = 0;
+  out.push_back(terminator);
+
+  if (verbose) {
+    NSLog(@"[LlamaRunner] Overriding llama.expert_used_count=%d", value);
+  }
 }
 
 
@@ -289,6 +313,13 @@ static llama_sampler * noema_make_default_sampler() {
   int _nThreads;
   bool _verbose;
   std::atomic<bool> _cancelRequested;
+  std::vector<llama_model_kv_override> _kvOverrides;
+  // Optional speculative decoding (draft model)
+  llama_model *_draftModel;
+  llama_context *_draftCtx;
+  bool _specEnabled;
+  int _specValue;
+  bool _specModeMax;
 }
 
 - (instancetype)init {
@@ -300,6 +331,11 @@ static llama_sampler * noema_make_default_sampler() {
   def.typeK = NOEMAKVCacheTypeF16;
   def.typeV = NOEMAKVCacheTypeF16;
   _kvConfig = def;
+  _draftModel = nullptr;
+  _draftCtx = nullptr;
+  _specEnabled = false;
+  _specValue = 0;
+  _specModeMax = false;
   return self;
 }
 
@@ -325,6 +361,49 @@ static llama_sampler * noema_make_default_sampler() {
   _cancelRequested.store(true);
 }
 
+// --- Speculative decoding support (lazy) ---
+static inline int noema_env_int(const char *key, int defv) {
+  const char *v = getenv(key);
+  if (!v || v[0] == 0) return defv;
+  return atoi(v);
+}
+
+static inline bool noema_env_bool(const char *key, bool defv) {
+  const char *v = getenv(key);
+  if (!v || v[0] == 0) return defv;
+  return atoi(v) != 0 || strcasecmp(v, "true") == 0 || strcasecmp(v, "yes") == 0;
+}
+
+- (void)setupSpeculativeIfConfigured {
+  if (_draftCtx != nullptr || _draftModel != nullptr) { _specEnabled = true; return; }
+  const char *path = getenv("NOEMA_DRAFT_PATH");
+  if (path == nullptr || path[0] == '\0') { _specEnabled = false; return; }
+  const char *mode = getenv("NOEMA_DRAFT_MODE");
+  _specModeMax = (mode && strcasecmp(mode, "max") == 0);
+  _specValue = std::max(1, noema_env_int("NOEMA_DRAFT_VALUE", 64));
+
+  struct llama_model_params mparams = llama_model_default_params();
+  mparams.use_mmap = noema_env_bool("LLAMA_MMAP", true);
+  mparams.use_mlock = false;
+  mparams.n_gpu_layers = 0; // keep draft on CPU to save VRAM
+  if (!_kvOverrides.empty()) mparams.kv_overrides = _kvOverrides.data();
+
+  _draftModel = llama_load_model_from_file(path, mparams);
+  if (_draftModel == nullptr) { _specEnabled = false; return; }
+
+  struct llama_context_params cparams = llama_context_default_params();
+  cparams.n_ctx = llama_n_ctx(_ctx);
+  cparams.n_batch = 512;
+  cparams.n_threads = _nThreads;
+  cparams.n_threads_batch = _nThreads;
+  ggml_type k = GGML_TYPE_F16, v = GGML_TYPE_F16, merged = GGML_TYPE_F16; bool dummy=false;
+  noema_apply_flash_and_kv_params(cparams, self.kvConfig, &k, &v, &dummy, &merged);
+  _draftCtx = llama_init_from_model(_draftModel, cparams);
+  if (_draftCtx == nullptr) { llama_model_free(_draftModel); _draftModel = nullptr; _specEnabled = false; return; }
+  if (_verbose) NSLog(@"[LlamaRunner] Speculative decoding enabled (value=%d, mode=%@)", _specValue, _specModeMax ? @"max" : @"tokens");
+  _specEnabled = true;
+}
+
 // Designated initializers with explicit sequence parallelism
 - (nullable instancetype)initWithModelPath:(NSString *)modelPath
                        nCtxTokens:(int)nCtx
@@ -337,6 +416,16 @@ static llama_sampler * noema_make_default_sampler() {
   const char *v = getenv("NOEMA_LLAMA_VERBOSE");
   _verbose = (v && atoi(v) != 0);
 
+#if TARGET_OS_IPHONE
+  const char *metalSafeMode = getenv("NOEMA_LLAMA_METAL_SAFE_MODE");
+  if (metalSafeMode && atoi(metalSafeMode) != 0) {
+    // Opt-in “safe mode” for llama.cpp Metal backends; avoids shared buffers that have regressed on some builds.
+    setenv("GGML_METAL_SHARED_BUFFERS_DISABLE", "1", 1);
+    if (_verbose) {
+      NSLog(@"[LlamaRunner] Enabling Metal safe mode (shared buffers disabled)");
+    }
+  }
+#endif
   noema_llama_backend_addref();
 
 #if TARGET_OS_IPHONE || TARGET_OS_OSX
@@ -378,17 +467,18 @@ static llama_sampler * noema_make_default_sampler() {
   }
 #endif
 
+  noema_prepare_moe_overrides(_kvOverrides, _verbose);
+  if (!_kvOverrides.empty()) {
+    mparams.kv_overrides = _kvOverrides.data();
+  } else {
+    mparams.kv_overrides = nullptr;
+  }
+
   _model = llama_load_model_from_file([modelPath UTF8String], mparams);
   if (!_model) { noema_llama_backend_release(); return nil; }
 
   struct llama_context_params cparams = llama_context_default_params();
   int effective_n_ctx = nCtx;
-#if defined(NOEMA_HAS_LLAVA) && defined(NOEMA_HAS_CLIP)
-  if (nCtx < 8192) {
-    NSLog(@"[LlamaRunner] Warning: nCtx of %d may be too small for multimodal use; increasing to 8192.", nCtx);
-    effective_n_ctx = 8192;
-  }
-#endif
   // Clamp to model's training context to avoid oversizing
   {
     const int train_ctx = llama_n_ctx_train(_model);
@@ -451,7 +541,8 @@ static llama_sampler * noema_make_default_sampler() {
   _nThreads = nThreads;
 
   if (_verbose) {
-    NSLog(@"[LlamaRunner] Context ready. n_ctx=%d, n_seq_max=%d, n_gpu_layers=%d", llama_n_ctx(_ctx), cparams.n_seq_max, nGpu);
+    NSLog(@"[LlamaRunner] Context ready. n_ctx=%d, n_seq_max=%d, n_gpu_layers=%d, threads=%d, threads_batch=%d",
+          llama_n_ctx(_ctx), cparams.n_seq_max, nGpu, cparams.n_threads, cparams.n_threads_batch);
   }
 
   return self;
@@ -468,6 +559,15 @@ static llama_sampler * noema_make_default_sampler() {
 
   const char *v = getenv("NOEMA_LLAMA_VERBOSE");
   _verbose = (v && atoi(v) != 0);
+#if TARGET_OS_IPHONE
+  const char *metalSafeMode = getenv("NOEMA_LLAMA_METAL_SAFE_MODE");
+  if (metalSafeMode && atoi(metalSafeMode) != 0) {
+    setenv("GGML_METAL_SHARED_BUFFERS_DISABLE", "1", 1);
+    if (_verbose) {
+      NSLog(@"[LlamaRunner] Enabling Metal safe mode (shared buffers disabled)");
+    }
+  }
+#endif
   noema_llama_backend_addref();
 
 #if TARGET_OS_IPHONE || TARGET_OS_OSX
@@ -514,11 +614,14 @@ static llama_sampler * noema_make_default_sampler() {
     BOOL isDir = NO;
     BOOL exists = [[NSFileManager defaultManager] fileExistsAtPath:mmprojPath isDirectory:&isDir];
     if (!exists || isDir) {
-      if (_verbose) NSLog(@"[LlamaRunner] projector missing or not a file: %@", mmprojPath);
+      NSLog(@"[LlamaRunner] Projector not found or not a file: %@", mmprojPath);
     } else {
       mparams.mmproj = [mmprojPath UTF8String];
-      if (_verbose) NSLog(@"[LlamaRunner] Using external projector: %@", mmprojPath);
+      NSLog(@"[LlamaRunner] Using external projector: %@", mmprojPath);
     }
+  } else {
+      // Indicate whether we expect merged projectors or none
+      NSLog(@"[LlamaRunner] No external projector provided (expect merged VLM or text-only model)");
   }
 #else
   if (mmprojPath != nil && [mmprojPath length] > 0) {
@@ -526,17 +629,18 @@ static llama_sampler * noema_make_default_sampler() {
   }
 #endif
 
+  noema_prepare_moe_overrides(_kvOverrides, _verbose);
+  if (!_kvOverrides.empty()) {
+    mparams.kv_overrides = _kvOverrides.data();
+  } else {
+    mparams.kv_overrides = nullptr;
+  }
+
   _model = llama_load_model_from_file([modelPath UTF8String], mparams);
   if (!_model) { noema_llama_backend_release(); return nil; }
 
   struct llama_context_params cparams = llama_context_default_params();
   int effective_n_ctx = nCtx;
-#if defined(NOEMA_HAS_LLAVA) && defined(NOEMA_HAS_CLIP)
-  if (nCtx < 8192) {
-    NSLog(@"[LlamaRunner] Warning: nCtx of %d may be too small for multimodal use; increasing to 8192.", nCtx);
-    effective_n_ctx = 8192;
-  }
-#endif
   {
     const int train_ctx = llama_n_ctx_train(_model);
     if (train_ctx > 0 && effective_n_ctx > train_ctx) {
@@ -556,6 +660,17 @@ static llama_sampler * noema_make_default_sampler() {
   bool usedMerged = false;
   ggml_type mergedType = GGML_TYPE_F16;
   noema_apply_flash_and_kv_params(cparams, self.kvConfig, &resolvedK, &resolvedV, &usedMerged, &mergedType);
+  // Summarize resolved KV and flash settings
+  {
+    const char *flashStr = "auto";
+    switch (cparams.flash_attn_type) {
+      case LLAMA_FLASH_ATTN_TYPE_AUTO: flashStr = "auto"; break;
+      case LLAMA_FLASH_ATTN_TYPE_ENABLED: flashStr = "on"; break;
+      case LLAMA_FLASH_ATTN_TYPE_DISABLED: flashStr = "off"; break;
+    }
+    NSLog(@"[LlamaRunner] KV K=%s V=%s flash=%s",
+          noema_kv_type_name(resolvedK), noema_kv_type_name(resolvedV), flashStr);
+  }
   if (_verbose && usedMerged) {
     NSLog(@"[Noema] Warning: llama.cpp too old for separate K/V cache types. Using merged cache type=%s.", noema_kv_type_name(mergedType));
   }
@@ -594,52 +709,36 @@ static llama_sampler * noema_make_default_sampler() {
   _loaded = true;
   _nThreads = nThreads;
 
+  if (_verbose) {
+    NSLog(@"[LlamaRunner] Context ready. n_ctx=%d, n_seq_max=%d, n_gpu_layers=%d, threads=%d, threads_batch=%d",
+          llama_n_ctx(_ctx), cparams.n_seq_max, nGpu, cparams.n_threads, cparams.n_threads_batch);
+  }
+
+  {
+    BOOL runtime = [LlamaRunner runtimeHasVisionSymbols];
+    NSLog(@"[LlamaRunner] Runtime vision symbols present: %@", runtime ? @"YES" : @"NO");
+  }
+
   return self;
 }
 
 - (BOOL)hasVisionOps {
-#if __has_include(<llama/llava.h>) || __has_include("llava.h") || __has_include(<llama/clip.h>) || __has_include("clip.h")
-    return YES;
-#else
-    return NO;
-#endif
+  // Detect presence of symbols in the linked binary at runtime only.
+  return [LlamaRunner runtimeHasVisionSymbols];
+}
+
++ (BOOL)runtimeHasVisionSymbols {
+  // llava + clip entry points commonly present in vision-enabled builds
+  void *sym_llava = dlsym(RTLD_DEFAULT, "llava_image_embed_make_with_model");
+  void *sym_clip  = dlsym(RTLD_DEFAULT, "clip_image_load_from_file");
+  // Also accept MTMD path (Gemma 3 / multi-token multimodal)
+  void *sym_mtmd  = dlsym(RTLD_DEFAULT, "mtmd_image_embed_make_with_model");
+  return (sym_llava && sym_clip) || (sym_mtmd && sym_clip);
 }
 
 - (LlamaVisionProbe)probeVision {
-#if defined(NOEMA_HAS_LLAVA) && defined(NOEMA_HAS_CLIP)
-  if (!_loaded || _model == nullptr || _ctx == nullptr) {
-    return LlamaVisionProbeUnavailable;
-  }
-  @autoreleasepool {
-    // Write a minimal 1x1 PNG to a temporary file for probing
-    // This avoids bundling an asset and lets clip_image_load_from_file handle decoding.
-    static const unsigned char kPng1x1[] = {
-      0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A,0x00,0x00,0x00,0x0D,0x49,0x48,0x44,0x52,
-      0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x01,0x08,0x06,0x00,0x00,0x00,0x1F,0x15,0xC4,
-      0x89,0x00,0x00,0x00,0x0A,0x49,0x44,0x41,0x54,0x78,0x9C,0x63,0xF8,0x0F,0x00,0x01,
-      0x01,0x01,0x00,0x18,0xDD,0x8E,0x7B,0x00,0x00,0x00,0x00,0x49,0x45,0x4E,0x44,0xAE,
-      0x42,0x60,0x82
-    };
-    NSString *tmpName = [NSTemporaryDirectory() stringByAppendingPathComponent:@"noema_probe.png"];
-    NSData *pngData = [NSData dataWithBytes:kPng1x1 length:sizeof(kPng1x1)];
-    (void)[pngData writeToFile:tmpName atomically:YES];
-
-    std::vector<std::string> imgs;
-    imgs.emplace_back([tmpName UTF8String]);
-    int primed = noema_llava_prime_with_images(_model, _ctx, imgs, _nThreads);
-
-    // Clean up probe artifacts: reset KV/context and remove temp file
-    noema_llama_kv_cache_clear(_ctx, /*clearData=*/true);
-    llama_set_embeddings(_ctx, false);
-    [[NSFileManager defaultManager] removeItemAtPath:tmpName error:nil];
-
-    if (primed == -2) { return LlamaVisionProbeNoProjector; }
-    if (primed < 0) { return LlamaVisionProbeUnavailable; }
-    return LlamaVisionProbeOK;
-  }
-#else
+  // Without vendored vision glue, we cannot probe image embedding.
   return LlamaVisionProbeUnavailable;
-#endif
 }
 
 - (void)generateWithPrompt:(NSString *)prompt
@@ -756,50 +855,101 @@ static llama_sampler * noema_make_default_sampler() {
   // Default sampler: temperature + top-k
   auto *smpl = noema_make_default_sampler();
   llama_sampler_reset(smpl);
+  // Lazy initialize speculative decoder if configured
+  [self setupSpeculativeIfConfigured];
+  llama_sampler *greedy_main = llama_sampler_init_greedy();
+  llama_sampler *greedy_draft = _specEnabled ? llama_sampler_init_greedy() : nullptr;
+  if (greedy_draft) llama_sampler_reset(greedy_draft);
+  llama_sampler_reset(greedy_main);
+  // If speculation is enabled, feed the prompt into the draft context to align states
+  if (_specEnabled) {
+    llama_batch db = llama_batch_init(/*n_tokens_alloc*/ n_batch_alloc, /*embd*/ 0, /*n_seq_max*/ 1);
+    int cur = 0;
+    while (cur < n) {
+      db.n_tokens = 0;
+      const int n_chunk = std::min(n - cur, n_batch_alloc);
+      for (int i = 0; i < n_chunk; ++i) {
+        const int pos = cur + i;
+        db.token[db.n_tokens]     = toks[pos];
+        db.pos[db.n_tokens]       = pos;
+        db.n_seq_id[db.n_tokens]  = 1;
+        db.seq_id[db.n_tokens][0] = 0;
+        db.logits[db.n_tokens]    = (i == n_chunk - 1);
+        db.n_tokens++;
+      }
+      (void)llama_decode(_draftCtx, db);
+      cur += n_chunk;
+    }
+    llama_batch_free(db);
+  }
   
   const int base_pos = (n > 0 ? n : 1);
   int generated = 0;
   const bool unlimited = maxTokens <= 0;
+  int pos_main = base_pos;
+  int pos_draft = base_pos;
   while (unlimited || generated < maxTokens) {
     if (_cancelRequested.load()) { break; }
-    const int idx = -1; // sample from the most recent logits
-    llama_token tok = llama_sampler_sample(smpl, _ctx, idx);
-    if (tok < 0) {
-      // No candidate available from sampler
-      break;
+    if (_specEnabled) {
+      // Draft proposal
+      std::vector<llama_token> proposal; proposal.reserve(_specValue);
+      llama_batch db = llama_batch_init(32, 0, 1);
+      for (int i = 0; i < _specValue; ++i) {
+        const llama_token dtok = llama_sampler_sample(greedy_draft, _draftCtx, -1);
+        if (dtok < 0 || dtok == llama_vocab_eos(vocab)) break;
+        proposal.push_back(dtok);
+        db.n_tokens = 0;
+        if (pos_draft >= ctx_max - 1) break;
+        db.token[0] = dtok; db.pos[0] = pos_draft; db.n_seq_id[0] = 1; db.seq_id[0][0] = 0; db.logits[0] = 1; db.n_tokens = 1;
+        (void)llama_decode(_draftCtx, db);
+        pos_draft++;
+      }
+      llama_batch_free(db);
+      bool diverged = false;
+      for (size_t i = 0; i < proposal.size(); ++i) {
+        const llama_token top_main = llama_sampler_sample(greedy_main, _ctx, -1);
+        if (top_main == proposal[i]) {
+          llama_sampler_accept(smpl, top_main);
+          char buf[512]; int nout = llama_token_to_piece(vocab, top_main, buf, sizeof(buf), 0, false);
+          if (nout > 0 && onToken) { NSString *piece = [[NSString alloc] initWithBytes:buf length:nout encoding:NSUTF8StringEncoding]; onToken(piece ?: @""); }
+          batch.n_tokens = 0; if (pos_main >= ctx_max - 1) { diverged = true; break; }
+          batch.token[0] = top_main; batch.pos[0] = pos_main; batch.n_seq_id[0] = 1; batch.seq_id[0][0] = 0; batch.logits[0] = 1; batch.n_tokens = 1;
+          if (llama_decode(_ctx, batch) != 0) { diverged = true; break; }
+          pos_main++; generated++; if (!unlimited && generated >= maxTokens) { diverged = true; break; }
+        } else {
+          const llama_token tok = llama_sampler_sample(smpl, _ctx, -1);
+          if (tok < 0 || tok == llama_vocab_eos(vocab)) { diverged = true; break; }
+          llama_sampler_accept(smpl, tok);
+          char buf[512]; int nout = llama_token_to_piece(vocab, tok, buf, sizeof(buf), 0, false);
+          if (nout > 0 && onToken) { NSString *piece = [[NSString alloc] initWithBytes:buf length:nout encoding:NSUTF8StringEncoding]; onToken(piece ?: @""); }
+          batch.n_tokens = 0; if (pos_main >= ctx_max - 1) { diverged = true; break; }
+          batch.token[0] = tok; batch.pos[0] = pos_main; batch.n_seq_id[0] = 1; batch.seq_id[0][0] = 0; batch.logits[0] = 1; batch.n_tokens = 1;
+          if (llama_decode(_ctx, batch) != 0) { diverged = true; break; }
+          pos_main++; generated++;
+          // sync draft with chosen token
+          llama_batch sdb = llama_batch_init(1, 0, 1); sdb.n_tokens=1; sdb.token[0]=tok; sdb.pos[0]=pos_draft++; sdb.n_seq_id[0]=1; sdb.seq_id[0][0]=0; sdb.logits[0]=1; (void)llama_decode(_draftCtx, sdb); llama_batch_free(sdb);
+          diverged = true; break;
+        }
+      }
+      if (diverged) { if (!unlimited && generated >= maxTokens) break; continue; }
+      if (!unlimited && generated >= maxTokens) break;
+      continue;
+    } else {
+      const llama_token tok = llama_sampler_sample(smpl, _ctx, -1);
+      if (tok < 0 || tok == llama_vocab_eos(vocab)) break;
+      llama_sampler_accept(smpl, tok);
+      char buf[512]; int nout = llama_token_to_piece(vocab, tok, buf, sizeof(buf), 0, false);
+      if (nout > 0 && onToken) { NSString *piece = [[NSString alloc] initWithBytes:buf length:nout encoding:NSUTF8StringEncoding]; onToken(piece ?: @""); }
+      batch.n_tokens = 0; if (pos_main >= ctx_max - 1) break;
+      batch.token[0]=tok; batch.pos[0]=pos_main; batch.n_seq_id[0]=1; batch.seq_id[0][0]=0; batch.logits[0]=1; batch.n_tokens=1;
+      if (_cancelRequested.load()) break; if (llama_decode(_ctx, batch) != 0) break;
+      pos_main++; generated++;
     }
-    if (tok == llama_vocab_eos(vocab)) break;
-    // Inform the sampler about the accepted token to keep internal state consistent
-    llama_sampler_accept(smpl, tok);
-
-    // detokenize single token - updated function signature
-    char buf[512];
-    int nout = llama_token_to_piece(vocab, tok, buf, sizeof(buf), 0, false);
-    if (nout > 0 && onToken) {
-      NSString *piece = [[NSString alloc] initWithBytes:buf length:nout encoding:NSUTF8StringEncoding];
-      onToken(piece ?: @"");
-    }
-
-    // feed back token using the new batch API
-    batch.n_tokens = 0;
-    // Stop if we are at the end of the context
-    if (base_pos + generated >= ctx_max - 1) { break; }
-    batch.token[batch.n_tokens]     = tok;
-    batch.pos[batch.n_tokens]       = base_pos + generated;
-    batch.n_seq_id[batch.n_tokens]  = 1;
-    batch.seq_id[batch.n_tokens][0] = 0;
-    // Ensure logits are requested for this single-token decode
-    batch.logits[0] = 0;
-    batch.logits[0]    = 1;
-    batch.n_tokens++;
-    if (_cancelRequested.load()) { break; }
-    if (llama_decode(_ctx, batch) != 0) {
-      break;
-    }
-    generated++;
   }
 
   llama_sampler_free(smpl);
+  llama_sampler_free(greedy_main);
+  if (greedy_draft) llama_sampler_free(greedy_draft);
   llama_batch_free(batch);
   if (onDone) onDone();
 }
@@ -827,168 +977,23 @@ static llama_sampler * noema_make_default_sampler() {
         return;
     }
 
-#if defined(NOEMA_HAS_LLAVA) && defined(NOEMA_HAS_CLIP)
-    // Clear memory/KV before priming with images
-    noema_llama_kv_cache_clear(_ctx, /*clearData=*/true);
-
-    std::vector<std::string> imgs;
-    imgs.reserve(imagePaths.count);
-    for (NSString *s in imagePaths) { imgs.emplace_back([s UTF8String]); }
-    int n_pfx = noema_llava_prime_with_images(_model, _ctx, imgs, _nThreads);
-    if (_verbose) {
-        NSLog(@"[LlamaRunner] Vision priming complete. prefix_tokens=%d, n_ctx=%d", n_pfx, llama_n_ctx(_ctx));
-    }
-    // Ensure we are producing logits (disable embedding-only mode) after vision priming
-    llama_set_embeddings(_ctx, false);
-    if (n_pfx == -2) {
-        if (onError) {
-            NSError *err = [NSError errorWithDomain:@"Llama" code:1003 userInfo:@{NSLocalizedDescriptionKey:@"Loaded model does not support images (missing mmproj weights)"}];
-            onError(err);
-        }
-        return;
-    } else if (n_pfx < 0) {
-        if (onError) {
-            NSError *err = [NSError errorWithDomain:@"Llama" code:1002 userInfo:@{NSLocalizedDescriptionKey:@"Failed to process image(s) for vision model"}];
-            onError(err);
-        }
-        return;
-    }
-
-    // After priming, evaluate the text prompt as a continuation. We reuse the text path but offset positions.
-    // Build tokens once
-    const int n_batch_alloc = 512;
-    llama_batch batch = llama_batch_init(/*n_tokens_alloc*/ n_batch_alloc, /*embd*/ 0, /*n_seq_max*/ 1);
-    std::string p = [prompt UTF8String];
-    std::vector<llama_token> toks;
-    toks.resize(p.size() * 4 + 16);
-    const struct llama_vocab *vocab = llama_model_get_vocab(_model);
-    bool addSpecial = true;
-    if (!p.empty()) {
-        const char c0 = p[0];
-        if (c0 == '<' || c0 == '[') { addSpecial = false; }
-    }
-    int n = llama_tokenize(vocab, p.c_str(), (int32_t)p.length(), toks.data(), (int)toks.size(), /*add_special*/ addSpecial, /*parse_special*/ true);
-    toks.resize(n);
-
-    const int ctx_max = llama_n_ctx(_ctx);
-    const int prompt_limit = std::max(1, ctx_max - 64);
-    if (n > prompt_limit) {
-        const int start = n - prompt_limit;
-        std::vector<llama_token> tail(toks.begin() + start, toks.end());
-        toks.swap(tail);
-        n = (int)toks.size();
-    }
-
-    // If the text prompt is empty, inject a BOS at the end of the image prefix and decode once
-    if (n == 0) {
-        batch.n_tokens = 0;
-        batch.token[0]     = llama_vocab_bos(vocab);
-        batch.pos[0]       = n_pfx + 0;
-        batch.n_seq_id[0]  = 1;
-        batch.seq_id[0][0] = 0;
-        batch.logits[0]    = true;
-        batch.n_tokens     = 1;
-        if (llama_decode(_ctx, batch) != 0) {
-            llama_batch_free(batch);
-            if (onError) {
-                NSError *err = [NSError errorWithDomain:@"Llama" code:2 userInfo:@{NSLocalizedDescriptionKey:@"decode failed (BOS)"}];
-                onError(err);
-            }
-            return;
-        }
-    }
-
-    // Evaluate text tokens starting after the image prefix
-    int n_cur = 0;
-    while (n_cur < n) {
-        if (_cancelRequested.load()) {
-            llama_batch_free(batch);
-            if (onDone) onDone();
-            return;
-        }
-        batch.n_tokens = 0;
-        const int n_chunk = std::min(n - n_cur, n_batch_alloc);
-        // Clear logits flags for the slice we will use, then mark the last token to return logits
-        for (int j = 0; j < n_chunk; ++j) batch.logits[j] = 0;
-        for (int i = 0; i < n_chunk; ++i) {
-            const int pos = n_pfx + n_cur + i;
-            batch.token[batch.n_tokens]     = toks[n_cur + i];
-            batch.pos[batch.n_tokens]       = pos;
-            batch.n_seq_id[batch.n_tokens]  = 1;
-            batch.seq_id[batch.n_tokens][0] = 0;
-            batch.logits[batch.n_tokens]    = (i == n_chunk - 1);
-            batch.n_tokens++;
-        }
-        if (_cancelRequested.load()) {
-            llama_batch_free(batch);
-            if (onDone) onDone();
-            return;
-        }
-        if (llama_decode(_ctx, batch) != 0) {
-            llama_batch_free(batch);
-            if (onError) {
-                NSError *err = [NSError errorWithDomain:@"Llama" code:2 userInfo:@{NSLocalizedDescriptionKey:@"decode failed"}];
-                onError(err);
-            }
-            return;
-        }
-        n_cur += n_chunk;
-    }
-
-    // Default sampler: temperature + top-k
-    auto *smpl = noema_make_default_sampler();
-    llama_sampler_reset(smpl);
-
-    const int base_pos = n_pfx + (n > 0 ? n : 1);
-    int generated = 0;
-    const bool unlimited = maxTokens <= 0;
-    while (unlimited || generated < maxTokens) {
-        if (_cancelRequested.load()) { break; }
-        const int idx = -1; // sample from the most recent logits
-        llama_token tok = llama_sampler_sample(smpl, _ctx, idx);
-        if (tok < 0) {
-            // No candidate available from sampler
-            break;
-        }
-        if (tok == llama_vocab_eos(vocab)) break;
-        llama_sampler_accept(smpl, tok);
-        char buf[512];
-        int nout = llama_token_to_piece(vocab, tok, buf, sizeof(buf), 0, false);
-        if (nout > 0 && onToken) {
-            NSString *piece = [[NSString alloc] initWithBytes:buf length:nout encoding:NSUTF8StringEncoding];
-            onToken(piece ?: @"");
-        }
-        batch.n_tokens = 0;
-        if (base_pos + generated >= ctx_max - 1) { break; }
-        batch.token[batch.n_tokens]     = tok;
-        batch.pos[batch.n_tokens]       = base_pos + generated;
-        batch.n_seq_id[batch.n_tokens]  = 1;
-        batch.seq_id[batch.n_tokens][0] = 0;
-        // Ensure logits are requested for this single-token decode
-        batch.logits[0] = 0;
-        batch.logits[0]    = 1;
-        batch.n_tokens++;
-        if (_cancelRequested.load()) { break; }
-        if (llama_decode(_ctx, batch) != 0) { break; }
-        generated++;
-    }
-
-    llama_sampler_free(smpl);
-    llama_batch_free(batch);
-    if (onDone) onDone();
-#else
     if (onError) {
-        NSError *err = [NSError errorWithDomain:@"Llama" code:1001 userInfo:@{NSLocalizedDescriptionKey:@"This llama.cpp runner was built without vision support"}];
+        NSError *err = [NSError errorWithDomain:@"Llama" code:1002 userInfo:@{NSLocalizedDescriptionKey:@"In-process vision is not available in this build. Use llama.cpp's server with base64 image URLs or provide a vendored vision wrapper."}];
         onError(err);
     }
-#endif
 }
 
 - (void)unload {
+  if (_ctx || _model || _draftCtx || _draftModel) {
+    fputs("[LlamaRunner] Unload begin\n", stderr);
+  }
   if (_ctx) { llama_free(_ctx); _ctx = nullptr; }
-    if (_model) { llama_model_free(_model); _model = nullptr; }
+  if (_model) { llama_model_free(_model); _model = nullptr; }
+  if (_draftCtx) { llama_free(_draftCtx); _draftCtx = nullptr; }
+  if (_draftModel) { llama_model_free(_draftModel); _draftModel = nullptr; }
   _loaded = false;
   noema_llama_backend_release();
+  fputs("[LlamaRunner] Unload complete\n", stderr);
 }
 
 @end

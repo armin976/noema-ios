@@ -340,6 +340,17 @@ final class ModelLoadingProgressTracker: ObservableObject {
     }
 }
 
+extension ModelLoadingProgressTracker {
+    static var preview: ModelLoadingProgressTracker {
+        let tracker = ModelLoadingProgressTracker()
+        tracker.isLoading = true
+        tracker.progress = 0.65
+        tracker.currentPhase = .loadingKernels
+        tracker.phaseLabel = LoadingPhase.loadingKernels.label
+        return tracker
+    }
+}
+
 // MARK: - Progress View Component
 struct ModelLoadingProgressView: View {
     @ObservedObject var tracker: ModelLoadingProgressTracker
@@ -399,6 +410,7 @@ struct ModelLoadingProgressView: View {
 }
 
 // MARK: - Preview
+#if DEBUG
 #Preview {
     ZStack {
         Color(.systemBackground)
@@ -409,21 +421,15 @@ struct ModelLoadingProgressView: View {
 
             ModelLoadingNotificationView(
                 modelManager: {
-                    let manager = AppModelManager()
+                    let manager = PreviewModelManager()
                     manager.loadingModelName = "Llama-3.2-3B-Instruct-Q4"
                     return manager
                 }(),
-                loadingTracker: {
-                    let tracker = ModelLoadingProgressTracker()
-                    tracker.isLoading = true
-                    tracker.progress = 0.65
-                    tracker.currentPhase = .loadingKernels
-                    tracker.phaseLabel = "Loading Metal kernels..."
-                    return tracker
-                }()
+                loadingTracker: ModelLoadingProgressTracker.preview
             )
 
             Spacer()
         }
     }
 }
+#endif
