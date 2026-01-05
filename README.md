@@ -30,7 +30,7 @@ A built-in RAM adviser uses device-specific limits to estimate how much memory i
 
 ### Built-in tool calling and retrieval-augmented generation
 Noema implements a flexible tool calling system for both llama.cpp (server and in-process modes) and MLX backends. Tools can be called automatically during a chat session to perform functions such as:
-- Web search using Brave Search through a user-configured proxy (`BRAVE_SEARCH_PROXY_URL` environment variable or `BraveSearchProxyURL` in Info.plist).
+- Web search via SearXNG. By default requests go through `https://search.noemaai.com/search`, but you can point the tool to your own instance with the `SEARXNG_URL` environment variable or a `SearXNGURL` entry in `Secrets.plist`.
 - Document retrieval against your locally indexed datasets.
 - Custom functions exposed through the app’s tool registry.
 
@@ -45,7 +45,7 @@ Instead of embedding all knowledge inside huge model weights, Noema emphasises e
 - **Tool-calling** – toggle built-in tools and set timeouts or maximum tool turns.
 
 ### Privacy-first & offline
-All processing happens on your device. The app never sends your chats, files or downloaded models to any server. Even web search uses your local Brave proxy configuration, and offline mode disables network access entirely. Combined with Apple sandboxing, this ensures that your data remains private.
+All processing happens on your device. The app never sends your chats, files or downloaded models to any server. Web search calls a configurable SearXNG endpoint (defaults to `https://search.noemaai.com/search`), and offline mode disables network access entirely. Combined with Apple sandboxing, this ensures that your data remains private.
 
 ---
 
@@ -72,7 +72,7 @@ Once the app launches, visit the Explore tab to search and install a model. You 
 When running the macOS helper target (`NoemaMac`) from Xcode you may encounter a crash complaining that `llama.framework` could not be loaded because the process and framework have different Team IDs. We now disable the hardened-runtime library validation requirement for the **Debug** build of `NoemaMac`, allowing Xcode to load the embedded third-party framework without additional manual codesigning. Release builds keep library validation enabled, so if you distribute the Mac app you should continue re-signing `llama.framework` with your production certificate (the `scripts/resign-llama.sh` build phase still performs that work automatically).
 
 ### Configuration
-- **Brave Search** – provide a proxy URL via the `BRAVE_SEARCH_PROXY_URL` environment variable or add `BraveSearchProxyURL` to your Info.plist. Without this configuration the web search tool remains disabled.
+- **SearXNG web search** – Noema ships with web search enabled against `https://search.noemaai.com/search`. To use your own instance, set `SEARXNG_URL` or add `SearXNGURL` to your `Secrets.plist`.
 - **RevenueCat Purchases** – supply your key with the `REVENUECAT_API_KEY` environment variable or `RevenueCatAPIKey` in Info.plist if you enable subscriptions.
 - **Server mode** – optionally set `LLAMA_SERVER_URL` to point to a llama.cpp server if you prefer remote inference.
 
