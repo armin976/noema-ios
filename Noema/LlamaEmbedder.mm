@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstdint>
+#include <dlfcn.h>
 
 // Backwards-compatible define for pooling types in case headers are older
 #ifndef LLAMA_POOLING_NONE
@@ -18,6 +19,16 @@
 
 // The declarations are now provided by the bridging header,
 // so this block is no longer needed.
+
+// Avoid hard-linking against ggml backend symbols. Some builds intentionally hide ggml
+// exports (e.g. the loopback server framework) to prevent collisions with an in-process
+// llama framework. Resolve at runtime when available and gracefully fall back when not.
+static ggml_backend_dev_t noema_try_ggml_backend_dev_by_type(enum ggml_backend_dev_type type) {
+  using fn_t = ggml_backend_dev_t (*)(enum ggml_backend_dev_type);
+  static fn_t fn = (fn_t) dlsym(RTLD_DEFAULT, "ggml_backend_dev_by_type");
+  if (!fn) { return NULL; }
+  return fn(type);
+}
 
 static inline void noema_llama_kv_cache_clear(struct llama_context *ctx) {
 #if defined(__APPLE__)
@@ -53,13 +64,17 @@ static inline void noema_llama_kv_cache_clear(struct llama_context *ctx) {
   if (!self) return nil;
     noema_llama_backend_addref();
     struct llama_model_params mp = llama_model_default_params();
-    ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
     static ggml_backend_dev_t cpu_devices[2];
     mp.n_gpu_layers = nGpuLayers;
     if (nGpuLayers <= 0) {
-      cpu_devices[0] = cpu;
-      cpu_devices[1] = NULL;
-      mp.devices = cpu_devices;
+      ggml_backend_dev_t cpu = noema_try_ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+      if (cpu) {
+        cpu_devices[0] = cpu;
+        cpu_devices[1] = NULL;
+        mp.devices = cpu_devices;
+      } else {
+        mp.devices = NULL;
+      }
     }
     _model = llama_load_model_from_file(modelPath.UTF8String, mp);
     if (!_model) { noema_llama_backend_release(); return self; }
@@ -170,4 +185,3 @@ static inline void noema_llama_kv_cache_clear(struct llama_context *ctx) {
 }
 
 @end
-

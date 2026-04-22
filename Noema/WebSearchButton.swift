@@ -9,6 +9,9 @@ struct WebSearchButton: View {
 #else
     let size: CGFloat = 28
 #endif
+#if os(iOS)
+    private let controlSize: CGFloat = 48
+#endif
 #if os(visionOS)
     private let visionButtonSize = CGSize(width: 78, height: 48)
     private let visionButtonCornerRadius: CGFloat = 24
@@ -16,10 +19,15 @@ struct WebSearchButton: View {
     @EnvironmentObject var vm: ChatVM
     @EnvironmentObject var modelManager: AppModelManager
     @EnvironmentObject var datasetManager: DatasetManager
-    @State private var supportsFunctionCalling = (UserDefaults.standard.object(forKey: "currentModelSupportsFunctionCalling") as? Bool ?? false)
+    let onModelRequiredTap: (() -> Void)?
+    @State private var supportsFunctionCalling = (UserDefaults.standard.object(forKey: "currentModelSupportsFunctionCalling") as? Bool)
     @State private var showDisabledReason = false
     @AppStorage("hasSeenWebSearchNotice") private var hasSeenWebSearchNotice = false
     @State private var showWebSearchNotice = false
+
+    init(onModelRequiredTap: (() -> Void)? = nil) {
+        self.onModelRequiredTap = onModelRequiredTap
+    }
 #if os(visionOS)
     private struct VisionPillButtonStyle: ButtonStyle {
         let isActive: Bool
@@ -72,7 +80,11 @@ struct WebSearchButton: View {
 #if os(visionOS)
                 .frame(width: visionButtonSize.width, height: visionButtonSize.height)
 #else
+#if os(iOS)
+                .frame(width: controlSize, height: controlSize)
+#else
                 .padding(10)
+#endif
                 .background(buttonBackground)
 #endif
                 .accessibilityLabel(Text("Web Search"))
@@ -94,14 +106,24 @@ struct WebSearchButton: View {
             Color.clear
                 .contentShape(RoundedRectangle(cornerRadius: visionButtonCornerRadius, style: .continuous))
                 .onTapGesture {
-                    if isDisabled { showDisabledReason = true }
+                    guard isDisabled else { return }
+                    if !hasActiveChatModel {
+                        presentModelRequiredPopup()
+                    } else {
+                        showDisabledReason = true
+                    }
                 }
                 .allowsHitTesting(isDisabled)
 #else
             Color.clear
                 .contentShape(Circle())
                 .onTapGesture {
-                    if isDisabled { showDisabledReason = true }
+                    guard isDisabled else { return }
+                    if !hasActiveChatModel {
+                        presentModelRequiredPopup()
+                    } else {
+                        showDisabledReason = true
+                    }
                 }
                 .allowsHitTesting(isDisabled)
 #endif
@@ -120,24 +142,27 @@ struct WebSearchButton: View {
             if active && settings.webSearchArmed { settings.webSearchArmed = false }
         }
         .onChangeCompat(of: supportsFunctionCalling) { _, supported in
-            if !supported && settings.webSearchArmed { settings.webSearchArmed = false }
+            if supported == false && settings.webSearchArmed { settings.webSearchArmed = false }
         }
-        .onChangeCompat(of: vm.isSLMModel) { _, isSLM in
-            if isSLM && settings.webSearchArmed { settings.webSearchArmed = false }
+        .onChangeCompat(of: webSearchBlockedByModelFormat) { _, blocked in
+            if blocked && settings.webSearchArmed { settings.webSearchArmed = false }
         }
-        .onChangeCompat(of: isMLXModel) { _, isMLX in
-            if isMLX && settings.webSearchArmed { settings.webSearchArmed = false }
+        .onChangeCompat(of: hasActiveChatModel) { _, active in
+            if !active && settings.webSearchArmed { settings.webSearchArmed = false }
         }
         .onAppear {
             if datasetActive && settings.webSearchArmed { settings.webSearchArmed = false }
-            supportsFunctionCalling = (UserDefaults.standard.object(forKey: "currentModelSupportsFunctionCalling") as? Bool ?? false)
-            if vm.isSLMModel && settings.webSearchArmed { settings.webSearchArmed = false }
-            if isMLXModel && settings.webSearchArmed { settings.webSearchArmed = false }
+            supportsFunctionCalling = functionCallingSupport
+            if webSearchBlockedByModelFormat && settings.webSearchArmed { settings.webSearchArmed = false }
+            if !hasActiveChatModel && settings.webSearchArmed { settings.webSearchArmed = false }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+            supportsFunctionCalling = functionCallingSupport
         }
     }
 
     private var datasetActive: Bool {
-        if let ds = modelManager.activeDataset { return true }
+        if modelManager.activeDataset != nil { return true }
         if datasetManager.indexingDatasetID != nil { return true }
         return false
     }
@@ -150,12 +175,26 @@ struct WebSearchButton: View {
         return false
     }
 
+    private var hasActiveChatModel: Bool { vm.hasActiveChatModel }
+
     private var isRemoteSession: Bool {
         modelManager.activeRemoteSession != nil
     }
 
     private var isMLXModel: Bool {
         vm.currentModelFormat == .some(.mlx) && !isRemoteSession
+    }
+
+    private var isAFMModel: Bool {
+        vm.currentModelFormat == .some(.afm) && !isRemoteSession
+    }
+
+    private var webSearchBlockedByModelFormat: Bool {
+        isMLXModel || isAFMModel
+    }
+
+    private var functionCallingSupport: Bool? {
+        UserDefaults.standard.object(forKey: "currentModelSupportsFunctionCalling") as? Bool
     }
 
     private var iconName: String {
@@ -170,34 +209,35 @@ struct WebSearchButton: View {
         // Disable while dataset is in use (selected or indexing), or off-grid, or globally disabled
         let offGrid = UserDefaults.standard.object(forKey: "offGrid") as? Bool ?? false
         // Also disable if current model does not support function calling (model card check)
-        let supportedFlag = (UserDefaults.standard.object(forKey: "currentModelSupportsFunctionCalling") as? Bool ?? false)
-        if vm.isSLMModel { return true }
-        if isMLXModel { return true }
-        let supported = supportedFlag
-        return offGrid || !settings.webSearchEnabled || datasetActive || !supported
+        let supportedFlag = functionCallingSupport
+        if webSearchBlockedByModelFormat { return true }
+        return !hasActiveChatModel || offGrid || !settings.webSearchEnabled || datasetActive || supportedFlag == false
     }
     private var disabledReason: String {
         let offGrid = UserDefaults.standard.object(forKey: "offGrid") as? Bool ?? false
-        let supported = (UserDefaults.standard.object(forKey: "currentModelSupportsFunctionCalling") as? Bool ?? false)
-        if vm.isSLMModel {
-            return "Web Search isn’t supported for this model yet."
+        let supported = functionCallingSupport
+        if !hasActiveChatModel {
+            return String(localized: "Open Stored to choose a model to run locally or connect to a remote endpoint.")
         }
         if isMLXModel {
-            return "Web Search is currently unreliable with MLX models due to MLX limitations."
+            return String(localized: "Web Search is currently unreliable with MLX models due to MLX limitations.")
         }
-        if !supported {
-            return "This model does not support function calling; web search requires it."
+        if isAFMModel {
+            return String(localized: "Web search is disabled for Apple Foundation Models because their context budget cannot reliably accommodate tool input.")
+        }
+        if supported == false {
+            return String(localized: "This model does not support function calling; web search requires it.")
         }
         if datasetActive {
-            return "Web search can’t be used while a dataset is active or indexing."
+            return String(localized: "Web search can't be used while a dataset is active or indexing.")
         }
         if offGrid {
-            return "Off‑Grid mode is on. Network features like web search are disabled."
+            return String(localized: "Off‑Grid mode is on. Network features like web search are disabled.")
         }
         if !settings.webSearchEnabled {
-            return "Web Search is turned off in Settings."
+            return String(localized: "Web Search is turned off in Settings.")
         }
-        return "Web Search is currently unavailable."
+        return String(localized: "Web Search is currently unavailable.")
     }
     private var fgColor: Color {
         if isDisabled { return .secondary }
@@ -220,6 +260,33 @@ struct WebSearchButton: View {
 #if !os(visionOS)
     @ViewBuilder
     private var buttonBackground: some View {
+#if os(iOS)
+        let shape = Circle()
+        let isArmedVisual = settings.webSearchArmed && !isDisabled
+        shape
+            .fill(Color.clear)
+            .glassifyIfAvailable(in: shape)
+            .overlay(
+                shape.fill(
+                    isArmedVisual
+                        ? Color.accentColor.opacity(0.34)
+                        : Color.white.opacity(isDisabled ? 0.04 : 0.10)
+                )
+            )
+            .overlay(
+                shape.strokeBorder(
+                    isArmedVisual
+                        ? Color.accentColor.opacity(0.42)
+                        : Color.white.opacity(isDisabled ? 0.14 : 0.32),
+                    lineWidth: 0.8
+                )
+            )
+            .shadow(
+                color: isDisabled ? .clear : glowColor,
+                radius: isArmedVisual ? 10 : 6,
+                y: isArmedVisual ? 5 : 3
+            )
+#else
         Circle()
             .fill(bgFill)
             .overlay(
@@ -227,28 +294,27 @@ struct WebSearchButton: View {
                     .strokeBorder(borderColor, lineWidth: borderLineWidth)
             )
             .shadow(color: glowColor, radius: settings.webSearchArmed ? 8 : 0)
+#endif
     }
 #endif
-    private var accessibilityHint: String { 
+    private var accessibilityHint: String {
         if isDisabled {
-            if vm.isSLMModel { return "Disabled: web search isn’t available for this model yet" }
-            if isMLXModel { return "Disabled: MLX models can’t use reliable web search right now" }
-            let supported = (UserDefaults.standard.object(forKey: "currentModelSupportsFunctionCalling") as? Bool ?? false)
-            if !supported { return "Disabled: model lacks function calling support" }
-            return "Disabled while using a dataset"
+            if !hasActiveChatModel { return String(localized: "Disabled: load a model in Stored first") }
+            if isMLXModel { return String(localized: "Disabled: MLX models can't use reliable web search right now") }
+            if functionCallingSupport == false { return String(localized: "Disabled: model lacks function calling support") }
+            return String(localized: "Disabled while using a dataset")
         }
-        return settings.webSearchArmed ? "On" : "Off"
+        return settings.webSearchArmed ? String(localized: "On") : String(localized: "Off")
     }
 
     private var helpText: String {
         // Brief guidance shown as a tooltip on macOS/iPadOS pointer hover
-        let supportsFunctionCalling = UserDefaults.standard.object(forKey: "currentModelSupportsFunctionCalling") as? Bool ?? false
-        if vm.isSLMModel { return "Leap SLM models can’t use web search yet." }
-        if isMLXModel { return "Web search is currently unreliable on MLX due to platform limitations." }
-        if !supportsFunctionCalling {
-            return "This model does not advertise function calling support in its model card; web search is disabled."
+        if !hasActiveChatModel { return String(localized: "Open Stored to choose a model to run locally or connect to a remote endpoint.") }
+        if isMLXModel { return String(localized: "Web search is currently unreliable on MLX due to platform limitations.") }
+        if functionCallingSupport == false {
+            return String(localized: "This model does not advertise function calling support in its model card; web search is disabled.")
         }
-        return "Toggle web search tool. Uses SearXNG. Requires models with function calling support."
+        return String(localized: "Toggle web search tool. Uses SearXNG. Requires models with function calling support.")
     }
 
     private func toggle() {
@@ -262,6 +328,14 @@ struct WebSearchButton: View {
         if newValue && !hasSeenWebSearchNotice {
             hasSeenWebSearchNotice = true
             showWebSearchNotice = true
+        }
+    }
+
+    private func presentModelRequiredPopup() {
+        if let onModelRequiredTap {
+            onModelRequiredTap()
+        } else {
+            showDisabledReason = true
         }
     }
 }

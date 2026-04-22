@@ -15,19 +15,23 @@ struct WebHit: Codable {
 
 struct SearXNGResponse: Decodable {
     let results: [SearXNGResult]
+    let unresponsiveEngines: [[String]]?
 
-    init(results: [SearXNGResult]) {
+    init(results: [SearXNGResult], unresponsiveEngines: [[String]]? = nil) {
         self.results = results
+        self.unresponsiveEngines = unresponsiveEngines
     }
 
     private enum CodingKeys: String, CodingKey {
         case results
+        case unresponsiveEngines = "unresponsive_engines"
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let decoded = try container.decodeIfPresent([SearXNGResult].self, forKey: .results) ?? []
-        self.init(results: decoded)
+        let engines = try container.decodeIfPresent([[String]].self, forKey: .unresponsiveEngines)
+        self.init(results: decoded, unresponsiveEngines: engines)
     }
 }
 
@@ -44,12 +48,33 @@ struct SearXNGResult: Decodable {
 // MARK: - SearXNG Configuration
 
 enum SearXNGSearchConfig {
+    /// Returns `true` when the request targets the default Noema instance
+    /// (or no custom URL is set), so the API key header should be attached.
+    static var isDefaultInstance: Bool {
+        let custom = UserDefaults.standard.string(forKey: "customSearXNGURL")?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return custom.isEmpty
+    }
+
     static func endpointURL() -> URL {
-        let base = AppSecrets.searxngSearchURL
-        if base.path.isEmpty || base.path == "/" {
-            return base.appendingPathComponent("search")
+        // Check for user-configured custom SearXNG URL (read from UserDefaults
+        // directly to avoid @MainActor isolation since callers may be off-main).
+        let custom = UserDefaults.standard.string(forKey: "customSearXNGURL")?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let base: URL
+        if !custom.isEmpty,
+           let customURL = URL(string: custom),
+           customURL.scheme != nil, customURL.host != nil {
+            base = customURL
+            // Custom instances use /search by default
+            if base.path.isEmpty || base.path == "/" {
+                return base.appendingPathComponent("search")
+            }
+            return base
+        } else {
+            // Default instance already points to /v1/search
+            return AppSecrets.searxngSearchURL
         }
-        return base
     }
 }
 
@@ -68,7 +93,7 @@ actor SearXNGSearchClient {
         var queryItems: [URLQueryItem] = [
             URLQueryItem(name: "q", value: trimmedQuery),
             URLQueryItem(name: "format", value: "json"),
-            URLQueryItem(name: "limit", value: String(clampedCount))
+            URLQueryItem(name: "categories", value: "web")
         ]
 
         let locale = Locale.current
@@ -115,10 +140,20 @@ actor SearXNGSearchClient {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if SearXNGSearchConfig.isDefaultInstance, let apiKey = AppSecrets.searxngAPIKey {
+            request.setValue(apiKey, forHTTPHeaderField: "X-Noema-Search-Key")
+        }
+        request.timeoutInterval = 12
 
         if NetworkKillSwitch.isEnabled { throw URLError(.notConnectedToInternet) }
-        NetworkKillSwitch.track(session: URLSession.shared)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 12
+        config.timeoutIntervalForResource = 20
+        config.waitsForConnectivity = false
+        let session = URLSession(configuration: config)
+        defer { session.finishTasksAndInvalidate() }
+        NetworkKillSwitch.track(session: session)
+        let (data, response) = try await session.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
@@ -134,6 +169,15 @@ actor SearXNGSearchClient {
                 let engine = result.engine ?? result.engines?.first ?? "searxng"
                 return WebHit(title: title, url: url, snippet: snippet, engine: engine, score: result.score)
             }
+            if hits.isEmpty,
+               let unresponsive = payload.unresponsiveEngines,
+               !unresponsive.isEmpty {
+                let reasons = unresponsive.map { pair in
+                    pair.count >= 2 ? "\(pair[0]): \(pair[1])" : pair.joined(separator: ": ")
+                }.joined(separator: ", ")
+                throw URLError(.resourceUnavailable,
+                    userInfo: [NSLocalizedDescriptionKey: "No results \u{2014} search engines unavailable (\(reasons))"])
+            }
             return Array(hits.prefix(clampedCount))
 
         case 400:
@@ -142,6 +186,9 @@ actor SearXNGSearchClient {
                 throw URLError(.badURL, userInfo: [NSLocalizedDescriptionKey: "Invalid request: \(errorMessage)"])
             }
             throw URLError(.badURL)
+
+        case 401, 403:
+            throw URLError(.userAuthenticationRequired, userInfo: [NSLocalizedDescriptionKey: "Search API key missing or invalid"])
 
         case 429:
             throw URLError(.resourceUnavailable, userInfo: [NSLocalizedDescriptionKey: "SearXNG rate limit exceeded"])
@@ -154,4 +201,3 @@ actor SearXNGSearchClient {
         }
     }
 }
-

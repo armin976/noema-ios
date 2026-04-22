@@ -18,6 +18,23 @@ extension AppModelManager {
         remoteBackends.first { $0.id == id }
     }
 
+    func setLMStudioRemoteDownloadTarget(_ backendID: RemoteBackend.ID?) {
+        guard let backendID else {
+            activeLMStudioRemoteDownloadTargetID = nil
+            return
+        }
+        guard let backend = remoteBackends.first(where: { $0.id == backendID }),
+              backend.endpointType == .lmStudio else {
+            activeLMStudioRemoteDownloadTargetID = nil
+            return
+        }
+        activeLMStudioRemoteDownloadTargetID = backend.id
+    }
+
+    func clearLMStudioRemoteDownloadTarget() {
+        activeLMStudioRemoteDownloadTargetID = nil
+    }
+
     func refreshRemoteBackends(offGrid: Bool) {
         guard !offGrid else { return }
         for backend in remoteBackends {
@@ -40,25 +57,34 @@ extension AppModelManager {
         if let duplicateMessage = duplicateRelayDeviceMessage(for: backend) {
             throw RemoteBackendError.validationFailed(duplicateMessage)
         }
+        try await prepareCredentials(for: backend, draft: draft, existing: nil)
         remoteBackends.append(backend)
         remoteBackends.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         persistRemoteBackends()
+        normalizeLMStudioRemoteDownloadTargetIfNeeded()
         await fetchRemoteModels(for: backend.id)
     }
 
     func deleteRemoteBackend(id: RemoteBackend.ID) {
         if let index = remoteBackends.firstIndex(where: { $0.id == id }) {
+            let backend = remoteBackends[index]
+            if backend.endpointType == .openRouter {
+                try? RemoteBackendCredentialStore.removeOpenRouterAPIKey(for: backend.id)
+            }
             remoteBackends.remove(at: index)
             persistRemoteBackends()
         }
+        clearRemoteSettings(for: id)
+        clearOpenRouterFavorites(for: id)
         remoteBackendsFetching.remove(id)
         StartupPreferencesStore.removeRemoteSelections(for: id)
         if activeRemoteSession?.backendID == id {
             activeRemoteSession = nil
         }
+        normalizeLMStudioRemoteDownloadTargetIfNeeded()
     }
 
-    func updateRemoteBackend(id: RemoteBackend.ID, using draft: RemoteBackendDraft) throws {
+    func updateRemoteBackend(id: RemoteBackend.ID, using draft: RemoteBackendDraft) async throws {
         guard let index = remoteBackends.firstIndex(where: { $0.id == id }) else {
             throw RemoteBackendError.validationFailed(String(localized: "Backend not found."))
         }
@@ -67,6 +93,7 @@ extension AppModelManager {
         if let duplicateMessage = duplicateRelayDeviceMessage(for: updated, excluding: existing.id) {
             throw RemoteBackendError.validationFailed(duplicateMessage)
         }
+        try await prepareCredentials(for: updated, draft: draft, existing: existing)
         remoteBackends[index] = updated
         remoteBackends.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         persistRemoteBackends()
@@ -83,6 +110,7 @@ extension AppModelManager {
                 streamingEnabled: previous?.streamingEnabled ?? true
             )
         }
+        normalizeLMStudioRemoteDownloadTargetIfNeeded()
     }
 
     func fetchRemoteModels(for backendID: RemoteBackend.ID) async {
@@ -465,6 +493,7 @@ extension AppModelManager {
             backend.relayLANInterface = relayLANInterface
         }
         remoteBackends[index] = backend
+        normalizeLMStudioRemoteDownloadTargetIfNeeded()
         persistRemoteBackends()
         StartupPreferencesStore.updateRemoteBackend(backend)
     }
@@ -509,6 +538,44 @@ extension AppModelManager {
 
     private func persistRemoteBackends() {
         RemoteBackendsStore.save(remoteBackends)
+    }
+
+    private func prepareCredentials(for backend: RemoteBackend,
+                                    draft: RemoteBackendDraft,
+                                    existing: RemoteBackend?) async throws {
+        let trimmedDraftKey = draft.openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let existingOpenRouterKey: String? = {
+            guard let existing, existing.endpointType == .openRouter else { return nil }
+            if let stored = (try? RemoteBackendCredentialStore.openRouterAPIKey(for: existing.id)) ?? nil,
+               !stored.isEmpty {
+                return stored
+            }
+            let legacy = existing.authHeader?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return legacy.isEmpty ? nil : legacy
+        }()
+
+        if backend.endpointType == .openRouter {
+            let effectiveKey = trimmedDraftKey.isEmpty ? (existingOpenRouterKey ?? "") : trimmedDraftKey
+            guard !effectiveKey.isEmpty else {
+                throw RemoteBackendError.validationFailed(String(localized: "Please provide an OpenRouter API key."))
+            }
+            let keyChanged = existing?.endpointType != .openRouter || trimmedDraftKey.isEmpty == false && trimmedDraftKey != existingOpenRouterKey
+            if keyChanged {
+                _ = try await RemoteBackendAPI.verifyOpenRouterAPIKey(effectiveKey, backendID: backend.id)
+            }
+            try RemoteBackendCredentialStore.setOpenRouterAPIKey(effectiveKey, for: backend.id)
+        } else if let existing, existing.endpointType == .openRouter {
+            try? RemoteBackendCredentialStore.removeOpenRouterAPIKey(for: existing.id)
+        }
+    }
+
+    private func normalizeLMStudioRemoteDownloadTargetIfNeeded() {
+        guard let targetID = activeLMStudioRemoteDownloadTargetID else { return }
+        guard let backend = remoteBackends.first(where: { $0.id == targetID }),
+              backend.endpointType == .lmStudio else {
+            activeLMStudioRemoteDownloadTargetID = nil
+            return
+        }
     }
 
     private func duplicateRelayDeviceMessage(for backend: RemoteBackend,

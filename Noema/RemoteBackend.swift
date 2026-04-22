@@ -14,6 +14,7 @@ struct RemoteBackend: Identifiable, Codable, Equatable {
 
     enum EndpointType: String, Codable, CaseIterable, Identifiable {
         case openAI
+        case openRouter
         case lmStudio
         case ollama
         case cloudRelay
@@ -28,6 +29,7 @@ struct RemoteBackend: Identifiable, Codable, Equatable {
         var displayName: String {
             switch self {
             case .openAI: return String(localized: "OpenAI API", locale: appLocale())
+            case .openRouter: return String(localized: "OpenRouter", locale: appLocale())
             case .lmStudio: return String(localized: "LM Studio", locale: appLocale())
             case .ollama: return String(localized: "Ollama", locale: appLocale())
             case .cloudRelay: return String(localized: "Cloud Relay", locale: appLocale())
@@ -38,6 +40,7 @@ struct RemoteBackend: Identifiable, Codable, Equatable {
         var symbolName: String {
             switch self {
             case .openAI: return "bolt.horizontal.circle.fill"
+            case .openRouter: return "point.3.connected.trianglepath.dotted"
             case .lmStudio: return "macmini.fill"
             case .ollama: return "cube.fill"
             case .cloudRelay: return "icloud"
@@ -49,6 +52,8 @@ struct RemoteBackend: Identifiable, Codable, Equatable {
             switch self {
             case .openAI:
                 return String(localized: "Compatible with OpenAI-style /v1 endpoints", locale: appLocale())
+            case .openRouter:
+                return String(localized: "Route across OpenRouter's provider network", locale: appLocale())
             case .lmStudio:
                 return String(localized: "Connect to LM Studio's REST server", locale: appLocale())
             case .ollama:
@@ -63,7 +68,8 @@ struct RemoteBackend: Identifiable, Codable, Equatable {
         var defaultChatPath: String {
             switch self {
             case .openAI: return "/v1/chat/completions"
-            case .lmStudio: return "/api/v0/chat/completions"
+            case .openRouter: return "/api/v1/chat/completions"
+            case .lmStudio: return "/api/v1/chat"
             case .ollama: return "/api/chat"
             case .cloudRelay: return ""
             case .noemaRelay: return ""
@@ -73,7 +79,8 @@ struct RemoteBackend: Identifiable, Codable, Equatable {
         var defaultModelsPath: String {
             switch self {
             case .openAI: return "/v1/models"
-            case .lmStudio: return "/api/v0/models"
+            case .openRouter: return "/api/v1/models/user"
+            case .lmStudio: return "/api/v1/models"
             case .ollama: return "/api/tags"
             case .cloudRelay: return ""
             case .noemaRelay: return ""
@@ -88,6 +95,8 @@ struct RemoteBackend: Identifiable, Codable, Equatable {
                 return false
             }
         }
+
+        var isOpenRouter: Bool { self == .openRouter }
     }
 
     struct ConnectionSummary: Codable, Equatable {
@@ -266,6 +275,7 @@ struct RemoteBackend: Identifiable, Codable, Equatable {
             throw RemoteBackendError.invalidBaseURL
         }
         let trimmedAuth = draft.authHeader.trimmingCharacters(in: .whitespacesAndNewlines)
+        let storedAuthHeader: String? = draft.endpointType == .openRouter ? nil : (trimmedAuth.isEmpty ? nil : trimmedAuth)
         self.init(
             name: draft.name.trimmingCharacters(in: .whitespacesAndNewlines),
             baseURLString: baseURL.absoluteString,
@@ -275,7 +285,7 @@ struct RemoteBackend: Identifiable, Codable, Equatable {
                                               fallback: draft.endpointType.defaultModelsPath),
             relayHostDeviceID: nil,
             relayEjectsOnDisconnect: false,
-            authHeader: trimmedAuth.isEmpty ? nil : trimmedAuth,
+            authHeader: storedAuthHeader,
             relayLANURLString: nil,
             relayAPIToken: nil,
             relayWiFiSSID: nil,
@@ -296,8 +306,8 @@ struct RemoteBackend: Identifiable, Codable, Equatable {
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
         baseURLString = try container.decode(String.self, forKey: .baseURLString)
-        chatPath = try container.decode(String.self, forKey: .chatPath)
-        modelsPath = try container.decode(String.self, forKey: .modelsPath)
+        let decodedChatPath = try container.decode(String.self, forKey: .chatPath)
+        let decodedModelsPath = try container.decode(String.self, forKey: .modelsPath)
         if let host = try container.decodeIfPresent(String.self, forKey: .relayHostDeviceID)?.trimmingCharacters(in: .whitespacesAndNewlines), !host.isEmpty {
             relayHostDeviceID = host
         } else {
@@ -334,6 +344,11 @@ struct RemoteBackend: Identifiable, Codable, Equatable {
         } else {
             endpointType = .openAI
         }
+        let migratedPaths = RemoteBackend.migratedLegacyPathsIfNeeded(chatPath: decodedChatPath,
+                                                                       modelsPath: decodedModelsPath,
+                                                                       endpointType: endpointType)
+        chatPath = migratedPaths.chatPath
+        modelsPath = migratedPaths.modelsPath
         cachedModels = try container.decodeIfPresent([RemoteModel].self, forKey: .cachedModels) ?? []
         lastFetched = try container.decodeIfPresent(Date.self, forKey: .lastFetched)
         lastError = try container.decodeIfPresent(String.self, forKey: .lastError)
@@ -391,8 +406,13 @@ struct RemoteBackend: Identifiable, Codable, Equatable {
 
     var isLMStudio: Bool { endpointType == .lmStudio }
     var isOpenAI: Bool { endpointType == .openAI }
+    var isOpenRouter: Bool { endpointType == .openRouter }
     var isOllama: Bool { endpointType == .ollama }
     var isCloudRelay: Bool { endpointType.isRelay }
+
+    static let openRouterDefaultBaseURL = URL(string: "https://openrouter.ai")!
+    static let openRouterReferer = "https://noemaai.com"
+    static let openRouterTitle = "NoemaAI"
 
     var baseURL: URL? {
         guard !isCloudRelay else { return nil }
@@ -427,7 +447,27 @@ struct RemoteBackend: Identifiable, Codable, Equatable {
         return absoluteURL(for: normalizedChatPath)
     }
 
-    var hasAuth: Bool { (authHeader?.isEmpty ?? true) == false }
+    var hasAuth: Bool { (try? resolvedAuthorizationHeader())?.isEmpty == false }
+
+    func resolvedAuthorizationHeader() throws -> String? {
+        if isOpenRouter {
+            if let header = try RemoteBackendCredentialStore.openRouterAuthorizationHeader(for: id) {
+                return header
+            }
+            guard let authHeader, !authHeader.isEmpty else { return nil }
+            return authHeader
+        }
+        guard let authHeader, !authHeader.isEmpty else { return nil }
+        return authHeader
+    }
+
+    var openRouterAttributionHeaders: [String: String] {
+        guard isOpenRouter else { return [:] }
+        return [
+            "HTTP-Referer": Self.openRouterReferer,
+            "X-OpenRouter-Title": Self.openRouterTitle
+        ]
+    }
 
     var relayAuthorizationHeader: String? {
         guard let token = relayAPIToken, !token.isEmpty else { return nil }
@@ -479,7 +519,59 @@ struct RemoteBackend: Identifiable, Codable, Equatable {
 
     var usesLoopbackHost: Bool {
         guard let host = baseURL?.host?.lowercased(), !isCloudRelay else { return false }
-        return host == "localhost" || host == "127.0.0.1" || host == "::1"
+        return Self.isLoopbackHost(host)
+    }
+
+    var usesLocalNetworkHost: Bool {
+        guard let host = baseURL?.host?.lowercased(), !isCloudRelay else { return false }
+        return Self.isLocalOrLANHost(host)
+    }
+
+    private static func isLoopbackHost(_ host: String) -> Bool {
+        host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]"
+    }
+
+    private static func isLocalOrLANHost(_ rawHost: String) -> Bool {
+        let host = rawHost.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !host.isEmpty else { return false }
+        if isLoopbackHost(host) || host.hasSuffix(".local") { return true }
+
+        let withoutZone = host.split(separator: "%", maxSplits: 1).first.map(String.init) ?? host
+        if isPrivateIPv4Host(withoutZone) { return true }
+        if isLocalIPv6Host(withoutZone) { return true }
+        return false
+    }
+
+    private static func isPrivateIPv4Host(_ host: String) -> Bool {
+        let parts = host.split(separator: ".")
+        guard parts.count == 4 else { return false }
+        let octets = parts.compactMap { Int(String($0)) }
+        guard octets.count == 4,
+              octets.allSatisfy({ (0...255).contains($0) }) else { return false }
+        switch octets[0] {
+        case 10:
+            return true
+        case 127:
+            return true
+        case 169:
+            return octets[1] == 254
+        case 172:
+            return (16...31).contains(octets[1])
+        case 192:
+            return octets[1] == 168
+        default:
+            return false
+        }
+    }
+
+    private static func isLocalIPv6Host(_ host: String) -> Bool {
+        let trimmed = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        guard trimmed.contains(":") else { return false }
+        if trimmed == "::1" { return true }
+        if trimmed.hasPrefix("fe80:") { return true } // Link-local unicast
+        if trimmed.hasPrefix("fc") || trimmed.hasPrefix("fd") { return true } // Unique local addresses
+        if trimmed.hasPrefix("::ffff:127.") { return true } // IPv4-mapped loopback
+        return false
     }
 
     func absoluteURL(for path: String) -> URL? {
@@ -501,7 +593,7 @@ struct RemoteBackend: Identifiable, Codable, Equatable {
         let encodedID = modelID.addingPercentEncoding(withAllowedCharacters: .remoteModelIDAllowed) ?? modelID
         var candidates: [String] = []
         if isLMStudio {
-            candidates.append("/api/v0/models/\(encodedID)/load")
+            candidates.append("/api/v1/models/load")
         }
         let modelsPath = normalizedModelsPath.trimmingCharacters(in: .whitespacesAndNewlines)
         if !modelsPath.isEmpty {
@@ -513,6 +605,10 @@ struct RemoteBackend: Identifiable, Codable, Equatable {
             candidates.append("/v1/models/load")
         } else if isOllama {
             candidates.append("/api/generate")
+        }
+        if isLMStudio {
+            candidates.append("/api/v0/models/load")
+            candidates.append("/api/v0/models/\(encodedID)/load")
         }
         return Array(LinkedHashSet(candidates))
     }
@@ -584,6 +680,40 @@ struct RemoteBackend: Identifiable, Codable, Equatable {
         }
         return trimmed.hasPrefix("/") ? trimmed : "/" + trimmed
     }
+
+    private static func migratedLegacyPathsIfNeeded(chatPath: String,
+                                                    modelsPath: String,
+                                                    endpointType: EndpointType) -> (chatPath: String, modelsPath: String) {
+        guard endpointType == .lmStudio else { return (chatPath, modelsPath) }
+
+        let legacyChatDefault = "/api/v0/chat/completions"
+        let legacyModelsDefault = "/api/v0/models"
+
+        let migratedChatPath: String
+        if pathMatches(path: chatPath, legacyDefault: legacyChatDefault) {
+            migratedChatPath = endpointType.defaultChatPath
+        } else {
+            migratedChatPath = chatPath
+        }
+
+        let migratedModelsPath: String
+        if pathMatches(path: modelsPath, legacyDefault: legacyModelsDefault) {
+            migratedModelsPath = endpointType.defaultModelsPath
+        } else {
+            migratedModelsPath = modelsPath
+        }
+
+        return (migratedChatPath, migratedModelsPath)
+    }
+
+    private static func pathMatches(path: String, legacyDefault: String) -> Bool {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.caseInsensitiveCompare(legacyDefault) == .orderedSame {
+            return true
+        }
+        let normalized = normalize(path: trimmed, fallback: legacyDefault)
+        return normalized.caseInsensitiveCompare(legacyDefault) == .orderedSame
+    }
 }
 
 struct RemoteModel: Identifiable, Codable, Equatable {
@@ -607,6 +737,20 @@ struct RemoteModel: Identifiable, Codable, Equatable {
     var modifiedAt: Date?
     var modifiedAtRaw: String?
     var relayRecordName: String?
+    var supportedParameters: [String]?
+    var defaultTemperature: Double?
+    var defaultTopP: Double?
+    var defaultTopK: Int?
+    var defaultRepetitionPenalty: Double?
+    var promptPricePerMillion: Double?
+    var completionPricePerMillion: Double?
+    var imagePricePerMillion: Double?
+    var requestPrice: Double?
+    var providerContextLength: Int?
+    var maxCompletionTokens: Int?
+    var isModerated: Bool?
+    var expirationDateRaw: String?
+    var descriptionText: String?
 
     init(id: String,
          name: String,
@@ -627,7 +771,21 @@ struct RemoteModel: Identifiable, Codable, Equatable {
          parentModel: String? = nil,
          modifiedAt: Date? = nil,
          modifiedAtRaw: String? = nil,
-         relayRecordName: String? = nil) {
+         relayRecordName: String? = nil,
+         supportedParameters: [String]? = nil,
+         defaultTemperature: Double? = nil,
+         defaultTopP: Double? = nil,
+         defaultTopK: Int? = nil,
+         defaultRepetitionPenalty: Double? = nil,
+         promptPricePerMillion: Double? = nil,
+         completionPricePerMillion: Double? = nil,
+         imagePricePerMillion: Double? = nil,
+         requestPrice: Double? = nil,
+         providerContextLength: Int? = nil,
+         maxCompletionTokens: Int? = nil,
+         isModerated: Bool? = nil,
+         expirationDateRaw: String? = nil,
+         descriptionText: String? = nil) {
         self.id = id
         self.name = name
         self.author = author
@@ -648,6 +806,20 @@ struct RemoteModel: Identifiable, Codable, Equatable {
         self.modifiedAt = modifiedAt
         self.modifiedAtRaw = modifiedAtRaw
         self.relayRecordName = relayRecordName
+        self.supportedParameters = supportedParameters
+        self.defaultTemperature = defaultTemperature
+        self.defaultTopP = defaultTopP
+        self.defaultTopK = defaultTopK
+        self.defaultRepetitionPenalty = defaultRepetitionPenalty
+        self.promptPricePerMillion = promptPricePerMillion
+        self.completionPricePerMillion = completionPricePerMillion
+        self.imagePricePerMillion = imagePricePerMillion
+        self.requestPrice = requestPrice
+        self.providerContextLength = providerContextLength
+        self.maxCompletionTokens = maxCompletionTokens
+        self.isModerated = isModerated
+        self.expirationDateRaw = expirationDateRaw
+        self.descriptionText = descriptionText
     }
 
     static func make(from openAIModel: OpenAIModel) -> RemoteModel {
@@ -661,21 +833,79 @@ struct RemoteModel: Identifiable, Codable, Equatable {
         )
     }
 
+    static func make(from openRouterModel: OpenRouterModel) -> RemoteModel {
+        let fallbackAuthor = openRouterModel.topProvider?.providerName ?? "OpenRouter"
+        let (fallbackName, author) = parseNameAndAuthor(from: openRouterModel.id, fallbackAuthor: fallbackAuthor)
+        let trimmedName = openRouterModel.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedName = trimmedName.isEmpty ? fallbackName : trimmedName
+        let architectureParts = [
+            openRouterModel.architecture?.tokenizer,
+            openRouterModel.architecture?.modality,
+            openRouterModel.architecture?.instructType
+        ]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        var seenArchitectureParts = Set<String>()
+        let architecture = architectureParts.filter { seenArchitectureParts.insert($0.lowercased()).inserted }
+            .joined(separator: " · ")
+        let promptPricePerMillion = openRouterModel.pricing?.prompt.map { $0 * 1_000_000 }
+        let completionPricePerMillion = openRouterModel.pricing?.completion.map { $0 * 1_000_000 }
+        let imagePricePerMillion = openRouterModel.pricing?.image.map { $0 * 1_000_000 }
+        return RemoteModel(
+            id: openRouterModel.id,
+            name: resolvedName,
+            author: author,
+            owner: openRouterModel.canonicalSlug,
+            type: "openrouter",
+            publisher: openRouterModel.topProvider?.providerName ?? "OpenRouter",
+            architecture: architecture.isEmpty ? nil : architecture,
+            compatibilityType: nil,
+            quantization: nil,
+            state: nil,
+            maxContextLength: openRouterModel.contextLength.flatMap { Int($0) },
+            isCustom: false,
+            supportedParameters: openRouterModel.supportedParameters,
+            defaultTemperature: openRouterModel.defaultParameters?.temperature,
+            defaultTopP: openRouterModel.defaultParameters?.topP,
+            defaultTopK: openRouterModel.defaultParameters?.topK,
+            defaultRepetitionPenalty: openRouterModel.defaultParameters?.repetitionPenalty,
+            promptPricePerMillion: promptPricePerMillion,
+            completionPricePerMillion: completionPricePerMillion,
+            imagePricePerMillion: imagePricePerMillion,
+            requestPrice: openRouterModel.pricing?.request,
+            providerContextLength: openRouterModel.topProvider?.contextLength.flatMap { Int($0) },
+            maxCompletionTokens: openRouterModel.topProvider?.maxCompletionTokens.flatMap { Int($0) },
+            isModerated: openRouterModel.topProvider?.isModerated,
+            expirationDateRaw: openRouterModel.expirationDate,
+            descriptionText: openRouterModel.description
+        )
+    }
+
     static func make(from lmStudioModel: LMStudioModel) -> RemoteModel {
-        let (name, author) = RemoteModel.parseNameAndAuthor(from: lmStudioModel.id, fallbackAuthor: lmStudioModel.publisher)
+        let (fallbackName, author) = RemoteModel.parseNameAndAuthor(from: lmStudioModel.id, fallbackAuthor: lmStudioModel.publisher)
+        let displayName = lmStudioModel.displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedName = (displayName?.isEmpty == false) ? displayName! : fallbackName
         return RemoteModel(
             id: lmStudioModel.id,
-            name: name,
+            name: resolvedName,
             author: author,
             owner: lmStudioModel.publisher,
             type: lmStudioModel.type,
             publisher: lmStudioModel.publisher,
-            architecture: lmStudioModel.arch,
+            architecture: lmStudioModel.architecture,
             compatibilityType: lmStudioModel.compatibilityType,
             quantization: lmStudioModel.quantization,
             state: lmStudioModel.state,
             maxContextLength: lmStudioModel.maxContextLength,
-            isCustom: false
+            isCustom: false,
+            families: nil,
+            parameterSize: lmStudioModel.paramsString,
+            fileSizeBytes: lmStudioModel.sizeBytes,
+            digest: nil,
+            parentModel: nil,
+            modifiedAt: nil,
+            modifiedAtRaw: nil,
+            relayRecordName: nil
         )
     }
 
@@ -733,6 +963,50 @@ struct RemoteModel: Identifiable, Codable, Equatable {
 }
 
 extension RemoteModel {
+    enum OpenRouterBrowserFilter: String, CaseIterable, Codable, Identifiable {
+        case all
+        case tools
+        case structuredOutputs
+        case reasoning
+        case vision
+        case moderated
+        case hasPricing
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .all: return "All"
+            case .tools: return "Tools"
+            case .structuredOutputs: return "Structured Outputs"
+            case .reasoning: return "Reasoning"
+            case .vision: return "Vision"
+            case .moderated: return "Moderated"
+            case .hasPricing: return "Has Pricing"
+            }
+        }
+    }
+
+    enum OpenRouterBrowserSort: String, CaseIterable, Codable, Identifiable {
+        case automatic
+        case alphabetical
+        case contextLength
+        case promptPrice
+        case completionPrice
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .automatic: return "Automatic"
+            case .alphabetical: return "Alphabetical"
+            case .contextLength: return "Largest Context"
+            case .promptPrice: return "Lowest Input Price"
+            case .completionPrice: return "Lowest Output Price"
+            }
+        }
+    }
+
     var isEmbedding: Bool {
         let loweredID = id.lowercased()
         let loweredName = name.lowercased()
@@ -796,10 +1070,12 @@ extension RemoteModel {
         guard let parameterSize = parameterSize?.trimmingCharacters(in: .whitespacesAndNewlines), !parameterSize.isEmpty else {
             return nil
         }
-        if parameterSize.lowercased().contains("param") {
-            return parameterSize
-        }
-        return "\(parameterSize) params"
+        let compact = parameterSize.replacingOccurrences(
+            of: #"(?i)\s*params?\b"#,
+            with: "",
+            options: .regularExpression
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        return compact.isEmpty ? nil : compact
     }
 
     var formattedFileSize: String? {
@@ -823,6 +1099,153 @@ extension RemoteModel {
             return modifiedAtRaw
         }
         return nil
+    }
+
+    var normalizedSupportedParameters: [String] {
+        (supportedParameters ?? [])
+            .map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                    .replacingOccurrences(of: "-", with: "_")
+            }
+            .filter { !$0.isEmpty }
+    }
+
+    var supportsTools: Bool {
+        normalizedSupportedParameters.contains("tools")
+    }
+
+    var supportsStructuredOutputs: Bool {
+        normalizedSupportedParameters.contains("structured_outputs")
+            || normalizedSupportedParameters.contains("response_format")
+    }
+
+    var supportsReasoning: Bool {
+        normalizedSupportedParameters.contains("reasoning")
+            || normalizedSupportedParameters.contains("reasoning_effort")
+            || normalizedSupportedParameters.contains("include_reasoning")
+    }
+
+    var isVisionModel: Bool {
+        let haystack = [architecture, descriptionText, id, name]
+            .compactMap { $0 }
+            .joined(separator: " ")
+            .lowercased()
+        return haystack.contains("image")
+            || haystack.contains("vision")
+            || haystack.contains("multimodal")
+    }
+
+    var hasOpenRouterPricing: Bool {
+        [promptPricePerMillion, completionPricePerMillion, imagePricePerMillion, requestPrice]
+            .contains { value in
+                guard let value else { return false }
+                return value > 0
+            }
+    }
+
+    var trimmedDescriptionText: String? {
+        guard let descriptionText else { return nil }
+        let trimmed = descriptionText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    func matchesOpenRouterSearch(_ searchText: String) -> Bool {
+        let normalizedQuery = searchText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !normalizedQuery.isEmpty else { return true }
+        let tokens = normalizedQuery
+            .replacingOccurrences(of: "_", with: " ")
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+        guard !tokens.isEmpty else { return true }
+        let haystack = [
+            name,
+            id,
+            author,
+            publisher,
+            architecture,
+            trimmedDescriptionText,
+            normalizedSupportedParameters.joined(separator: " ")
+        ]
+            .compactMap { $0 }
+            .joined(separator: " ")
+            .lowercased()
+            .replacingOccurrences(of: "_", with: " ")
+        return tokens.allSatisfy { haystack.contains($0) }
+    }
+
+    func matchesOpenRouterFilter(_ filter: OpenRouterBrowserFilter) -> Bool {
+        switch filter {
+        case .all:
+            return true
+        case .tools:
+            return supportsTools
+        case .structuredOutputs:
+            return supportsStructuredOutputs
+        case .reasoning:
+            return supportsReasoning
+        case .vision:
+            return isVisionModel
+        case .moderated:
+            return isModerated == true
+        case .hasPricing:
+            return hasOpenRouterPricing
+        }
+    }
+
+    func matchesOpenRouterSupportedParameter(_ parameter: String?) -> Bool {
+        guard let parameter = parameter?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !parameter.isEmpty else { return true }
+        return normalizedSupportedParameters.contains(parameter.replacingOccurrences(of: "-", with: "_"))
+    }
+
+    func openRouterSearchRank(for searchText: String) -> Int {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return 4 }
+        let normalizedQuery = query.replacingOccurrences(of: "_", with: " ")
+        let fields: [(String?, Int)] = [
+            (name, 0),
+            (id, 1),
+            (publisher, 2),
+            (author, 2),
+            (architecture, 3),
+            (trimmedDescriptionText, 4),
+            (normalizedSupportedParameters.joined(separator: " "), 5)
+        ]
+        for (field, rank) in fields {
+            let haystack = field?
+                .lowercased()
+                .replacingOccurrences(of: "_", with: " ") ?? ""
+            if haystack.contains(normalizedQuery) {
+                return rank
+            }
+        }
+        return 10
+    }
+
+    func openRouterDefaultSettings(base: ModelSettings? = nil) -> ModelSettings? {
+        guard defaultTemperature != nil
+            || defaultTopP != nil
+            || defaultTopK != nil
+            || defaultRepetitionPenalty != nil else {
+            return nil
+        }
+        var settings = base ?? ModelSettings.default(for: compatibilityFormat ?? .gguf)
+        if let defaultTemperature {
+            settings.temperature = defaultTemperature
+        }
+        if let defaultTopP {
+            settings.topP = defaultTopP
+        }
+        if let defaultTopK {
+            settings.topK = defaultTopK
+        }
+        if let defaultRepetitionPenalty {
+            settings.repetitionPenalty = Float(defaultRepetitionPenalty)
+        }
+        return settings
     }
 
     static func parseOllamaDate(_ raw: String) -> Date? {
@@ -901,8 +1324,200 @@ struct OpenAIModel: Decodable {
     }
 }
 
+struct OpenRouterModelsResponse: Decodable {
+    let data: [OpenRouterModel]
+}
+
+struct OpenRouterModel: Decodable {
+    struct Pricing: Decodable {
+        let prompt: Double?
+        let completion: Double?
+        let request: Double?
+        let image: Double?
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            prompt = Self.decodeFlexibleDouble(forKey: .prompt, in: container)
+            completion = Self.decodeFlexibleDouble(forKey: .completion, in: container)
+            request = Self.decodeFlexibleDouble(forKey: .request, in: container)
+            image = Self.decodeFlexibleDouble(forKey: .image, in: container)
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case prompt
+            case completion
+            case request
+            case image
+        }
+
+        private static func decodeFlexibleDouble(forKey key: CodingKeys,
+                                                 in container: KeyedDecodingContainer<CodingKeys>) -> Double? {
+            if let value = try? container.decodeIfPresent(Double.self, forKey: key) {
+                return value
+            }
+            if let stringValue = ((try? container.decodeIfPresent(String.self, forKey: key)) ?? nil) {
+                return Double(stringValue)
+            }
+            return nil
+        }
+    }
+
+    struct Architecture: Decodable {
+        let modality: String?
+        let tokenizer: String?
+        let instructType: String?
+        let inputModalities: [String]?
+        let outputModalities: [String]?
+
+        enum CodingKeys: String, CodingKey {
+            case modality
+            case tokenizer
+            case instructType = "instruct_type"
+            case inputModalities = "input_modalities"
+            case outputModalities = "output_modalities"
+        }
+    }
+
+    struct TopProviderInfo: Decodable {
+        let contextLength: Double?
+        let maxCompletionTokens: Double?
+        let isModerated: Bool?
+        let providerName: String?
+
+        enum CodingKeys: String, CodingKey {
+            case contextLength = "context_length"
+            case maxCompletionTokens = "max_completion_tokens"
+            case isModerated = "is_moderated"
+            case providerName = "provider_name"
+        }
+    }
+
+    struct PerRequestLimits: Decodable {
+        let promptTokens: Double?
+        let completionTokens: Double?
+
+        enum CodingKeys: String, CodingKey {
+            case promptTokens = "prompt_tokens"
+            case completionTokens = "completion_tokens"
+        }
+    }
+
+    struct DefaultParameters: Decodable {
+        let temperature: Double?
+        let topP: Double?
+        let topK: Int?
+        let repetitionPenalty: Double?
+
+        enum CodingKeys: String, CodingKey {
+            case temperature
+            case topP = "top_p"
+            case topK = "top_k"
+            case repetitionPenalty = "repetition_penalty"
+        }
+    }
+
+    let id: String
+    let canonicalSlug: String?
+    let name: String
+    let description: String?
+    let pricing: Pricing?
+    let contextLength: Double?
+    let architecture: Architecture?
+    let topProvider: TopProviderInfo?
+    let perRequestLimits: PerRequestLimits?
+    let supportedParameters: [String]
+    let defaultParameters: DefaultParameters?
+    let expirationDate: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case canonicalSlug = "canonical_slug"
+        case name
+        case description
+        case pricing
+        case contextLength = "context_length"
+        case architecture
+        case topProvider = "top_provider"
+        case perRequestLimits = "per_request_limits"
+        case supportedParameters = "supported_parameters"
+        case defaultParameters = "default_parameters"
+        case expirationDate = "expiration_date"
+    }
+}
+
+struct OpenRouterKeyResponse: Decodable {
+    let data: OpenRouterKeyInfo
+}
+
+struct OpenRouterKeyInfo: Decodable, Equatable {
+    let label: String
+    let limit: Double?
+    let usage: Double
+    let usageDaily: Double
+    let usageWeekly: Double
+    let usageMonthly: Double
+    let byokUsage: Double
+    let byokUsageDaily: Double
+    let byokUsageWeekly: Double
+    let byokUsageMonthly: Double
+    let isFreeTier: Bool
+    let isManagementKey: Bool
+    let isProvisioningKey: Bool
+    let limitRemaining: Double?
+    let limitReset: String?
+    let includeByokInLimit: Bool
+    let expiresAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case label
+        case limit
+        case usage
+        case usageDaily = "usage_daily"
+        case usageWeekly = "usage_weekly"
+        case usageMonthly = "usage_monthly"
+        case byokUsage = "byok_usage"
+        case byokUsageDaily = "byok_usage_daily"
+        case byokUsageWeekly = "byok_usage_weekly"
+        case byokUsageMonthly = "byok_usage_monthly"
+        case isFreeTier = "is_free_tier"
+        case isManagementKey = "is_management_key"
+        case isProvisioningKey = "is_provisioning_key"
+        case limitRemaining = "limit_remaining"
+        case limitReset = "limit_reset"
+        case includeByokInLimit = "include_byok_in_limit"
+        case expiresAt = "expires_at"
+    }
+}
+
+struct OpenRouterErrorResponse: Decodable {
+    struct ErrorBody: Decodable {
+        let code: Int?
+        let message: String
+    }
+
+    let error: ErrorBody
+}
+
 struct LMStudioModelsResponse: Decodable {
-    let data: [LMStudioModel]
+    let models: [LMStudioModel]
+
+    enum CodingKeys: String, CodingKey {
+        case models
+        case data
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let models = try container.decodeIfPresent([LMStudioModel].self, forKey: .models) {
+            self.models = models
+            return
+        }
+        if let legacy = try container.decodeIfPresent([LMStudioModel].self, forKey: .data) {
+            self.models = legacy
+            return
+        }
+        self.models = []
+    }
 }
 
 struct LMStudioModel: Decodable {
@@ -910,22 +1525,109 @@ struct LMStudioModel: Decodable {
     let object: String?
     let type: String?
     let publisher: String?
-    let arch: String?
+    let displayName: String?
+    let architecture: String?
     let compatibilityType: String?
     let quantization: String?
     let state: String?
     let maxContextLength: Int?
+    let paramsString: String?
+    let sizeBytes: Int?
+    let loadedInstancesCount: Int
 
     enum CodingKeys: String, CodingKey {
         case id
+        case key
         case object
         case type
         case publisher
+        case displayName = "display_name"
+        case architecture
         case arch
-        case compatibilityType
+        case compatibilityType = "compatibility_type"
+        case format
         case quantization
         case state
+        case maxContextLength = "max_context_length"
+        case paramsString = "params_string"
+        case sizeBytes = "size_bytes"
+        case loadedInstances = "loaded_instances"
+    }
+
+    // Backward compatibility for payloads using camelCase keys.
+    private enum LegacyCodingKeys: String, CodingKey {
+        case displayName
+        case compatibilityType
         case maxContextLength
+        case paramsString
+        case sizeBytes
+        case loadedInstances
+    }
+
+    private struct QuantizationInfo: Decodable {
+        let name: String?
+    }
+
+    private struct LoadedInstance: Decodable {
+        let id: String?
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let legacyContainer = try decoder.container(keyedBy: LegacyCodingKeys.self)
+        if let key = try container.decodeIfPresent(String.self, forKey: .key), !key.isEmpty {
+            id = key
+        } else if let legacyID = try container.decodeIfPresent(String.self, forKey: .id), !legacyID.isEmpty {
+            id = legacyID
+        } else {
+            throw DecodingError.dataCorruptedError(forKey: .id,
+                                                   in: container,
+                                                   debugDescription: "Missing model identifier")
+        }
+
+        object = try container.decodeIfPresent(String.self, forKey: .object)
+        type = try container.decodeIfPresent(String.self, forKey: .type)
+        publisher = try container.decodeIfPresent(String.self, forKey: .publisher)
+        displayName = try (container.decodeIfPresent(String.self, forKey: .displayName)
+            ?? legacyContainer.decodeIfPresent(String.self, forKey: .displayName))
+        architecture = try (container.decodeIfPresent(String.self, forKey: .architecture)
+            ?? container.decodeIfPresent(String.self, forKey: .arch))
+        compatibilityType = try (container.decodeIfPresent(String.self, forKey: .format)
+            ?? container.decodeIfPresent(String.self, forKey: .compatibilityType)
+            ?? legacyContainer.decodeIfPresent(String.self, forKey: .compatibilityType))
+
+        if let quantInfo = (try? container.decode(QuantizationInfo.self, forKey: .quantization)),
+           let quantName = quantInfo.name,
+           !quantName.isEmpty {
+            quantization = quantName
+        } else {
+            quantization = try? container.decode(String.self, forKey: .quantization)
+        }
+
+        let loadedInstances = try (container.decodeIfPresent([LoadedInstance].self, forKey: .loadedInstances)
+            ?? legacyContainer.decodeIfPresent([LoadedInstance].self, forKey: .loadedInstances))
+        if let loaded = loadedInstances {
+            loadedInstancesCount = loaded.count
+        } else {
+            loadedInstancesCount = 0
+        }
+
+        let explicitState = try container.decodeIfPresent(String.self, forKey: .state)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let explicitState, !explicitState.isEmpty {
+            state = explicitState
+        } else if loadedInstancesCount > 0 {
+            state = "loaded"
+        } else {
+            state = nil
+        }
+
+        maxContextLength = try (container.decodeIfPresent(Int.self, forKey: .maxContextLength)
+            ?? legacyContainer.decodeIfPresent(Int.self, forKey: .maxContextLength))
+        paramsString = try (container.decodeIfPresent(String.self, forKey: .paramsString)
+            ?? legacyContainer.decodeIfPresent(String.self, forKey: .paramsString))
+        sizeBytes = try (container.decodeIfPresent(Int.self, forKey: .sizeBytes)
+            ?? legacyContainer.decodeIfPresent(Int.self, forKey: .sizeBytes))
     }
 }
 
@@ -995,6 +1697,79 @@ enum RemoteBackendAPI {
         let lanMetadataProvided: Bool
     }
 
+    enum LMStudioDownloadStatus: String, Codable, Sendable {
+        case downloading
+        case paused
+        case completed
+        case failed
+        case alreadyDownloaded = "already_downloaded"
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            let rawValue = (try? container.decode(String.self))?.lowercased() ?? ""
+            switch rawValue {
+            case "downloading":
+                self = .downloading
+            case "paused":
+                self = .paused
+            case "completed":
+                self = .completed
+            case "already_downloaded":
+                self = .alreadyDownloaded
+            case "failed":
+                self = .failed
+            default:
+                self = .failed
+            }
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.singleValueContainer()
+            try container.encode(rawValue)
+        }
+
+        var isTerminal: Bool {
+            switch self {
+            case .completed, .failed, .alreadyDownloaded:
+                return true
+            case .downloading, .paused:
+                return false
+            }
+        }
+    }
+
+    struct LMStudioDownloadJobStatus: Codable, Sendable {
+        let jobID: String?
+        let status: LMStudioDownloadStatus
+        let bytesPerSecond: Double?
+        let estimatedCompletion: String?
+        let completedAt: String?
+        let totalSizeBytes: Int64?
+        let downloadedBytes: Int64?
+        let startedAt: String?
+
+        enum CodingKeys: String, CodingKey {
+            case jobID = "job_id"
+            case status
+            case bytesPerSecond = "bytes_per_second"
+            case estimatedCompletion = "estimated_completion"
+            case completedAt = "completed_at"
+            case totalSizeBytes = "total_size_bytes"
+            case downloadedBytes = "downloaded_bytes"
+            case startedAt = "started_at"
+        }
+
+        var progress: Double? {
+            guard let downloadedBytes, let totalSizeBytes, totalSizeBytes > 0 else { return nil }
+            return min(1, max(0, Double(downloadedBytes) / Double(totalSizeBytes)))
+        }
+    }
+
+    struct LMStudioDownloadRequest: Codable, Sendable {
+        let model: String
+        let quantization: String?
+    }
+
     static func fetchModels(for backend: RemoteBackend) async throws -> FetchModelsResult {
         if backend.endpointType == .noemaRelay {
             return try await fetchNoemaRelayModels(for: backend)
@@ -1012,17 +1787,37 @@ enum RemoteBackendAPI {
                                      lanMetadataProvided: false)
         }
         guard let endpoint = backend.modelsEndpointURL else { throw RemoteBackendError.invalidEndpoint }
+        let localEndpoint = backend.usesLocalNetworkHost
+        let requestTimeout: TimeInterval = localEndpoint ? 60 : 20
         var request = URLRequest(url: endpoint)
         request.httpMethod = "GET"
-        request.timeoutInterval = 20
+        request.timeoutInterval = requestTimeout
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let auth = backend.authHeader, !auth.isEmpty {
+        if let auth = try backend.resolvedAuthorizationHeader(), !auth.isEmpty {
             request.setValue(auth, forHTTPHeaderField: "Authorization")
         }
-        await logger.log("[RemoteBackendAPI] ⇢ Fetch models request for backend=\(backend.name) type=\(backend.endpointType.rawValue)\n\(describe(request: request))")
+        for (key, value) in backend.openRouterAttributionHeaders {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        await logger.log("[RemoteBackendAPI] ⇢ Fetch models request for backend=\(backend.name) type=\(backend.endpointType.rawValue) localEndpoint=\(localEndpoint)\n\(describe(request: request))")
         let (data, response): (Data, URLResponse)
         do {
-            (data, response) = try await URLSession.shared.data(for: request)
+            if localEndpoint {
+                let configuration = URLSessionConfiguration.ephemeral
+                configuration.timeoutIntervalForRequest = requestTimeout
+                configuration.timeoutIntervalForResource = requestTimeout
+                configuration.waitsForConnectivity = false
+                configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+                configuration.urlCache = nil
+                configuration.connectionProxyDictionary = [AnyHashable: Any]()
+                let session = URLSession(configuration: configuration)
+                NetworkKillSwitch.track(session: session)
+                defer { session.finishTasksAndInvalidate() }
+                (data, response) = try await session.data(for: request)
+            } else {
+                NetworkKillSwitch.track(session: URLSession.shared)
+                (data, response) = try await URLSession.shared.data(for: request)
+            }
         } catch {
             if backend.endpointType == .ollama {
                 if let urlError = error as? URLError {
@@ -1054,7 +1849,7 @@ enum RemoteBackendAPI {
         }
         guard let http = response as? HTTPURLResponse else { throw RemoteBackendError.invalidResponse }
         guard (200...299).contains(http.statusCode) else {
-            let body = String(data: data, encoding: .utf8) ?? ""
+            let body = extractErrorMessage(from: data)
             await logger.log("[RemoteBackendAPI] ⚠️ Fetch models response status=\(http.statusCode)\nBody: \(body)")
             throw RemoteBackendError.unexpectedStatus(http.statusCode, body)
         }
@@ -1062,14 +1857,33 @@ enum RemoteBackendAPI {
         let statusCode = http.statusCode
         let reason = RemoteBackend.normalizedStatusReason(for: statusCode)
         switch backend.endpointType {
+        case .openRouter:
+            let decoder = JSONDecoder()
+            guard let response = try? decoder.decode(OpenRouterModelsResponse.self, from: data) else {
+                await logger.log("[RemoteBackendAPI] ❌ Failed to decode OpenRouter models response")
+                throw RemoteBackendError.decodingFailed
+            }
+            let models = response.data
+                .map(RemoteModel.make)
+                .filter { !$0.isEmbedding }
+            await logger.log("[RemoteBackendAPI] ✅ Decoded \(models.count) OpenRouter models")
+            return FetchModelsResult(models: models,
+                                     statusCode: statusCode,
+                                     reason: reason,
+                                     relayEjectsOnDisconnect: nil,
+                                     relayHostStatus: nil,
+                                     relayLANURL: nil,
+                                     relayWiFiSSID: nil,
+                                     relayAPIToken: nil,
+                                     relayLANInterface: nil,
+                                     lanMetadataProvided: false)
         case .lmStudio:
             let decoder = JSONDecoder()
-            decoder.keyDecodingStrategy = .convertFromSnakeCase
             guard let response = try? decoder.decode(LMStudioModelsResponse.self, from: data) else {
                 await logger.log("[RemoteBackendAPI] ❌ Failed to decode LM Studio models response")
                 throw RemoteBackendError.decodingFailed
             }
-            let models = response.data
+            let models = response.models
                 .map(RemoteModel.make)
                 .filter { !$0.isEmbedding }
             await logger.log("[RemoteBackendAPI] ✅ Decoded \(models.count) LM Studio models")
@@ -1149,6 +1963,45 @@ enum RemoteBackendAPI {
                                      relayLANInterface: nil,
                                      lanMetadataProvided: false)
         }
+    }
+
+    static func verifyOpenRouterAPIKey(_ apiKey: String,
+                                       backendID: RemoteBackend.ID? = nil) async throws -> OpenRouterKeyInfo {
+        let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw RemoteBackendError.validationFailed(String(localized: "Please provide an OpenRouter API key.", locale: appLocale()))
+        }
+        guard let url = URL(string: "/api/v1/key", relativeTo: RemoteBackend.openRouterDefaultBaseURL)?.absoluteURL else {
+            throw RemoteBackendError.invalidEndpoint
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 20
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if trimmed.lowercased().hasPrefix("bearer ") {
+            request.setValue(trimmed, forHTTPHeaderField: "Authorization")
+        } else {
+            request.setValue("Bearer \(trimmed)", forHTTPHeaderField: "Authorization")
+        }
+        request.setValue(RemoteBackend.openRouterReferer, forHTTPHeaderField: "HTTP-Referer")
+        request.setValue(RemoteBackend.openRouterTitle, forHTTPHeaderField: "X-OpenRouter-Title")
+
+        await logger.log("[RemoteBackendAPI] ⇢ Verifying OpenRouter API key backendID=\(backendID?.uuidString ?? "new")\n\(describe(request: request))")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw RemoteBackendError.invalidResponse }
+        guard (200...299).contains(http.statusCode) else {
+            let message = extractErrorMessage(from: data)
+            await logger.log("[RemoteBackendAPI] ⚠️ OpenRouter key verification failed status=\(http.statusCode)\nBody: \(message)")
+            throw RemoteBackendError.unexpectedStatus(http.statusCode, message)
+        }
+
+        guard let decoded = try? JSONDecoder().decode(OpenRouterKeyResponse.self, from: data) else {
+            await logger.log("[RemoteBackendAPI] ❌ Failed to decode OpenRouter key response")
+            throw RemoteBackendError.decodingFailed
+        }
+        await logger.log("[RemoteBackendAPI] ✅ Verified OpenRouter API key label=\(decoded.data.label)")
+        return decoded.data
     }
 
     private static func fetchNoemaRelayModels(for backend: RemoteBackend) async throws -> FetchModelsResult {
@@ -1474,13 +2327,33 @@ enum RemoteBackendAPI {
     }
 #endif
 
-    static func requestLoad(for backend: RemoteBackend, modelID: String) async throws {
+    static func requestLoad(for backend: RemoteBackend, modelID: String, settings: ModelSettings? = nil) async throws {
         if backend.isCloudRelay {
             return
         }
         if backend.endpointType == .ollama {
             try await requestOllamaLoad(for: backend, modelID: modelID)
             return
+        }
+
+        let normalizedModelID = modelID
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if backend.endpointType == .lmStudio && !normalizedModelID.isEmpty {
+            do {
+                let models = try await fetchModels(for: backend).models
+                let alreadyLoaded = models.contains { candidate in
+                    candidate.id
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .lowercased() == normalizedModelID && candidate.isLoadedOnBackend
+                }
+                if alreadyLoaded {
+                    await logger.log("[RemoteBackendAPI] ↩︎ Skipping load request for '\(modelID)' because LM Studio already reports it as loaded.")
+                    return
+                }
+            } catch {
+                await logger.log("[RemoteBackendAPI] ℹ️ Could not verify existing LM Studio loaded instance before load: \(error.localizedDescription)")
+            }
         }
 
         let candidates = backend.loadPathCandidates(for: modelID)
@@ -1492,10 +2365,21 @@ enum RemoteBackendAPI {
             request.timeoutInterval = 30
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.setValue("application/json", forHTTPHeaderField: "Accept")
-            if let auth = backend.authHeader, !auth.isEmpty {
+            if let auth = try backend.resolvedAuthorizationHeader(), !auth.isEmpty {
                 request.setValue(auth, forHTTPHeaderField: "Authorization")
             }
-            let payload: [String: String] = ["model": modelID]
+            for (key, value) in backend.openRouterAttributionHeaders {
+                request.setValue(value, forHTTPHeaderField: key)
+            }
+            var payload: [String: Any] = ["model": modelID]
+            if backend.endpointType == .lmStudio, let settings {
+                payload["context_length"] = max(1, Int(settings.contextLength.rounded()))
+                payload["flash_attention"] = settings.flashAttention
+                payload["offload_kv_cache_to_gpu"] = settings.kvCacheOffload
+                if let experts = settings.moeActiveExperts, experts > 0 {
+                    payload["num_experts"] = experts
+                }
+            }
             request.httpBody = try? JSONSerialization.data(withJSONObject: payload, options: [])
             await logger.log("[RemoteBackendAPI] ⇢ Requesting load for model=\(modelID) backend=\(backend.name) path=\(path)\n\(describe(request: request))")
             do {
@@ -1522,6 +2406,89 @@ enum RemoteBackendAPI {
         }
     }
 
+    static func startLMStudioDownload(for backend: RemoteBackend,
+                                      model: String,
+                                      quantization: String?) async throws -> LMStudioDownloadJobStatus {
+        guard backend.endpointType == .lmStudio else {
+            throw RemoteBackendError.validationFailed(String(localized: "Remote model downloads are only supported for LM Studio endpoints.", locale: appLocale()))
+        }
+        guard let url = backend.absoluteURL(for: "/api/v1/models/download") else {
+            throw RemoteBackendError.invalidEndpoint
+        }
+
+        let payload = LMStudioDownloadRequest(model: model, quantization: quantization)
+        let body = try JSONEncoder().encode(payload)
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 60
+        request.httpBody = body
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let auth = try backend.resolvedAuthorizationHeader(), !auth.isEmpty {
+            request.setValue(auth, forHTTPHeaderField: "Authorization")
+        }
+        for (key, value) in backend.openRouterAttributionHeaders {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+
+        await logger.log("[RemoteBackendAPI] ⇢ Requesting LM Studio download backend=\(backend.name)\n\(describe(request: request))")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw RemoteBackendError.invalidResponse }
+        guard (200...299).contains(http.statusCode) else {
+            let message = extractErrorMessage(from: data)
+            await logger.log("[RemoteBackendAPI] ⚠️ LM Studio download request failed status=\(http.statusCode)\nBody: \(String(data: data, encoding: .utf8) ?? "<non-utf8>")")
+            throw RemoteBackendError.unexpectedStatus(http.statusCode, message)
+        }
+
+        await logger.log("[RemoteBackendAPI] ⇠ LM Studio download request status=\(http.statusCode)\nBody: \(String(data: data, encoding: .utf8) ?? "<non-utf8>")")
+        do {
+            let status = try JSONDecoder().decode(LMStudioDownloadJobStatus.self, from: data)
+            return status
+        } catch {
+            throw RemoteBackendError.decodingFailed
+        }
+    }
+
+    static func fetchLMStudioDownloadStatus(for backend: RemoteBackend,
+                                            jobID: String) async throws -> LMStudioDownloadJobStatus {
+        guard backend.endpointType == .lmStudio else {
+            throw RemoteBackendError.validationFailed(String(localized: "Remote model downloads are only supported for LM Studio endpoints.", locale: appLocale()))
+        }
+        let encodedJobID = jobID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? jobID
+        guard let url = backend.absoluteURL(for: "/api/v1/models/download/status/\(encodedJobID)") else {
+            throw RemoteBackendError.invalidEndpoint
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 30
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let auth = try backend.resolvedAuthorizationHeader(), !auth.isEmpty {
+            request.setValue(auth, forHTTPHeaderField: "Authorization")
+        }
+        for (key, value) in backend.openRouterAttributionHeaders {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+
+        await logger.log("[RemoteBackendAPI] ⇢ Requesting LM Studio download status backend=\(backend.name) job=\(jobID)\n\(describe(request: request))")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw RemoteBackendError.invalidResponse }
+        guard (200...299).contains(http.statusCode) else {
+            let message = extractErrorMessage(from: data)
+            await logger.log("[RemoteBackendAPI] ⚠️ LM Studio download status failed status=\(http.statusCode)\nBody: \(String(data: data, encoding: .utf8) ?? "<non-utf8>")")
+            throw RemoteBackendError.unexpectedStatus(http.statusCode, message)
+        }
+        await logger.log("[RemoteBackendAPI] ⇠ LM Studio download status response status=\(http.statusCode)\nBody: \(String(data: data, encoding: .utf8) ?? "<non-utf8>")")
+
+        do {
+            let status = try JSONDecoder().decode(LMStudioDownloadJobStatus.self, from: data)
+            return status
+        } catch {
+            throw RemoteBackendError.decodingFailed
+        }
+    }
+
     private static func requestOllamaLoad(for backend: RemoteBackend, modelID: String) async throws {
         guard let url = backend.absoluteURL(for: "/api/generate") else {
             throw RemoteBackendError.invalidEndpoint
@@ -1531,8 +2498,11 @@ enum RemoteBackendAPI {
         request.timeoutInterval = 60
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let auth = backend.authHeader, !auth.isEmpty {
+        if let auth = try backend.resolvedAuthorizationHeader(), !auth.isEmpty {
             request.setValue(auth, forHTTPHeaderField: "Authorization")
+        }
+        for (key, value) in backend.openRouterAttributionHeaders {
+            request.setValue(value, forHTTPHeaderField: key)
         }
         let payload: [String: Any] = [
             "model": modelID,
@@ -1577,6 +2547,26 @@ enum RemoteBackendAPI {
             }
         }
         return sanitized
+    }
+
+    private static func extractErrorMessage(from data: Data) -> String {
+        if let json = try? JSONSerialization.jsonObject(with: data, options: []),
+           let dictionary = json as? [String: Any] {
+            if let message = dictionary["message"] as? String,
+               !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return message
+            }
+            if let error = dictionary["error"] as? String,
+               !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return error
+            }
+            if let error = dictionary["error"] as? [String: Any],
+               let message = error["message"] as? String,
+               !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return message
+            }
+        }
+        return String(data: data, encoding: .utf8) ?? ""
     }
 }
 
@@ -1630,6 +2620,47 @@ enum RemoteBackendsStore {
     }
 }
 
+enum RemoteBackendCredentialStore {
+    private static let service = "Noema.RemoteBackendCredentials"
+
+    static func openRouterAPIKey(for backendID: RemoteBackend.ID) throws -> String? {
+        guard let data = try KeychainStore.read(service: service, account: openRouterAccount(for: backendID)),
+              let key = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !key.isEmpty else {
+            return nil
+        }
+        return key
+    }
+
+    static func setOpenRouterAPIKey(_ apiKey: String, for backendID: RemoteBackend.ID) throws {
+        let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            _ = try KeychainStore.delete(service: service, account: openRouterAccount(for: backendID))
+            return
+        }
+        guard let data = trimmed.data(using: .utf8) else { return }
+        try KeychainStore.write(service: service, account: openRouterAccount(for: backendID), data: data)
+    }
+
+    @discardableResult
+    static func removeOpenRouterAPIKey(for backendID: RemoteBackend.ID) throws -> Bool {
+        try KeychainStore.delete(service: service, account: openRouterAccount(for: backendID))
+    }
+
+    static func openRouterAuthorizationHeader(for backendID: RemoteBackend.ID) throws -> String? {
+        guard let key = try openRouterAPIKey(for: backendID) else { return nil }
+        if key.lowercased().hasPrefix("bearer ") {
+            return key
+        }
+        return "Bearer \(key)"
+    }
+
+    private static func openRouterAccount(for backendID: RemoteBackend.ID) -> String {
+        "remote-backend.openrouter.\(backendID.uuidString).apiKey"
+    }
+}
+
 struct RemoteBackendDraft {
     var name: String = ""
     var baseURL: String = ""
@@ -1637,6 +2668,7 @@ struct RemoteBackendDraft {
     var chatPath: String
     var modelsPath: String
     var authHeader: String = ""
+    var openRouterAPIKey: String = ""
     var customModelIDs: [String] = [""]
     var relayHostDeviceID: String = ""
     var relayLANURL: String = ""
@@ -1654,6 +2686,7 @@ struct RemoteBackendDraft {
         chatPath = backend.chatPath
         modelsPath = backend.modelsPath
         authHeader = backend.authHeader ?? ""
+        openRouterAPIKey = (try? RemoteBackendCredentialStore.openRouterAPIKey(for: backend.id)) ?? ""
         customModelIDs = backend.customModelIDs.isEmpty ? [""] : backend.customModelIDs
         endpointType = backend.endpointType
         relayHostDeviceID = backend.relayHostDeviceID ?? ""

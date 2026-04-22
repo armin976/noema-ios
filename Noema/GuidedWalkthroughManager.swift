@@ -73,8 +73,7 @@ final class GuidedWalkthroughManager: ObservableObject {
     private weak var datasetManager: DatasetManager?
     private weak var downloadController: DownloadController?
 
-    private let recommendedModelID = "unsloth/Qwen3-1.7B-GGUF"
-    private let recommendedQuantLabel = "Q3_K_M"
+    private let recommendedModelID = "unsloth/Qwen3.5-2B-GGUF"
     private var skippedRecommendedDownload = false
     private var shouldShowModelSettings = false
     private var recommendedAnchorsLoaded = false
@@ -240,10 +239,10 @@ final class GuidedWalkthroughManager: ObservableObject {
             if recommendedModelInstalled {
                 return ("Starter Model Ready", "Great! You already have our recommended GGUF model installed.", "Continue", nil)
             } else {
-                return ("Download the Starter Model", "Grab the Qwen 3 1.7B GGUF build first. It’s a reliable starting point and stays fully offline.", "Download", "Skip")
+                return ("Download the Starter Model", "Grab the Qwen 3.5 2B GGUF build first. It's a reliable starting point and stays fully offline.", "Download", "Skip")
             }
         case .storedFormats:
-            return ("Model Formats", "Noema supports GGUF, MLX, and SLM formats. GGUF is the most compatible; MLX and SLM focus on speed.", "Next", nil)
+            return ("Model Formats", "Noema supports GGUF, MLX, and ET formats. GGUF is the most compatible; MLX and ET focus on speed.", "Next", nil)
         case .modelSettingsIntro:
             return ("Model Settings", "We opened settings for the starter model so you can review the basics.", "Next", nil)
         case .modelSettingsContext:
@@ -261,11 +260,11 @@ final class GuidedWalkthroughManager: ObservableObject {
         case .exploreSwitchToModels:
             return ("Switch Views", "Jump between models and datasets right here.", "Go to Models", nil)
         case .exploreModelTypes:
-            return ("GGUF Format", "This switch cycles through GGUF, MLX, and SLM builds. Start with GGUF for the widest compatibility.", "Next", nil)
+            return ("GGUF Format", "This switch cycles through GGUF, MLX, and ET builds. Start with GGUF for the widest compatibility.", "Next", nil)
         case .exploreMLX:
             return ("MLX Format", "Flip the control to MLX when you want Apple Silicon-optimized builds with excellent speed.", "Next", nil)
         case .exploreSLM:
-            return ("SLM Format", "Choose SLM (Leap) for lightweight models that run quickly and stay efficient on any device.", "Next", nil)
+            return ("ET Format", "Choose ET for lightweight models that run quickly and stay efficient on any device.", "Next", nil)
         case .settingsIntro:
             return ("Settings", "Tune Noema to your needs from here—appearance, network modes, and more.", "Next", nil)
         case .settingsHighlights:
@@ -352,15 +351,17 @@ final class GuidedWalkthroughManager: ObservableObject {
                 isVision = ModelVisionDetector.guessLlamaVisionModel(from: url)
             case .mlx:
                 isVision = MLXBridge.isVLMModel(at: url)
-            case .slm:
+            case .et:
                 let slug = detail.id.isEmpty ? url.deletingPathExtension().lastPathComponent : detail.id
                 isVision = LeapCatalogService.isVisionQuantizationSlug(slug)
-            case .apple:
+            case .ane:
+                isVision = false
+            case .afm:
                 isVision = false
             }
         }
 
-        var isToolCapable = await ToolCapabilityDetector.isToolCapable(repoId: detail.id, token: token)
+        var isToolCapable = quant.format == .afm ? false : await ToolCapabilityDetector.isToolCapable(repoId: detail.id, token: token)
         if isToolCapable == false {
             isToolCapable = ToolCapabilityDetector.isToolCapableLocal(url: url, format: quant.format)
         }
@@ -369,7 +370,7 @@ final class GuidedWalkthroughManager: ObservableObject {
         switch quant.format {
         case .gguf, .mlx:
             moeInfo = ModelScanner.moeInfo(for: url, format: quant.format)
-        case .slm, .apple:
+        case .et, .ane, .afm:
             moeInfo = nil
         }
         let architectureLabels = LocalModel.architectureLabels(for: url, format: quant.format, modelID: detail.id)
@@ -394,6 +395,7 @@ final class GuidedWalkthroughManager: ObservableObject {
 
         var settings = modelManager.settings(for: local)
         settings = tunedSettingsForRecommendedModel(settings, local: local, quant: quant, sizeBytes: effectiveSize)
+        settings = modelManager.normalizeLocalSettings(settings, for: local)
         await chatVM.unload()
         if await chatVM.load(url: url, settings: settings, format: quant.format) {
             modelManager.updateSettings(settings, for: local)
@@ -418,7 +420,7 @@ final class GuidedWalkthroughManager: ObservableObject {
             do {
                 let registry = ManualModelRegistry()
                 let details = try await registry.details(for: recommendedModelID)
-                if let quant = details.quants.first(where: { $0.label.caseInsensitiveCompare(recommendedQuantLabel) == .orderedSame }) {
+                if let quant = ManualModelRegistry.recommendedStarterQuant(in: details) {
                     recommendedDetail = details
                     recommendedQuant = quant
                 } else {
@@ -440,14 +442,12 @@ final class GuidedWalkthroughManager: ObservableObject {
     private func applyRecommendedFallback() {
         if let entry = ManualModelRegistry.defaultEntries.first(where: { $0.record.id == recommendedModelID }) {
             recommendedDetail = entry.details
-            recommendedQuant = entry.details.quants.first { $0.label.caseInsensitiveCompare(recommendedQuantLabel) == .orderedSame }
+            recommendedQuant = ManualModelRegistry.recommendedStarterQuant(in: entry.details)
         }
     }
 
     private func recommendedFileURL(for quant: QuantInfo, detailID: String) -> URL {
-        var dir = InstalledModelsStore.baseDir(for: quant.format, modelID: detailID)
-        dir.appendPathComponent(quant.downloadURL.lastPathComponent)
-        return dir
+        InstalledModelsStore.localModelURL(for: quant, modelID: detailID)
     }
 
     private func updateRecommendedDownloadProgress(with items: [DownloadController.Item]) {
@@ -465,7 +465,7 @@ final class GuidedWalkthroughManager: ObservableObject {
 
     private func handleDownloadedModelsChanged() {
         guard let modelManager else { return }
-        if let match = modelManager.downloadedModels.first(where: { $0.modelID == recommendedModelID && $0.quant.caseInsensitiveCompare(recommendedQuantLabel) == .orderedSame }) {
+        if modelManager.downloadedModels.contains(where: { $0.modelID == recommendedModelID && recommendedQuantMatches($0.quant) }) {
             shouldShowModelSettings = true
             if step == .storedRecommend && !skippedRecommendedDownload {
                 // Auto-advance after a short delay so the user sees completion
@@ -487,6 +487,8 @@ final class GuidedWalkthroughManager: ObservableObject {
         let usableSize = sizeBytes > 0 ? sizeBytes : quant.sizeBytes
         let requestedContext = max(512, Int(updated.contextLength.rounded()))
         let layerCount = local.totalLayers > 0 ? local.totalLayers : nil
+        let modelMaxContext = ModelSettings.supportedMaxContextLength(for: local)
+        let kvCacheEstimate = ModelRAMAdvisor.GGUFKVCacheEstimate.resolved(from: updated)
 
         if usableSize > 0 {
             let fits = ModelRAMAdvisor.fitsInRAM(
@@ -494,14 +496,17 @@ final class GuidedWalkthroughManager: ObservableObject {
                 sizeBytes: usableSize,
                 contextLength: requestedContext,
                 layerCount: layerCount,
-                moeInfo: local.moeInfo
+                moeInfo: local.moeInfo,
+                kvCacheEstimate: kvCacheEstimate
             )
             if !fits {
                 if let maxContext = ModelRAMAdvisor.maxContextUnderBudget(
                     format: quant.format,
                     sizeBytes: usableSize,
                     layerCount: layerCount,
-                    moeInfo: local.moeInfo
+                    moeInfo: local.moeInfo,
+                    upperBound: modelMaxContext,
+                    kvCacheEstimate: kvCacheEstimate
                 ) {
                     let safeContext = max(512, min(requestedContext, maxContext))
                     if Double(safeContext) < updated.contextLength {
@@ -519,12 +524,17 @@ final class GuidedWalkthroughManager: ObservableObject {
             if updated.gpuLayers == 0 { updated.gpuLayers = -1 }
         }
 
-        return updated
+        return updated.normalizedForLocalModel(local)
+    }
+
+    private func recommendedQuantMatches(_ label: String) -> Bool {
+        guard let recommendedQuant else { return true }
+        return label.caseInsensitiveCompare(recommendedQuant.label) == .orderedSame
     }
 
     var recommendedModelInstalled: Bool {
         guard let modelManager else { return false }
-        return modelManager.downloadedModels.contains(where: { $0.modelID == recommendedModelID && $0.quant.caseInsensitiveCompare(recommendedQuantLabel) == .orderedSame })
+        return modelManager.downloadedModels.contains(where: { $0.modelID == recommendedModelID && recommendedQuantMatches($0.quant) })
     }
 }
 

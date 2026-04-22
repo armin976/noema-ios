@@ -1,0 +1,33 @@
+{
+  "configurations" : [
+    {
+      "id" : "A5B8B8D6-9E7D-4F19-BD57-8B43D5DA9E4E",
+      "name" : "Default",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "codeCoverage" : false
+  },
+  "testTargets" : [
+    {
+      "parallelizable" : true,
+      "target" : {
+        "containerPath" : "container:Noema.xcodeproj",
+        "identifier" : "642CDB462E231968009017C6",
+        "name" : "NoemaTests"
+      }
+    },
+    {
+      "parallelizable" : true,
+      "target" : {
+        "containerPath" : "container:Noema.xcodeproj",
+        "identifier" : "A20000012F41000100000004",
+        "name" : "NoemaiOSUITests"
+      }
+    }
+  ],
+  "version" : 1
+}

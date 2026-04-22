@@ -64,6 +64,16 @@ enum MLXBridgeError: Error, LocalizedError {
     }
 }
 
+@inline(__always)
+private func postMLXLoadProgress(_ value: Double) {
+    let clamped = min(0.97, max(0.0, value))
+    NotificationCenter.default.post(
+        name: .mlxModelLoadProgress,
+        object: nil,
+        userInfo: ["progress": clamped]
+    )
+}
+
 enum MLXBridge {
     // Debug helper to check MLX availability
     static func checkMLXAvailability() {
@@ -490,6 +500,7 @@ public final class MLXTextClient: @unchecked Sendable {
     private func load() async throws {
         #if canImport(MLXLLM) && canImport(MLXLMCommon)
         print("[MLXBridge] Attempting to load MLX model from: \(modelDirectory.path)")
+        postMLXLoadProgress(0.12)
         
         // Check what files are actually in the model directory
         do {
@@ -505,6 +516,7 @@ public final class MLXTextClient: @unchecked Sendable {
                 print("[MLXBridge] Missing config.json file - this may not be a properly formatted MLX model")
                 throw MLXBridgeError.invalidModel
             }
+            postMLXLoadProgress(0.3)
         } catch {
             print("[MLXBridge] Error checking model directory: \(error)")
             throw MLXBridgeError.modelNotFound
@@ -522,10 +534,12 @@ public final class MLXTextClient: @unchecked Sendable {
                 // Create a model configuration pointing directly to the provided model directory
                 print("[MLXBridge] Creating configuration from directory: \(modelDirectory.path)")
                 let configuration = ModelConfiguration(directory: modelDirectory)
+                postMLXLoadProgress(0.55)
                 
                 print("[MLXBridge] Attempting to load model container...")
                 modelContainer = try await LLMModelFactory.shared.loadContainer(configuration: configuration)
                 print("[MLXBridge] Model container loaded successfully")
+                postMLXLoadProgress(0.95)
                 
                 print("[MLXBridge] Successfully loaded MLX model")
             } catch {
@@ -541,9 +555,14 @@ public final class MLXTextClient: @unchecked Sendable {
         #endif
     }
     
-    private func unload() {
+    func unload() {
+        streamTask?.cancel()
+        streamTask = nil
         #if canImport(MLXLLM) && canImport(MLXLMCommon)
         modelContainer = nil
+        #endif
+        #if canImport(MLX)
+        MLX.GPU.set(cacheLimit: 0)
         #endif
     }
 }
@@ -568,6 +587,11 @@ extension MLXTextClient {
                 throw MLXBridgeError.imagesUnsupported
             }
             prompt = text
+        case .multimodalMessages(let messages, let images):
+            if !images.isEmpty {
+                throw MLXBridgeError.imagesUnsupported
+            }
+            prompt = messages.map { "\($0.role): \($0.content)" }.joined(separator: "\n")
         }
 
         let session = ChatSession(container)
@@ -624,6 +648,7 @@ public final class MLXVLMClient: @unchecked Sendable {
     
     private func load() async throws {
         print("[MLXBridge] Attempting to load VLM model from: \(modelDirectory.path)")
+        postMLXLoadProgress(0.12)
 
         // Log directory contents for debugging
         MLXBridge.logModelDirectoryContents(at: modelDirectory)
@@ -638,6 +663,7 @@ public final class MLXVLMClient: @unchecked Sendable {
                 print("[MLXBridge]   - \(issue)")
             }
         }
+        postMLXLoadProgress(0.3)
 
         // Check for critical issues that would prevent loading
         if let mt = validation.modelType, !MLXBridge.isKnownVLMType(mt) {
@@ -651,6 +677,7 @@ public final class MLXVLMClient: @unchecked Sendable {
             print("[MLXBridge] ERROR: Missing preprocessor_config.json")
             throw MLXBridgeError.missingPreprocessorConfig
         }
+        postMLXLoadProgress(0.45)
 
         #if canImport(MLXVLM) && canImport(MLXLMCommon)
         if #available(iOS 16.0, macOS 13.0, *) {
@@ -664,11 +691,13 @@ public final class MLXVLMClient: @unchecked Sendable {
             let configuration = ModelConfiguration(directory: modelDirectory)
             print("[MLXBridge] Created ModelConfiguration for directory: \(modelDirectory.path)")
             print("[MLXBridge] Calling VLMModelFactory.shared.loadContainer()...")
+            postMLXLoadProgress(0.65)
 
             do {
                 // Use VLMModelFactory from MLXVLM to load vision-language models
                 modelContainer = try await VLMModelFactory.shared.loadContainer(configuration: configuration)
                 print("[MLXBridge] VLM container loaded successfully")
+                postMLXLoadProgress(0.95)
             } catch {
                 let errorStr = String(describing: error)
                 print("[MLXBridge] Failed to load VLM container: \(errorStr)")
@@ -701,9 +730,14 @@ public final class MLXVLMClient: @unchecked Sendable {
         #endif
     }
     
-    private func unload() {
+    func unload() {
+        streamTask?.cancel()
+        streamTask = nil
         #if canImport(MLXVLM) && canImport(MLXLMCommon)
         modelContainer = nil
+        #endif
+        #if canImport(MLX)
+        MLX.GPU.set(cacheLimit: 0)
         #endif
     }
 }
@@ -753,7 +787,7 @@ extension MLXVLMClient {
                 continuation.onTermination = { _ in task.cancel() }
             }
         case .multimodal(let text, let imagePaths):
-            // For multimodal, use a non-streaming respond() and wrap into a single-chunk stream
+            // Stream multimodal responses token-by-token instead of buffering the full answer.
             return AsyncThrowingStream<String, Error> { [weak self] continuation in
                 let session = ChatSession(container)
                 let task = Task {
@@ -786,12 +820,60 @@ extension MLXVLMClient {
                         let inputURL = URL(fileURLWithPath: rawImagePath)
                         let resizedURL = Self.resizeImageForVLM(inputURL, maxPixel: 448) ?? inputURL
 
-                        let answer = try await session.respond(
+                        let inner = session.streamResponse(
                             to: text,
                             image: .url(resizedURL)
                         )
+                        for try await token in inner {
+                            if Task.isCancelled { break }
+                            continuation.yield(token)
+                        }
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: error)
+                    }
+                }
+                self?.streamTask = task
+                continuation.onTermination = { _ in task.cancel() }
+            }
+        case .multimodalMessages(let messages, let imagePaths):
+            let text = messages.map { "\($0.role): \($0.content)" }.joined(separator: "\n")
+            return AsyncThrowingStream<String, Error> { [weak self] continuation in
+                let session = ChatSession(container)
+                let task = Task {
+                    do {
+                        let supportedImageExtensions: Set<String> = ["jpg", "jpeg", "png", "webp", "bmp", "tif", "tiff", "heic", "heif"]
+                        let isVideoExt: (String) -> Bool = { ext in
+                            let v: Set<String> = ["mp4", "mov", "m4v", "avi", "webm", "mkv"]
+                            return v.contains(ext.lowercased())
+                        }
 
-                        continuation.yield(answer)
+                        func firstImagePath(from paths: [String]) -> String? {
+                            for p in paths {
+                                let ext = URL(fileURLWithPath: p).pathExtension.lowercased()
+                                if supportedImageExtensions.contains(ext) { return p }
+                            }
+                            return nil
+                        }
+
+                        guard let rawImagePath = firstImagePath(from: imagePaths) else {
+                            if imagePaths.contains(where: { isVideoExt(URL(fileURLWithPath: $0).pathExtension) }) {
+                                throw NSError(domain: "Noema", code: -7001, userInfo: [NSLocalizedDescriptionKey: "Video attachments are not supported by the MLX VLM backend in this build."])
+                            }
+                            throw MLXBridgeError.imagesUnsupported
+                        }
+
+                        let inputURL = URL(fileURLWithPath: rawImagePath)
+                        let resizedURL = Self.resizeImageForVLM(inputURL, maxPixel: 448) ?? inputURL
+
+                        let inner = session.streamResponse(
+                            to: text,
+                            image: .url(resizedURL)
+                        )
+                        for try await token in inner {
+                            if Task.isCancelled { break }
+                            continuation.yield(token)
+                        }
                         continuation.finish()
                     } catch {
                         continuation.finish(throwing: error)

@@ -1,13 +1,11 @@
 // ExploreView.swift
+import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 #if os(macOS)
 import AppKit
 #endif
 #if os(iOS) || os(tvOS) || os(visionOS) || os(macOS)
-#if canImport(LeapSDK)
-import LeapSDK
-#endif
 
 /// Simple badge label style used to display small status indicators.
 struct BadgeLabelStyle: LabelStyle {
@@ -26,6 +24,34 @@ struct BadgeLabelStyle: LabelStyle {
 
 extension LabelStyle where Self == BadgeLabelStyle {
     static var badge: BadgeLabelStyle { .init() }
+}
+
+enum ExploreImportRequest: Equatable {
+    case ggufFiles
+    case ggufFolder
+    case mlxFolder
+
+    var allowedContentTypes: [UTType] {
+        switch self {
+        case .ggufFiles:
+            let types = [
+                UTType(filenameExtension: "gguf"),
+                UTType(filenameExtension: "mmproj")
+            ].compactMap { $0 }
+            return types.isEmpty ? [.data] : types
+        case .ggufFolder, .mlxFolder:
+            return [.folder]
+        }
+    }
+
+    var allowsMultipleSelection: Bool {
+        switch self {
+        case .ggufFiles:
+            return true
+        case .ggufFolder, .mlxFolder:
+            return false
+        }
+    }
 }
 
 struct ExploreView: View {
@@ -47,22 +73,50 @@ struct ExploreView: View {
         let token = UserDefaults.standard.string(forKey: "huggingFaceToken") ?? ""
         _vm = StateObject(wrappedValue: ExploreViewModel(
             registry: CombinedRegistry(primary: HuggingFaceRegistry(token: token),
-                                       extras: [ManualModelRegistry()])))
+                                       extras: [ManualModelRegistry(), AppleFoundationModelRegistry()])))
     }
     @State private var selected: ModelDetails?
+#if canImport(LeapSDK) && !os(macOS)
+    @State private var selectedSLMGroup: SLMModelGroup?
+#endif
     @State private var loadingDetail = false
     @State private var openingModelId: String?
     // Import flow state
     @State private var showImportMenu = false
-    @State private var showGGUFImporter = false
-    @State private var showMLXImporter = false
+    @State private var activeImportRequest: ExploreImportRequest?
     @State private var pendingPickedURLs: [URL] = []
     @State private var importError: String?
     @State private var isImporting = false
 
-    private enum ImportFormat: Equatable { case gguf, mlx }
+    private enum ImportFormat: Equatable { case gguf, ggufFolder, mlx }
+
+#if canImport(LeapSDK) && !os(macOS)
+    private struct SLMModelGroup: Identifiable, Hashable {
+        let groupKey: String
+        let modelID: String
+        let displayName: String
+        let entries: [LeapCatalogEntry]
+        var id: String { groupKey }
+    }
+#endif
 
     var body: some View { contentView }
+
+    private var remoteDownloadTargetBackend: RemoteBackend? {
+        modelManager.activeLMStudioRemoteDownloadTargetBackend
+    }
+
+    private var isRemoteDownloadModeActive: Bool {
+        remoteDownloadTargetBackend != nil
+    }
+
+    private var effectiveSearchMode: ExploreSearchMode {
+        isRemoteDownloadModeActive ? .gguf : vm.searchMode
+    }
+
+    private var afmAvailabilityState: AppleFoundationModelAvailabilityState {
+        AppleFoundationModelAvailability.current
+    }
 
     @ViewBuilder
     private var contentView: some View {
@@ -80,9 +134,21 @@ struct ExploreView: View {
                 updateRegistry(huggingFaceToken)
                 Task { await vm.loadCurated(force: true) }
             }
-            .task { 
+            .task {
                 await vm.loadCurated()
                 vm.setFilterManager(filterManager)
+            }
+            .onAppear {
+                enforceGGUFSearchModeIfNeeded(triggerSearch: true)
+                enforceAFMSearchModeIfNeeded(triggerSearch: true)
+                // Belt-and-suspenders: on visionOS real hardware, .task may not
+                // fire reliably in certain TabView lifecycle scenarios.
+                if vm.recommended.isEmpty {
+                    Task {
+                        await vm.loadCurated()
+                        vm.setFilterManager(filterManager)
+                    }
+                }
             }
 #if !os(macOS)
             // Title provided by parent container
@@ -101,6 +167,9 @@ struct ExploreView: View {
             }
 #else
             .sheet(item: $selected, content: detailSheet)
+#if canImport(LeapSDK)
+            .sheet(item: $selectedSLMGroup, content: slmDetailSheet)
+#endif
 #endif
             .overlay { if loadingDetail { ProgressView() } }
             .overlay { if vm.isLoadingSearch { ProgressView() } }
@@ -125,6 +194,13 @@ struct ExploreView: View {
             .onChangeCompat(of: downloadController.navigateToDetail) { _, newValue in
                 handleNavigation(newValue)
             }
+            .onChangeCompat(of: remoteDownloadTargetBackend?.id) { _, _ in
+                enforceGGUFSearchModeIfNeeded(triggerSearch: true)
+            }
+            .onChangeCompat(of: vm.searchMode) { _, _ in
+                enforceGGUFSearchModeIfNeeded(triggerSearch: false)
+                enforceAFMSearchModeIfNeeded(triggerSearch: false)
+            }
             .alert(LocalizedStringKey("Error"), isPresented: hasSearchError) {
                 Button(LocalizedStringKey("OK"), role: .cancel) { vm.searchError = nil }
             } message: {
@@ -141,15 +217,16 @@ struct ExploreView: View {
 #if os(macOS)
             .onAppear {
                 chromeState.activeSection = .models
-                chromeState.searchMode = vm.searchMode
-                chromeState.toggleAction = { vm.toggleMode() }
+                chromeState.searchMode = effectiveSearchMode
+                chromeState.toggleAction = { toggleSearchModeIfAllowed() }
                 chromeState.searchPlaceholder = LocalizedStringKey("Search models")
                 chromeState.searchText = vm.searchText
                 chromeState.isSearchVisible = true
                 chromeState.searchSubmitAction = { vm.triggerSearch() }
             }
             .onChange(of: vm.searchMode) { newValue in
-                chromeState.searchMode = newValue
+                _ = newValue
+                chromeState.searchMode = effectiveSearchMode
             }
             .onChangeCompat(of: chromeState.searchText) { _, newValue in
                 if vm.searchText != newValue {
@@ -187,13 +264,11 @@ struct ExploreView: View {
                         vm.searchMode = .mlx
                         vm.triggerSearch()
                     }
-#if !os(macOS) && !os(visionOS)
                 case .exploreSLM:
-                    if vm.searchMode != .slm {
-                        vm.searchMode = .slm
+                    if vm.searchMode != .et {
+                        vm.searchMode = .et
                         vm.triggerSearch()
                     }
-#endif
                 default:
                     break
                 }
@@ -201,21 +276,29 @@ struct ExploreView: View {
             // File importers for iOS/visionOS (mac uses NSOpenPanel; tvOS lacks Files access)
             #if !os(tvOS)
             .fileImporter(
-                isPresented: $showGGUFImporter,
-                allowedContentTypes: ggufAllowedTypes(),
-                allowsMultipleSelection: true
+                isPresented: Binding(
+                    get: { activeImportRequest != nil },
+                    set: { if !$0 { activeImportRequest = nil } }
+                ),
+                allowedContentTypes: activeImportRequest?.allowedContentTypes ?? [.data],
+                allowsMultipleSelection: activeImportRequest?.allowsMultipleSelection ?? false
             ) { result in
-                if case .success(let urls) = result {
+                let request = activeImportRequest
+                activeImportRequest = nil
+
+                guard case .success(let urls) = result, let request else { return }
+
+                switch request {
+                case .ggufFiles:
                     Task { await importGGUF(urls: urls) }
-                }
-            }
-            .fileImporter(
-                isPresented: $showMLXImporter,
-                allowedContentTypes: [UTType.folder],
-                allowsMultipleSelection: false
-            ) { result in
-                if case .success(let urls) = result, let url = urls.first {
-                    Task { await importMLX(directory: url) }
+                case .ggufFolder:
+                    if let url = urls.first {
+                        Task { await importGGUF(urls: [url]) }
+                    }
+                case .mlxFolder:
+                    if let url = urls.first {
+                        Task { await importMLX(directory: url) }
+                    }
                 }
             }
             #endif
@@ -229,57 +312,177 @@ struct ExploreView: View {
                 listContent
             }
             .padding(AppTheme.padding)
+            .padding(.bottom, 40)
         }
         .background(AppTheme.windowBackground)
-        #else
-        if vm.searchMode == .slm {
-            List { listContent }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
-                .background(AppTheme.windowBackground)
-                // Give the SLM list a little extra runway so the bottom
-                // explore switch bar/tab bar doesn’t cover the final row.
-                .safeAreaInset(edge: .bottom) {
-                    Color.clear.frame(height: slmListBottomInset)
-                }
-        } else {
-            List { listContent }
-                .searchable(text: $vm.searchText, prompt: Text(LocalizedStringKey("Search models")))
-                .onSubmit(of: .search) { vm.triggerSearch() }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
-                .background(AppTheme.windowBackground)
+        #elseif os(visionOS)
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 16) {
+                listContent
+            }
+            .padding(AppTheme.padding)
+            .padding(.bottom, 40)
         }
+        .searchable(text: $vm.searchText, prompt: Text(LocalizedStringKey("Search models")))
+        .onSubmit(of: .search) { vm.triggerSearch() }
+        #else
+        List { listContent }
+            .searchable(text: $vm.searchText, prompt: Text(LocalizedStringKey("Search models")))
+            .onSubmit(of: .search) { vm.triggerSearch() }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(AppTheme.windowBackground)
+            .contentMargins(.bottom, 40, for: .scrollContent)
         #endif
     }
 
     private func exploreCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        content()
+        let shape = RoundedRectangle(cornerRadius: AppTheme.cornerRadius, style: .continuous)
+        return content()
             .padding(AppTheme.padding)
-            .glassifyIfAvailable(in: RoundedRectangle(cornerRadius: AppTheme.cornerRadius, style: .continuous))
-            .background(AppTheme.cardFill)
+            .glassifyIfAvailable(in: shape)
+            .background(shape.fill(AppTheme.cardFill))
             .overlay(
-                RoundedRectangle(cornerRadius: AppTheme.cornerRadius, style: .continuous)
+                shape
                     .stroke(AppTheme.cardStroke, lineWidth: 1)
             )
-            .shadow(color: Color.black.opacity(0.02), radius: 10, x: 0, y: 4)
+            .clipShape(shape)
+            .shadow(color: Color.black.opacity(0.01), radius: 4, x: 0, y: 1)
             .visionHoverHighlight(cornerRadius: AppTheme.cornerRadius)
     }
 
     private func updateRegistry(_ token: String) {
         vm.updateRegistry(CombinedRegistry(primary: HuggingFaceRegistry(token: token),
-                                           extras: [ManualModelRegistry()]))
+                                           extras: [ManualModelRegistry(), AppleFoundationModelRegistry()]))
+    }
+
+    private func toggleSearchModeIfAllowed() {
+        guard !isRemoteDownloadModeActive else { return }
+        vm.toggleMode()
+    }
+
+    private func enforceGGUFSearchModeIfNeeded(triggerSearch: Bool) {
+        guard isRemoteDownloadModeActive else { return }
+        guard vm.searchMode != .gguf else { return }
+        vm.searchMode = .gguf
+        if triggerSearch {
+            vm.triggerSearch()
+        }
+    }
+
+    private func enforceAFMSearchModeIfNeeded(triggerSearch: Bool) {
+        guard vm.searchMode == .afm else { return }
+        vm.searchMode = .gguf
+        if triggerSearch {
+            vm.triggerSearch()
+        }
     }
 
     private var slmListBottomInset: CGFloat {
 #if os(iOS)
         // Height budget for the Explore switch bar plus a bit of breathing room
-        // so the final SLM entry can scroll fully above the menubar.
+        // so the final ET entry can scroll fully above the menubar.
         UIConstants.defaultPadding * 2 + 40
 #else
         0
 #endif
     }
+
+    private var slmIPadCardHeight: CGFloat {
+#if os(iOS)
+        UIDevice.current.userInterfaceIdiom == .pad ? 126 : 0
+#else
+        0
+#endif
+    }
+
+#if canImport(LeapSDK) && !os(macOS)
+    private var groupedSLMModels: [SLMModelGroup] {
+        var order: [String] = []
+        var buckets: [String: [LeapCatalogEntry]] = [:]
+        for entry in vm.filteredLeap {
+            let key = slmSanitizedModelKey(for: entry)
+            if buckets[key] == nil {
+                order.append(key)
+                buckets[key] = []
+            }
+            buckets[key]?.append(entry)
+        }
+
+        return order.compactMap { key in
+            guard let entries = buckets[key], !entries.isEmpty else { return nil }
+            var quantIndexByKey: [String: Int] = [:]
+            var merged: [LeapCatalogEntry] = []
+            for entry in entries {
+                let quantKey = entry.quantization.lowercased()
+                if let idx = quantIndexByKey[quantKey] {
+                    if slmEntryIsPreferred(entry, over: merged[idx]) {
+                        merged[idx] = entry
+                    }
+                } else {
+                    quantIndexByKey[quantKey] = merged.count
+                    merged.append(entry)
+                }
+            }
+            guard !merged.isEmpty else { return nil }
+            let representative = entries.min(by: { slmEntrySortKey($0) < slmEntrySortKey($1) }) ?? merged[0]
+            return SLMModelGroup(
+                groupKey: key,
+                modelID: representative.modelID,
+                displayName: representative.displayName,
+                entries: merged
+            )
+        }
+    }
+
+    private var filteredSLMModelGroups: [SLMModelGroup] {
+        groupedSLMModels.filter(slmShouldIncludeGroup)
+    }
+
+    private func slmShouldIncludeGroup(_ group: SLMModelGroup) -> Bool {
+        guard UIConstants.showMultimodalUI else { return true }
+        switch filterManager.filter {
+        case .all:
+            return true
+        case .text:
+            return !slmGroupIsVision(group)
+        case .vision:
+            return slmGroupIsVision(group)
+        }
+    }
+
+    private func slmGroupIsVision(_ group: SLMModelGroup) -> Bool {
+        if group.entries.contains(where: { $0.isVision }) { return true }
+        if LeapCatalogService.isVisionQuantizationSlug(group.modelID) { return true }
+        return LeapCatalogService.isVisionQuantizationSlug(group.displayName)
+    }
+
+    private func slmSanitizedModelKey(for entry: LeapCatalogEntry) -> String {
+        let base = (LeapCatalogService.name(for: entry.modelID) ?? entry.displayName)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !base.isEmpty {
+            return slmSanitizeName(base)
+        }
+        return slmSanitizeName(entry.modelID)
+    }
+
+    private func slmSanitizeName(_ value: String) -> String {
+        let lowered = value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current).lowercased()
+        let decimalNormalized = lowered.replacingOccurrences(of: #"(?<=\d)[._](?=\d)"#, with: "p", options: .regularExpression)
+        let compact = decimalNormalized.replacingOccurrences(of: #"[^a-z0-9]+"#, with: "", options: .regularExpression)
+        return compact.isEmpty ? lowered.replacingOccurrences(of: " ", with: "") : compact
+    }
+
+    private func slmEntrySortKey(_ entry: LeapCatalogEntry) -> (Int, Int, String, String) {
+        let artifactRank = (entry.artifactKind == .manifest) ? 0 : 1
+        let underscorePenalty = entry.modelID.contains("_") ? 1 : 0
+        return (artifactRank, underscorePenalty, entry.modelID.lowercased(), entry.slug.lowercased())
+    }
+
+    private func slmEntryIsPreferred(_ lhs: LeapCatalogEntry, over rhs: LeapCatalogEntry) -> Bool {
+        slmEntrySortKey(lhs) < slmEntrySortKey(rhs)
+    }
+#endif
 
     private func handleNavigation(_ detail: ModelDetails?) {
         if let d = detail {
@@ -294,14 +497,62 @@ struct ExploreView: View {
 
     @ViewBuilder
     private func detailSheet(_ detail: ModelDetails) -> some View {
-        ExploreDetailView(detail: detail)
+        ExploreDetailView(
+            detail: detail,
+            downloadController: downloadController,
+            remoteDownloadTargetBackendID: remoteDownloadTargetBackend?.id
+        )
             .environmentObject(modelManager)
             .environmentObject(chatVM)
-            .environmentObject(downloadController)
 #if os(macOS)
             .frame(minWidth: 640, idealWidth: 720, minHeight: 640, idealHeight: 760)
 #endif
     }
+
+#if canImport(LeapSDK) && !os(macOS)
+    @ViewBuilder
+    private func slmDetailSheet(_ group: SLMModelGroup) -> some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    exploreCard {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(group.displayName)
+                                .font(FontTheme.largeTitle)
+                                .foregroundStyle(AppTheme.text)
+                            Text(group.modelID)
+                                .font(FontTheme.caption)
+                                .foregroundStyle(AppTheme.secondaryText)
+                        }
+                    }
+
+                    exploreCard {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text(LocalizedStringKey("Available Quantizations"))
+                                .font(FontTheme.heading)
+                                .foregroundStyle(AppTheme.text)
+                            ForEach(group.entries) { entry in
+                                LeapRowView(entry: entry, openAction: { e, url, runner in
+                                    selectedSLMGroup = nil
+                                    openLeap(entry: e, url: url, runner: runner)
+                                })
+                                .environmentObject(downloadController)
+                            }
+                        }
+                    }
+                }
+                .padding(.vertical, 24)
+                .padding(.horizontal, AppTheme.padding)
+            }
+            .background(Color.detailSheetBackground.ignoresSafeArea())
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(LocalizedStringKey("Close")) { selectedSLMGroup = nil }
+                }
+            }
+        }
+    }
+#endif
 
 #if os(macOS)
     private func presentDetail(_ detail: ModelDetails) {
@@ -320,11 +571,14 @@ struct ExploreView: View {
             contentInsets: EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0),
             onDismiss: { selected = nil }
         ) {
-            ExploreDetailView(detail: detail)
+            ExploreDetailView(
+                detail: detail,
+                downloadController: downloadController,
+                remoteDownloadTargetBackendID: remoteDownloadTargetBackend?.id
+            )
                 .environmentObject(modelManager)
                 .environmentObject(chatVM)
                 .environmentObject(tabRouter)
-                .environmentObject(downloadController)
         }
     }
 #endif
@@ -349,37 +603,25 @@ struct ExploreView: View {
 
     @ViewBuilder
     private var listContent: some View {
-#if canImport(LeapSDK) && !os(macOS)
-        if vm.searchMode == .slm {
-            if UIDevice.current.userInterfaceIdiom == .pad {
-                // iPadOS Grid Layout for SLM
-                Section {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), spacing: 16)], spacing: 16) {
-                        ForEach(vm.filteredLeap) { entry in
-                            exploreCard {
-                                LeapRowView(entry: entry, openAction: { e, url, runner in
-                                    openLeap(entry: e, url: url, runner: runner)
-                                })
-                                .environmentObject(downloadController)
-                            }
-                        }
-                    }
-                    .padding(.horizontal, AppTheme.padding)
-                    .padding(.vertical, 8)
-                }
+        if let target = remoteDownloadTargetBackend {
+            remoteDownloadModeBanner(for: target)
+#if !os(macOS) && !os(visionOS)
+                .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets())
-            } else {
-                // iPhone List Layout
-                Section(LocalizedStringKey("SLM Models - Liquid AI")) {
-                    ForEach(vm.filteredLeap) { entry in
-                        LeapRowView(entry: entry, openAction: { e, url, runner in
-                            openLeap(entry: e, url: url, runner: runner)
-                        })
-                        .environmentObject(downloadController)
-                    }
-                }
-            }
+                .listRowInsets(EdgeInsets(top: 8, leading: AppTheme.padding, bottom: 8, trailing: AppTheme.padding))
+#endif
+        }
+        if effectiveSearchMode == .afm, let reason = afmModeStatusMessage {
+            afmStatusBanner(reason: reason)
+#if !os(macOS) && !os(visionOS)
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 8, leading: AppTheme.padding, bottom: 8, trailing: AppTheme.padding))
+#endif
+        }
+#if canImport(LeapSDK) && !os(macOS) && !os(visionOS)
+        if effectiveSearchMode == .et {
+            slmSections
         } else {
             standardSections
         }
@@ -387,6 +629,190 @@ struct ExploreView: View {
         standardSections
 #endif
     }
+
+    @ViewBuilder
+    private func remoteDownloadModeBanner(for backend: RemoteBackend) -> some View {
+        exploreCard {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "externaldrive.badge.icloud")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(Color.blue)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(LocalizedStringKey("Remote endpoint download mode"))
+                        .font(FontTheme.body.weight(.semibold))
+                        .foregroundStyle(AppTheme.text)
+                    Text(String.localizedStringWithFormat(String(localized: "New downloads from Explore will be sent to %@ until you clear this mode."), backend.name))
+                        .font(FontTheme.caption)
+                        .foregroundStyle(AppTheme.secondaryText)
+                }
+                Spacer(minLength: 8)
+                Button(LocalizedStringKey("Clear")) {
+                    modelManager.clearLMStudioRemoteDownloadTarget()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func afmStatusBanner(reason: String) -> some View {
+        exploreCard {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "apple.intelligence")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(Color.indigo)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(LocalizedStringKey("AFM currently unavailable"))
+                        .font(FontTheme.body.weight(.semibold))
+                        .foregroundStyle(AppTheme.text)
+                    Text(reason)
+                        .font(FontTheme.caption)
+                        .foregroundStyle(AppTheme.secondaryText)
+                }
+                Spacer(minLength: 8)
+            }
+        }
+    }
+
+    private var afmModeStatusMessage: String? {
+        guard effectiveSearchMode == .afm else { return nil }
+        guard afmAvailabilityState.isSupportedDevice else { return nil }
+        guard !afmAvailabilityState.isAvailableNow else { return nil }
+        return afmAvailabilityState.unavailableReason?.message
+    }
+
+#if canImport(LeapSDK) && !os(macOS)
+    @ViewBuilder
+    private var slmSections: some View {
+        let visibleGroups = filteredSLMModelGroups
+
+        slmListRow(bottom: 12) {
+            exploreCard {
+                HStack(spacing: 10) {
+                    Text(LocalizedStringKey("ET Models - ExecuTorch"))
+                        .font(FontTheme.heading(size: 20))
+                        .foregroundStyle(AppTheme.text)
+                    Spacer(minLength: 8)
+                    Text(effectiveSearchMode.displayName)
+                        .font(FontTheme.caption.weight(.semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(searchModeGradient, in: Capsule())
+                        .foregroundStyle(.white)
+                }
+            }
+        }
+
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            slmListRow(horizontal: 0, bottom: 0) {
+                if visibleGroups.isEmpty {
+                    slmEmptyStateCard
+                } else {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), spacing: 16)], spacing: 16) {
+                        ForEach(visibleGroups) { group in
+                            exploreCard {
+                                slmGroupRow(group, titleLineLimit: 2)
+                            }
+                            .frame(height: slmIPadCardHeight, alignment: .topLeading)
+                        }
+                    }
+                    .padding(.horizontal, AppTheme.padding)
+                    .padding(.top, 4)
+                    .padding(.bottom, 8)
+                }
+            }
+        } else {
+            if visibleGroups.isEmpty {
+                slmListRow(bottom: 12) {
+                    slmEmptyStateCard
+                }
+            } else {
+                ForEach(visibleGroups) { group in
+                    slmListRow(bottom: 12) {
+                        exploreCard {
+                            slmGroupRow(group)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func slmListRow<Content: View>(
+        horizontal: CGFloat = AppTheme.padding,
+        bottom: CGFloat,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: 0, leading: horizontal, bottom: bottom, trailing: horizontal))
+    }
+
+    @ViewBuilder
+    private var slmEmptyStateCard: some View {
+        exploreCard {
+            VStack(spacing: 8) {
+                Text(String.localizedStringWithFormat(String(localized: "No models found for '%@'"), vm.searchText))
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+                Text(emptyStateSuggestion)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private func slmGroupRow(_ group: SLMModelGroup, titleLineLimit: Int? = nil) -> some View {
+        Button(action: { selectedSLMGroup = group }) {
+            HStack(alignment: .center, spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text(group.displayName)
+                            .font(FontTheme.body)
+                            .fontWeight(.medium)
+                            .foregroundStyle(AppTheme.text)
+                            .lineLimit(titleLineLimit)
+
+                        if UIConstants.showMultimodalUI && slmGroupIsVision(group) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Color.yellow, lineWidth: 2)
+                                    .frame(width: 22, height: 22)
+                                Image(systemName: "eye.fill")
+                                    .foregroundColor(Color.yellow)
+                                    .font(.system(size: 11, weight: .semibold))
+                            }
+                            .accessibilityLabel(LocalizedStringKey("Vision-capable model"))
+                            .help(LocalizedStringKey("Vision-capable model"))
+                        }
+                    }
+                    Text(group.modelID)
+                        .font(FontTheme.caption)
+                        .foregroundStyle(AppTheme.secondaryText)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Text("\(group.entries.count)")
+                    .font(FontTheme.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.text)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Color(.systemGray5), in: Capsule())
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.secondaryText)
+            }
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.plain)
+    }
+#endif
 
     @ViewBuilder
     private var heroSection: some View {
@@ -402,7 +828,7 @@ struct ExploreView: View {
                 }
                 .padding(.bottom, 8)
                 
-                let featuredModels = Array(filteredRecommended.prefix(5))
+                let featuredModels = filteredRecommended
                 if !featuredModels.isEmpty {
                     #if os(macOS)
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 24) {
@@ -499,15 +925,10 @@ struct ExploreView: View {
     @ViewBuilder
     private var standardSections: some View {
         if vm.searchText.trimmingCharacters(in: .whitespaces).isEmpty {
-            #if os(macOS)
+            #if os(macOS) || os(visionOS)
             VStack(alignment: .leading, spacing: 24) {
                 heroSection
 
-                LazyVStack(spacing: 16) {
-                    ForEach(filteredRecommended.dropFirst(5), id: \._stableKey) { record in
-                         exploreCard { recordButton(record, context: .curated).buttonStyle(.plain) }
-                    }
-                }
             }
             #else
             // iOS implementation
@@ -519,15 +940,9 @@ struct ExploreView: View {
             .listRowBackground(Color.clear)
             .listRowInsets(EdgeInsets(top: 0, leading: AppTheme.padding, bottom: 0, trailing: AppTheme.padding))
 
-            Section {
-                ForEach(filteredRecommended.dropFirst(5), id: \._stableKey) { record in
-                    recordButton(record, context: .curated)
-                }
-            }
-            .listRowInsets(EdgeInsets(top: 0, leading: AppTheme.padding, bottom: 0, trailing: AppTheme.padding))
             #endif
         } else {
-            #if os(macOS)
+            #if os(macOS) || os(visionOS)
             VStack(alignment: .leading, spacing: 16) {
                 Text(LocalizedStringKey("Results"))
                     .font(FontTheme.heading)
@@ -558,9 +973,12 @@ struct ExploreView: View {
     
     private var filteredRecommended: [ModelRecord] {
         var seen = Set<String>()
-        let mode = vm.searchMode
+        let mode = effectiveSearchMode
         return vm.recommended.filter { rec in
             guard seen.insert(rec.id).inserted else { return false }
+            if rec.formats.contains(.afm) {
+                return filterManager.shouldIncludeModel(rec)
+            }
 
             // Respect the GGUF/MLX toggle when showing curated recommendations
             // on iOS/iPadOS so formats don’t mix across modes.
@@ -573,10 +991,14 @@ struct ExploreView: View {
                     return rec.formats.contains(.mlx)
                         || rec.id.hasPrefix("mlx-community/")
                         || rec.id.hasPrefix("lmstudio-community/")
-                case .slm:
-                    // Curated GGUF/MLX section isn’t shown in SLM mode, but keep permissive
+                case .et:
+                    // Curated GGUF/MLX section isn’t shown in ET mode, but keep permissive
                     // behavior here to avoid surprising empty lists if reused.
                     return true
+                case .ane:
+                    return rec.formats.contains(.ane)
+                case .afm:
+                    return rec.formats.contains(.afm)
                 }
             }()
 
@@ -595,7 +1017,7 @@ struct ExploreView: View {
 #else
         return DeviceGPUInfo.supportsGPUOffload
         ? String(localized: "Switching between GGUF/MLX modes")
-        : String(localized: "Switching between GGUF/SLM modes")
+        : String(localized: "Switching between GGUF/ET modes")
 #endif
     }
 
@@ -635,7 +1057,7 @@ struct ExploreView: View {
                     // Vision badge (non-blocking) — hidden while multimodal UI is disabled.
                     // On iOS in particular, surface an immediate badge when the Hub pipeline
                     // already identifies the repo as VLM to avoid waiting for metadata fetches.
-                    if UIConstants.showMultimodalUI {
+                    if UIConstants.showMultimodalUI && !record.formats.contains(.afm) {
                         if record.pipeline_tag == "image-text-to-text" {
                             if showsVisionEye {
                                 ZStack {
@@ -663,7 +1085,7 @@ struct ExploreView: View {
                             .padding(.vertical, 4)
                             .background(Color.green.opacity(0.1), in: Capsule())
                     }
-                    
+
                     if showsVisionLabel && record.pipeline_tag == "image-text-to-text" {
                         Text(LocalizedStringKey("Vision"))
                             .font(FontTheme.caption)
@@ -674,8 +1096,10 @@ struct ExploreView: View {
                             .background(Color.purple.opacity(0.1), in: Capsule())
                     }
 
-                    // Tool capability badge (non-blocking)
-                    ToolBadge(repoId: record.id, token: huggingFaceToken)
+                    if !record.formats.contains(.afm) {
+                        // Tool capability badge (non-blocking)
+                        ToolBadge(repoId: record.id, token: huggingFaceToken)
+                    }
                     if record.isReasoningModel {
                         Image(systemName: "brain")
                             .font(.caption)
@@ -707,47 +1131,53 @@ struct ExploreView: View {
     private var searchModeToolbar: some ToolbarContent {
         #if os(macOS)
         ToolbarItem(placement: .automatic) {
-            Button(action: { vm.toggleMode() }) {
-                Text(vm.searchMode.rawValue)
+            Button(action: { toggleSearchModeIfAllowed() }) {
+                Text(effectiveSearchMode.displayName)
             }
             .buttonStyle(.glass(color: searchModeColor, isActive: true))
+            .disabled(isRemoteDownloadModeActive)
             .guideHighlight(.exploreModelToggle)
         }
         #else
         ToolbarItem(placement: .navigationBarTrailing) {
-            Button(action: { vm.toggleMode() }) {
-                Text(vm.searchMode.rawValue)
+            Button(action: { toggleSearchModeIfAllowed() }) {
+                Text(effectiveSearchMode.displayName)
             }
             .buttonStyle(.glass(color: searchModeColor, isActive: true))
+            .disabled(isRemoteDownloadModeActive)
             .guideHighlight(.exploreModelToggle)
         }
         #endif
     }
 
     private var searchModeGradient: LinearGradient {
-        switch vm.searchMode {
+        switch effectiveSearchMode {
         case .gguf:
             return ModelFormat.gguf.tagGradient
         case .mlx:
             return ModelFormat.mlx.tagGradient
-        case .slm:
-#if os(macOS)
-            return ModelFormat.mlx.tagGradient
-#else
-            return ModelFormat.slm.tagGradient
-#endif
+        case .et:
+            return ModelFormat.et.tagGradient
+        case .ane:
+            return ModelFormat.ane.tagGradient
+        case .afm:
+            return ModelFormat.afm.tagGradient
         }
     }
     private var searchModeColor: Color {
-        switch vm.searchMode {
+        switch effectiveSearchMode {
         case .gguf: return .blue
         case .mlx: return .purple
-        case .slm:
+        case .et:
 #if os(macOS)
             return .purple
 #else
             return .orange
 #endif
+        case .ane:
+            return .green
+        case .afm:
+            return .indigo
         }
     }
 
@@ -762,6 +1192,9 @@ struct ExploreView: View {
             Menu {
                 Button(action: { presentImporter(.gguf) }) {
                     Label(LocalizedStringKey("Import GGUF"), systemImage: "tray.and.arrow.down.fill")
+                }
+                Button(action: { presentImporter(.ggufFolder) }) {
+                    Label(LocalizedStringKey("Import GGUF Folder"), systemImage: "folder.badge.plus")
                 }
                 if supportsMLXImport {
                     Button(action: { presentImporter(.mlx) }) {
@@ -805,14 +1238,8 @@ struct ExploreView: View {
         #endif
     }
 
-    private func ggufAllowedTypes() -> [UTType] {
-        var types: [UTType] = []
-        if let gguf = UTType(filenameExtension: "gguf") { types.append(gguf) }
-        types.append(.data)
-        #if !os(tvOS)
-        types.append(.folder)
-        #endif
-        return types
+    private func ggufFileAllowedTypes() -> [UTType] {
+        ExploreImportRequest.ggufFiles.allowedContentTypes
     }
 
     @MainActor
@@ -824,6 +1251,8 @@ struct ExploreView: View {
         switch format {
         case .gguf:
             presentMacGGUFImporter()
+        case .ggufFolder:
+            presentMacGGUFImporter()
         case .mlx:
             guard supportsMLXImport else { return }
             presentMacMLXImporter()
@@ -831,9 +1260,24 @@ struct ExploreView: View {
 #else
         switch format {
         case .gguf:
-            showGGUFImporter = true
+            let request: ExploreImportRequest = .ggufFiles
+            activeImportRequest = nil
+            DispatchQueue.main.async {
+                self.activeImportRequest = request
+            }
+        case .ggufFolder:
+            let request: ExploreImportRequest = .ggufFolder
+            activeImportRequest = nil
+            DispatchQueue.main.async {
+                self.activeImportRequest = request
+            }
         case .mlx:
-            if supportsMLXImport { showMLXImporter = true }
+            guard supportsMLXImport else { return }
+            let request: ExploreImportRequest = .mlxFolder
+            activeImportRequest = nil
+            DispatchQueue.main.async {
+                self.activeImportRequest = request
+            }
         }
 #endif
     }
@@ -842,7 +1286,7 @@ struct ExploreView: View {
     @MainActor
     private func presentMacGGUFImporter() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = ggufAllowedTypes()
+        panel.allowedContentTypes = ggufFileAllowedTypes()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
@@ -872,6 +1316,10 @@ struct ExploreView: View {
     @MainActor
     private func open(_ record: ModelRecord) async {
         if openingModelId == record.id { return }
+        if record.formats.contains(.afm), let reason = afmUnavailableReasonForOpen {
+            vm.searchError = reason
+            return
+        }
         openingModelId = record.id
         defer { openingModelId = nil }
 
@@ -885,23 +1333,31 @@ struct ExploreView: View {
         loadingDetail = false
     }
 
+    private var afmUnavailableReasonForOpen: String? {
+        guard afmAvailabilityState.isSupportedDevice else {
+            return String(localized: "Apple Foundation Models are not supported on this device.")
+        }
+        guard !afmAvailabilityState.isAvailableNow else { return nil }
+        return afmAvailabilityState.unavailableReason?.message
+    }
+
 #if canImport(LeapSDK)
     @MainActor
     private func openLeap(entry: LeapCatalogEntry, url: URL, runner: ModelRunner) {
-        chatVM.activate(runner: runner, url: url)
-        let architectureLabels = LocalModel.architectureLabels(for: url, format: .slm, modelID: entry.slug)
-        let local = modelManager.downloadedModels.first(where: { $0.modelID == entry.slug }) ??
+        let architectureLabels = LocalModel.architectureLabels(for: url, format: .et, modelID: entry.modelID)
+        let isVision = entry.isVision || LeapCatalogService.bundleLikelyVision(at: url)
+        let local = modelManager.downloadedModels.first(where: { $0.modelID == entry.modelID && $0.quant == entry.quantization }) ??
             LocalModel(
-                modelID: entry.slug,
+                modelID: entry.modelID,
                 name: entry.displayName,
                 url: url,
-                quant: "",
+                quant: entry.quantization,
                 architecture: architectureLabels.display,
                 architectureFamily: architectureLabels.family,
-                format: .slm,
+                format: .et,
                 sizeGB: Double(entry.sizeBytes) / 1_073_741_824.0,
-                isMultimodal: false,
-                isToolCapable: false,
+                isMultimodal: isVision,
+                isToolCapable: true,
                 isDownloaded: true,
                 downloadDate: Date(),
                 lastUsedDate: nil,
@@ -909,7 +1365,10 @@ struct ExploreView: View {
                 totalLayers: 0,
                 moeInfo: nil
             )
-        modelManager.updateSettings(ModelSettings.default(for: .slm), for: local)
+        var settings = modelManager.settings(for: local)
+        settings.contextLength = max(1, settings.contextLength)
+        chatVM.activate(runner: runner, url: url, settings: settings)
+        modelManager.updateSettings(settings, for: local)
         modelManager.markModelUsed(local)
         tabRouter.selection = .chat
     }
@@ -1012,10 +1471,11 @@ private extension ModelRecord {
 struct ExploreDetailView: View, Identifiable {
     let id = UUID()
     let detail: ModelDetails
+    let downloadController: DownloadController
+    let remoteDownloadTargetBackendID: RemoteBackend.ID?
     @EnvironmentObject var modelManager: AppModelManager
     @EnvironmentObject var chatVM: ChatVM
     @EnvironmentObject var tabRouter: TabRouter
-    @EnvironmentObject var downloadController: DownloadController
     @Environment(\.dismiss) private var dismiss
 #if os(macOS)
     @Environment(\.macModalDismiss) private var macModalDismiss
@@ -1023,7 +1483,11 @@ struct ExploreDetailView: View, Identifiable {
     @State private var progressMap: [String: Double] = [:]
     @State private var speedMap: [String: Double] = [:]
     @State private var downloading: Set<String> = []
+    @State private var remoteDownloadStatusMap: [String: RemoteBackendAPI.LMStudioDownloadJobStatus] = [:]
+    @State private var remoteDownloadErrorMap: [String: String] = [:]
+    @State private var remotePollingTasks: [String: Task<Void, Never>] = [:]
     @AppStorage("huggingFaceToken") private var huggingFaceToken = ""
+    @AppStorage("offGrid") private var offGrid = false
     @State private var quantSort: QuantSortOption = .quant
     @State private var metaVersion: Int = 0
 
@@ -1032,6 +1496,21 @@ struct ExploreDetailView: View, Identifiable {
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
                     heroHeader
+
+                    if let remoteBackend = remoteDownloadTargetBackend {
+                        infoCard(title: LocalizedStringKey("Remote endpoint download mode")) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(String.localizedStringWithFormat(String(localized: "New downloads from this screen will be sent to %@."), remoteBackend.name))
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                if let unavailable = remoteModeUnavailableReason {
+                                    Label(unavailable, systemImage: "exclamationmark.triangle.fill")
+                                        .font(.caption)
+                                        .foregroundStyle(.orange)
+                                }
+                            }
+                        }
+                    }
 
                     infoCard(title: LocalizedStringKey("Available Quantizations"), trailing: {
                         Picker(LocalizedStringKey("Sort"), selection: $quantSort) {
@@ -1044,7 +1523,7 @@ struct ExploreDetailView: View, Identifiable {
                         .accessibilityLabel(LocalizedStringKey("Sort quantizations"))
                     }) {
                         if eligibleQuants.isEmpty {
-                            Text(LocalizedStringKey("No ≥Q3 quants are available for this model."))
+                            Text(LocalizedStringKey("No quant files available"))
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         } else {
@@ -1071,8 +1550,14 @@ struct ExploreDetailView: View, Identifiable {
                 if downloadController.items.contains(where: { $0.detail.id == detail.id }) {
                     downloadController.showOverlay = false
                 }
+                if remoteDownloadTargetBackendID != nil && remoteDownloadTargetBackend == nil {
+                    modelManager.clearLMStudioRemoteDownloadTarget()
+                }
             }
             .task(id: detail.id) {
+                if detail.quants.contains(where: { $0.format == .afm }) {
+                    return
+                }
                 // Ensure Hub metadata (gguf.architecture) is cached for badges like MoE
                 let token = huggingFaceToken.trimmingCharacters(in: .whitespacesAndNewlines)
                 _ = await HuggingFaceMetadataCache.fetchAndCache(repoId: detail.id, token: token.isEmpty ? nil : token)
@@ -1082,24 +1567,17 @@ struct ExploreDetailView: View, Identifiable {
                 if !downloadController.items.isEmpty {
                     downloadController.showOverlay = true
                 }
-            }
-            .onReceive(downloadController.$items) { items in
-                for item in items where item.detail.id == detail.id {
-                    progressMap[item.quant.label] = item.progress
-                    speedMap[item.quant.label] = item.speed
-                    if item.completed {
-                        downloading.remove(item.quant.label)
-                    } else if item.error != nil && !item.error!.isRetryable {
-                        // Remove permanently failed downloads from downloading state
-                        downloading.remove(item.quant.label)
-                    }
-                }
+                cancelAllRemotePolling()
             }
         }
     }
 
     private var eligibleQuants: [QuantInfo] {
-        detail.quants.filter { $0.isHighBitQuant }
+        detail.quants
+    }
+
+    private var lowBitOnlyRepository: Bool {
+        !detail.quants.isEmpty && detail.quants.allSatisfy(\.isLowBitQuant)
     }
 
     private var sortedQuants: [QuantInfo] {
@@ -1115,6 +1593,36 @@ struct ExploreDetailView: View, Identifiable {
         }
     }
 
+    private var remoteDownloadTargetBackend: RemoteBackend? {
+        guard let remoteDownloadTargetBackendID else { return nil }
+        guard let backend = modelManager.remoteBackend(withID: remoteDownloadTargetBackendID),
+              backend.endpointType == .lmStudio else {
+            return nil
+        }
+        return backend
+    }
+
+    private var isRemoteDownloadMode: Bool {
+        remoteDownloadTargetBackend != nil
+    }
+
+    private var remoteModeUnavailableReason: String? {
+        guard isRemoteDownloadMode else { return nil }
+        if offGrid {
+            return String(localized: "Remote access is disabled in Off-Grid mode.")
+        }
+        guard let backend = remoteDownloadTargetBackend else {
+            return String(localized: "Remote endpoint download target is unavailable.")
+        }
+        if let summary = backend.lastConnectionSummary, summary.kind == .failure {
+            return summary.displayLine
+        }
+        if let error = backend.lastError?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
+            return error
+        }
+        return nil
+    }
+
     private func quantSortKey(_ q: QuantInfo) -> (Int, Int, Int, Int, Int, String) {
         // Lower tuple compares first; smaller values rank higher
         let label = q.label.uppercased()
@@ -1123,8 +1631,9 @@ struct ExploreDetailView: View, Identifiable {
             switch q.format {
             case .gguf: return 0
             case .mlx: return 5
-            case .slm: return 6
-            case .apple: return 7
+            case .et: return 6
+            case .ane: return 7
+            case .afm: return 8
             }
         }()
 
@@ -1171,13 +1680,15 @@ struct ExploreDetailView: View, Identifiable {
     }
 
     private func fileURL(for info: QuantInfo) -> URL {
-        var dir = InstalledModelsStore.baseDir(for: info.format, modelID: detail.id)
-        dir.appendPathComponent(info.downloadURL.lastPathComponent)
-        return dir
+        InstalledModelsStore.localModelURL(for: info, modelID: detail.id)
     }
 
     @MainActor
     private func download(info: QuantInfo) async {
+        if isRemoteDownloadMode {
+            await startRemoteDownload(info: info)
+            return
+        }
         downloading.insert(info.label)
         progressMap[info.label] = 0
         speedMap[info.label] = 0
@@ -1185,9 +1696,185 @@ struct ExploreDetailView: View, Identifiable {
     }
 
     private func cancelDownload(label: String) {
+        guard !isRemoteDownloadMode else { return }
         let id = "\(detail.id)-\(label)"
         downloadController.cancel(itemID: id)
         downloading.remove(label)
+    }
+
+    @MainActor
+    private func startRemoteDownload(info: QuantInfo) async {
+        let label = info.label
+        remoteDownloadErrorMap[label] = nil
+
+        guard let backend = remoteDownloadTargetBackend else {
+            remoteDownloadErrorMap[label] = String(localized: "Remote endpoint download target is unavailable.")
+            return
+        }
+
+        guard info.format == .gguf else {
+            remoteDownloadErrorMap[label] = String(localized: "Remote endpoint downloads currently support GGUF quantizations only.")
+            return
+        }
+
+        if let unavailableReason = remoteModeUnavailableReason {
+            remoteDownloadErrorMap[label] = unavailableReason
+            return
+        }
+
+        downloading.insert(label)
+        progressMap[label] = 0
+        speedMap[label] = 0
+
+        let modelReference = remoteDownloadModelReference()
+        do {
+            let status = try await RemoteBackendAPI.startLMStudioDownload(
+                for: backend,
+                model: modelReference,
+                quantization: info.label
+            )
+            applyRemoteDownloadStatus(status, for: label)
+
+            if status.status.isTerminal {
+                finalizeRemoteDownloadStatus(status, for: label, backendID: backend.id)
+                return
+            }
+
+            guard let jobID = status.jobID?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !jobID.isEmpty else {
+                if status.status == .completed || status.status == .alreadyDownloaded {
+                    finalizeRemoteDownloadStatus(status, for: label, backendID: backend.id)
+                    return
+                }
+                downloading.remove(label)
+                remoteDownloadErrorMap[label] = String(localized: "Remote endpoint did not return a download job ID.")
+                return
+            }
+
+            startRemoteDownloadPolling(backendID: backend.id, quantLabel: label, jobID: jobID)
+        } catch {
+            downloading.remove(label)
+            remoteDownloadErrorMap[label] = RemoteBackend.localizedErrorDescription(for: error)
+        }
+    }
+
+    @MainActor
+    private func applyRemoteDownloadStatus(_ status: RemoteBackendAPI.LMStudioDownloadJobStatus, for quantLabel: String) {
+        remoteDownloadStatusMap[quantLabel] = status
+        if let progress = status.progress {
+            progressMap[quantLabel] = progress
+        }
+        if let speed = status.bytesPerSecond {
+            speedMap[quantLabel] = speed
+        }
+        switch status.status {
+        case .downloading, .paused:
+            downloading.insert(quantLabel)
+        case .completed, .alreadyDownloaded, .failed:
+            downloading.remove(quantLabel)
+        }
+        if status.status != .failed {
+            remoteDownloadErrorMap[quantLabel] = nil
+        }
+    }
+
+    @MainActor
+    private func finalizeRemoteDownloadStatus(_ status: RemoteBackendAPI.LMStudioDownloadJobStatus,
+                                              for quantLabel: String,
+                                              backendID: RemoteBackend.ID) {
+        downloading.remove(quantLabel)
+        remotePollingTasks[quantLabel]?.cancel()
+        remotePollingTasks[quantLabel] = nil
+
+        switch status.status {
+        case .completed, .alreadyDownloaded:
+            Task { await refreshRemoteBackendModels(backendID: backendID) }
+        case .failed:
+            if remoteDownloadErrorMap[quantLabel] == nil {
+                remoteDownloadErrorMap[quantLabel] = String(localized: "Remote model download failed.")
+            }
+        case .downloading, .paused:
+            break
+        }
+    }
+
+    @MainActor
+    private func startRemoteDownloadPolling(backendID: RemoteBackend.ID, quantLabel: String, jobID: String) {
+        remotePollingTasks[quantLabel]?.cancel()
+        remotePollingTasks[quantLabel] = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if Task.isCancelled { break }
+
+                let backend = await MainActor.run(resultType: RemoteBackend?.self) {
+                    modelManager.remoteBackend(withID: backendID)
+                }
+                guard let backend else {
+                    await MainActor.run {
+                        downloading.remove(quantLabel)
+                        remoteDownloadErrorMap[quantLabel] = String(localized: "Remote endpoint download target is unavailable.")
+                        remotePollingTasks[quantLabel] = nil
+                    }
+                    return
+                }
+
+                do {
+                    let status = try await RemoteBackendAPI.fetchLMStudioDownloadStatus(for: backend, jobID: jobID)
+                    await MainActor.run {
+                        applyRemoteDownloadStatus(status, for: quantLabel)
+                    }
+                    if status.status.isTerminal {
+                        await MainActor.run {
+                            finalizeRemoteDownloadStatus(status, for: quantLabel, backendID: backendID)
+                        }
+                        return
+                    }
+                } catch {
+                    await MainActor.run {
+                        downloading.remove(quantLabel)
+                        remoteDownloadErrorMap[quantLabel] = RemoteBackend.localizedErrorDescription(for: error)
+                        remotePollingTasks[quantLabel] = nil
+                    }
+                    return
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func refreshRemoteBackendModels(backendID: RemoteBackend.ID) async {
+        await modelManager.fetchRemoteModels(for: backendID)
+    }
+
+    private func cancelAllRemotePolling() {
+        for (_, task) in remotePollingTasks {
+            task.cancel()
+        }
+        remotePollingTasks.removeAll()
+    }
+
+    private func remoteDownloadModelReference() -> String {
+        let trimmedModelID = detail.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedModelID.lowercased().hasPrefix("http://") || trimmedModelID.lowercased().hasPrefix("https://") {
+            return trimmedModelID
+        }
+        return "https://huggingface.co/\(trimmedModelID)"
+    }
+
+    private func remoteStatusText(for quantLabel: String) -> String? {
+        guard let status = remoteDownloadStatusMap[quantLabel]?.status else { return nil }
+        switch status {
+        case .downloading:
+            return String(localized: "Downloading")
+        case .paused:
+            return String(localized: "Paused")
+        case .completed:
+            return String(localized: "Downloaded")
+        case .failed:
+            return String(localized: "Failed")
+        case .alreadyDownloaded:
+            return String(localized: "Downloaded")
+        }
     }
 
     private func close() {
@@ -1217,15 +1904,17 @@ struct ExploreDetailView: View, Identifiable {
                 }
             case .mlx:
                 isVision = MLXBridge.isVLMModel(at: url)
-            case .slm:
+            case .et:
                 let slug = detail.id.isEmpty ? url.deletingPathExtension().lastPathComponent : detail.id
                 isVision = LeapCatalogService.isVisionQuantizationSlug(slug)
-            case .apple:
+            case .ane:
+                isVision = false
+            case .afm:
                 isVision = false
             }
         }
         // For capabilities on open, check hub/template hints with a single call; fallback to local scan
-        var isToolCapable = await ToolCapabilityDetector.isToolCapable(repoId: detail.id, token: token)
+        var isToolCapable = info.format == .afm ? true : await ToolCapabilityDetector.isToolCapable(repoId: detail.id, token: token)
         if isToolCapable == false {
             isToolCapable = ToolCapabilityDetector.isToolCapableLocal(url: url, format: info.format)
         }
@@ -1234,7 +1923,7 @@ struct ExploreDetailView: View, Identifiable {
         switch info.format {
         case .gguf, .mlx:
             moeInfo = ModelScanner.moeInfo(for: url, format: info.format)
-        case .slm, .apple:
+        case .et, .ane, .afm:
             moeInfo = nil
         }
         let architectureLabels = LocalModel.architectureLabels(for: url, format: info.format, modelID: detail.id)
@@ -1243,6 +1932,7 @@ struct ExploreDetailView: View, Identifiable {
             name: name,
             url: url,
             quant: info.label,
+            parameterCountLabel: detail.parameterCountLabel,
             architecture: architectureLabels.display,
             architectureFamily: architectureLabels.family,
             format: info.format,
@@ -1258,6 +1948,13 @@ struct ExploreDetailView: View, Identifiable {
         )
         let settings = modelManager.settings(for: local)
         await chatVM.unload()
+        if info.format == .afm,
+           let reason = AppleFoundationModelAvailability.current.unavailableReason,
+           !AppleFoundationModelAvailability.isAvailableNow {
+            modelManager.loadedModel = nil
+            remoteDownloadErrorMap[info.label] = reason.message
+            return
+        }
         if await chatVM.load(url: url, settings: settings, format: info.format) {
             // Persist effective settings for last used
             modelManager.updateSettings(settings, for: local)
@@ -1283,39 +1980,28 @@ extension ExploreView {
         do {
             let fm = FileManager.default
             let now = Date()
-            // Flatten: include gguf files directly selected and any gguf within selected folders
-            var ggufFiles: [URL] = []
-            for u in urls {
-                let scoped = u.startAccessingSecurityScopedResource()
-                defer { if scoped { u.stopAccessingSecurityScopedResource() } }
-                var isDir: ObjCBool = false
-                if fm.fileExists(atPath: u.path, isDirectory: &isDir), isDir.boolValue {
-                    if let items = try? fm.contentsOfDirectory(at: u, includingPropertiesForKeys: nil) {
-                        ggufFiles.append(contentsOf: items.filter { $0.pathExtension.lowercased() == "gguf" })
-                    }
-                } else if u.pathExtension.lowercased() == "gguf" {
-                    ggufFiles.append(u)
+            let scopedRoots = urls.filter { $0.startAccessingSecurityScopedResource() }
+            defer {
+                for url in scopedRoots {
+                    url.stopAccessingSecurityScopedResource()
                 }
             }
-            // Partition base weights vs projector files
-            func isProjector(_ url: URL) -> Bool {
-                let name = url.lastPathComponent.lowercased()
-                return name.contains("mmproj") || name.contains("projector") || name.contains("image_proj")
-            }
-            let baseWeights = ggufFiles.filter { !isProjector($0) }
-            let projectors = ggufFiles.filter { isProjector($0) }
-            
-            guard !baseWeights.isEmpty else {
+
+            let importPlans = GGUFImportSupport.modelImportPlans(from: urls, fileManager: fm)
+
+            guard !importPlans.isEmpty else {
                 importError = "No GGUF model files found in selection."
                 return
             }
 
-            for weight in baseWeights {
-                let scopedWeight = weight.startAccessingSecurityScopedResource()
-                defer { if scopedWeight { weight.stopAccessingSecurityScopedResource() } }
-
+            for plan in importPlans {
                 // Derive repo name (strip quant token from filename when possible)
-                let baseName = weight.deletingPathExtension().lastPathComponent
+                let normalizedWeightName = URL(
+                    fileURLWithPath: GGUFShardNaming.strippedShardPath(plan.primaryWeight.lastPathComponent)
+                )
+                .deletingPathExtension()
+                .lastPathComponent
+                let baseName = normalizedWeightName
                 let quantToken = QuantExtractor.shortLabel(from: baseName, format: .gguf)
                 let repoName = deriveRepoName(from: baseName, removing: quantToken)
                 let modelID = "local/\(repoName)"
@@ -1323,25 +2009,41 @@ extension ExploreView {
                 let destDir = InstalledModelsStore.baseDir(for: .gguf, modelID: modelID)
                 try fm.createDirectory(at: destDir, withIntermediateDirectories: true)
 
-                // Copy weight file
-                let destWeight = uniqueDestination(for: destDir.appendingPathComponent(weight.lastPathComponent))
-                try safeCopy(from: weight, to: destWeight)
-
-                // Copy any selected projector files alongside
-                for proj in projectors {
-                    let scopedProj = proj.startAccessingSecurityScopedResource()
-                    defer { if scopedProj { proj.stopAccessingSecurityScopedResource() } }
-
-                    let destProj = uniqueDestination(for: destDir.appendingPathComponent(proj.lastPathComponent))
-                    try? safeCopy(from: proj, to: destProj)
+                var copiedWeights: [URL] = []
+                copiedWeights.reserveCapacity(plan.weightFiles.count)
+                for weight in plan.weightFiles {
+                    let destWeight = uniqueDestination(for: destDir.appendingPathComponent(weight.lastPathComponent))
+                    try safeCopy(from: weight, to: destWeight)
+                    copiedWeights.append(destWeight)
                 }
 
+                var copiedProjector: URL? = nil
+                if let projector = plan.projector {
+                    let destination = uniqueDestination(for: destDir.appendingPathComponent(projector.lastPathComponent))
+                    try safeCopy(from: projector, to: destination)
+                    copiedProjector = destination
+                }
+
+                for sidecar in plan.sidecars {
+                    let destination = destDir.appendingPathComponent(sidecar.lastPathComponent)
+                    try safeCopy(from: sidecar, to: destination)
+                }
+
+                GGUFImportSupport.writeArtifactsJSON(
+                    in: destDir,
+                    weightFiles: copiedWeights,
+                    projector: copiedProjector
+                )
+
                 // Resolve canonical URL (prefers first valid .gguf inside directories)
-                let canonical = InstalledModelsStore.canonicalURL(for: destWeight, format: .gguf)
+                let canonical = InstalledModelsStore.canonicalURL(for: copiedWeights.first ?? destDir, format: .gguf)
                 // Compute metadata
-                let size = (try? fm.attributesOfItem(atPath: canonical.path)[.size] as? Int64) ?? 0
+                let size = copiedWeights.reduce(into: Int64(0)) { total, file in
+                    let bytes = (try? fm.attributesOfItem(atPath: file.path)[.size] as? Int64) ?? 0
+                    total += bytes
+                }
                 let layers = ModelScanner.layerCount(for: canonical, format: .gguf)
-                
+
                 // Vision detection: check for external projector OR embedded projector (e.g. Llama 3.2 Vision)
                 var isVision = ProjectorLocator.hasProjectorFile(in: canonical.deletingLastPathComponent())
                 if !isVision {
@@ -1352,6 +2054,13 @@ extension ExploreView {
                 let moeInfo = ModelScanner.moeInfo(for: canonical, format: .gguf) ?? .denseFallback
                 // Persist MoE cache asynchronously
                 Task { await MoEDetectionStore.shared.update(info: moeInfo, modelID: modelID, quantLabel: quantToken) }
+                let projectorName = copiedProjector?.lastPathComponent ?? "none"
+                let sidecarNames = plan.sidecars.map(\.lastPathComponent).sorted().joined(separator: ",")
+                Task {
+                    await logger.log(
+                        "[GGUFImport] model=\(baseName) weights=\(copiedWeights.map(\.lastPathComponent).joined(separator: ",")) projector=\(projectorName) sidecars=[\(sidecarNames)]"
+                    )
+                }
 
                 let installed = InstalledModel(
                     modelID: modelID,
@@ -1525,6 +2234,311 @@ extension ExploreView {
     }
 }
 
+enum GGUFImportSupport {
+    struct ModelImportPlan {
+        let primaryWeight: URL
+        let weightFiles: [URL]
+        let projector: URL?
+        let sidecars: [URL]
+    }
+
+    private static let projectorKeywords = ["mmproj", "projector", "image_proj"]
+    private static let sidecarExtensions = Set(["json", "jinja"])
+    private static let sidecarFilenames = Set(["chat_template.txt"])
+    private static let excludedSidecarNames = Set(["artifacts.json", "ds_markers.cache.json"])
+
+    static func isImportCandidate(_ url: URL) -> Bool {
+        isWeightFile(url) || isProjector(url) || isSidecar(url)
+    }
+
+    static func isProjector(_ url: URL) -> Bool {
+        let lowerName = url.lastPathComponent.lowercased()
+        return url.pathExtension.lowercased() == "mmproj"
+            || projectorKeywords.contains(where: { lowerName.contains($0) })
+    }
+
+    static func isSidecar(_ url: URL) -> Bool {
+        let lowerName = url.lastPathComponent.lowercased()
+        if excludedSidecarNames.contains(lowerName) { return false }
+        if sidecarFilenames.contains(lowerName) { return true }
+        return sidecarExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    static func isWeightFile(_ url: URL) -> Bool {
+        url.pathExtension.lowercased() == "gguf" && !isProjector(url)
+    }
+
+    static func collectImportableFiles(from roots: [URL], fileManager: FileManager = .default) -> [URL] {
+        var collected: [String: URL] = [:]
+
+        func addIfSupported(_ url: URL) {
+            guard isImportCandidate(url) else { return }
+            collected[url.standardizedFileURL.path] = url
+        }
+
+        for root in roots {
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: root.path, isDirectory: &isDirectory) else { continue }
+
+            if isDirectory.boolValue {
+                let enumerator = fileManager.enumerator(
+                    at: root,
+                    includingPropertiesForKeys: [.isRegularFileKey],
+                    options: [.skipsHiddenFiles]
+                )
+                while let next = enumerator?.nextObject() as? URL {
+                    if let values = try? next.resourceValues(forKeys: [.isRegularFileKey]),
+                       values.isRegularFile == true {
+                        addIfSupported(next)
+                    }
+                }
+            } else {
+                addIfSupported(root)
+            }
+        }
+
+        return collected.values.sorted { $0.path < $1.path }
+    }
+
+    static func modelImportPlans(from roots: [URL], fileManager: FileManager = .default) -> [ModelImportPlan] {
+        let selectedWeights = collectSelectedWeightFiles(from: roots, fileManager: fileManager)
+        guard !selectedWeights.isEmpty else { return [] }
+
+        var grouped: [String: [URL]] = [:]
+        for weight in selectedWeights {
+            let key = GGUFShardNaming.splitGroupKey(forPath: weight.path) ?? "single:\(weight.standardizedFileURL.path)"
+            grouped[key, default: []].append(weight)
+        }
+
+        return grouped.values.compactMap { weights in
+            let orderedWeights = orderedWeightFiles(weights)
+            guard let primaryWeight = orderedWeights.first else { return nil }
+            let scopeDirectory = primaryWeight.deletingLastPathComponent()
+            let scopeFiles = scopeFiles(in: scopeDirectory, fileManager: fileManager)
+            let projectors = scopeFiles.filter(isProjector)
+            let projector = matchedProjector(for: orderedWeights, among: projectors, directory: scopeDirectory)
+            let sidecars = deduplicatedSidecars(from: scopeFiles.filter(isSidecar))
+            return ModelImportPlan(
+                primaryWeight: primaryWeight,
+                weightFiles: orderedWeights,
+                projector: projector,
+                sidecars: sidecars
+            )
+        }
+        .sorted { $0.primaryWeight.path < $1.primaryWeight.path }
+    }
+
+    @discardableResult
+    static func writeArtifactsJSON(in directory: URL, weightFiles: [URL], projector: URL?) -> URL {
+        let artifactsURL = directory.appendingPathComponent("artifacts.json")
+        var payload: [String: Any] = [:]
+        if let primaryWeight = weightFiles.first?.lastPathComponent {
+            payload["weights"] = primaryWeight
+        }
+        if weightFiles.count > 1 {
+            payload["weightShards"] = weightFiles.map(\.lastPathComponent)
+        }
+        payload["mmproj"] = projector?.lastPathComponent ?? NSNull()
+        payload["mmprojChecked"] = true
+        if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]) {
+            try? data.write(to: artifactsURL, options: [.atomic])
+        }
+        return artifactsURL
+    }
+
+    private static func collectSelectedWeightFiles(from roots: [URL], fileManager: FileManager) -> [URL] {
+        var collected: [String: URL] = [:]
+
+        func add(_ url: URL) {
+            collected[url.standardizedFileURL.path] = url
+        }
+
+        for root in roots {
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: root.path, isDirectory: &isDirectory) else { continue }
+
+            if isDirectory.boolValue {
+                let enumerator = fileManager.enumerator(
+                    at: root,
+                    includingPropertiesForKeys: [.isRegularFileKey],
+                    options: [.skipsHiddenFiles]
+                )
+                while let next = enumerator?.nextObject() as? URL {
+                    if let values = try? next.resourceValues(forKeys: [.isRegularFileKey]),
+                       values.isRegularFile == true,
+                       isWeightFile(next) {
+                        add(next)
+                    }
+                }
+                continue
+            }
+
+            guard isWeightFile(root) else { continue }
+            for expanded in siblingWeights(for: root, fileManager: fileManager) {
+                add(expanded)
+            }
+        }
+
+        return collected.values.sorted { $0.path < $1.path }
+    }
+
+    private static func siblingWeights(for weight: URL, fileManager: FileManager) -> [URL] {
+        guard let split = GGUFShardNaming.parseSplitFilename(weight.lastPathComponent) else {
+            return [weight]
+        }
+        let directory = weight.deletingLastPathComponent()
+        let contents = (try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+        let siblings = contents.filter { candidate in
+            guard isWeightFile(candidate),
+                  let candidateSplit = GGUFShardNaming.parseSplitFilename(candidate.lastPathComponent) else {
+                return false
+            }
+            return candidateSplit.baseStem.caseInsensitiveCompare(split.baseStem) == .orderedSame
+                && candidateSplit.partCount == split.partCount
+        }
+        return siblings.isEmpty ? [weight] : orderedWeightFiles(siblings)
+    }
+
+    private static func orderedWeightFiles(_ weights: [URL]) -> [URL] {
+        weights.sorted { lhs, rhs in
+            let lhsSplit = GGUFShardNaming.parseSplitFilename(lhs.lastPathComponent)
+            let rhsSplit = GGUFShardNaming.parseSplitFilename(rhs.lastPathComponent)
+            switch (lhsSplit, rhsSplit) {
+            case let (l?, r?):
+                if l.partIndex != r.partIndex {
+                    return l.partIndex < r.partIndex
+                }
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            default:
+                break
+            }
+            return lhs.lastPathComponent.localizedCaseInsensitiveCompare(rhs.lastPathComponent) == .orderedAscending
+        }
+    }
+
+    private static func scopeFiles(in directory: URL, fileManager: FileManager) -> [URL] {
+        guard let contents = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
+            return []
+        }
+
+        var files: [URL] = []
+        for entry in contents.sorted(by: { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }) {
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: entry.path, isDirectory: &isDirectory) else { continue }
+            if isDirectory.boolValue {
+                let subfiles = (try? fileManager.contentsOfDirectory(at: entry, includingPropertiesForKeys: nil)) ?? []
+                files.append(contentsOf: subfiles.filter { candidate in
+                    var nestedIsDirectory: ObjCBool = false
+                    guard fileManager.fileExists(atPath: candidate.path, isDirectory: &nestedIsDirectory) else { return false }
+                    return !nestedIsDirectory.boolValue
+                })
+            } else {
+                files.append(entry)
+            }
+        }
+        return files
+    }
+
+    private static func deduplicatedSidecars(from sidecars: [URL]) -> [URL] {
+        var byName: [String: URL] = [:]
+        for sidecar in sidecars.sorted(by: { $0.path < $1.path }) {
+            byName[sidecar.lastPathComponent.lowercased()] = byName[sidecar.lastPathComponent.lowercased()] ?? sidecar
+        }
+        return byName.values.sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }
+    }
+
+    private static func matchedProjector(for weights: [URL], among projectors: [URL], directory: URL) -> URL? {
+        guard !projectors.isEmpty else { return nil }
+
+        if let hinted = hintedProjector(in: directory, among: projectors) {
+            return hinted
+        }
+        if projectors.count == 1 {
+            return projectors[0]
+        }
+
+        let weightTokens = Set(normalizedTokens(for: weights.first))
+        let weightStem = normalizedStem(for: weights.first)
+
+        return projectors.sorted { lhs, rhs in
+            let leftScore = projectorScore(lhs, weightTokens: weightTokens, weightStem: weightStem)
+            let rightScore = projectorScore(rhs, weightTokens: weightTokens, weightStem: weightStem)
+            if leftScore != rightScore {
+                return leftScore > rightScore
+            }
+            return lhs.lastPathComponent.localizedCaseInsensitiveCompare(rhs.lastPathComponent) == .orderedAscending
+        }.first
+    }
+
+    private static func hintedProjector(in directory: URL, among projectors: [URL]) -> URL? {
+        let artifactsURL = directory.appendingPathComponent("artifacts.json")
+        guard let data = try? Data(contentsOf: artifactsURL),
+              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = payload["mmproj"] as? String,
+              !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+
+        let normalizedHint = raw.replacingOccurrences(of: "\\", with: "/")
+        let hintedName = URL(fileURLWithPath: normalizedHint).lastPathComponent.lowercased()
+        return projectors.first(where: { candidate in
+            let candidatePath = candidate.path.lowercased().replacingOccurrences(of: "\\", with: "/")
+            return candidate.lastPathComponent.lowercased() == hintedName
+                || candidatePath.hasSuffix(normalizedHint.lowercased())
+        })
+    }
+
+    private static func projectorScore(_ candidate: URL, weightTokens: Set<String>, weightStem: String) -> Int {
+        let candidateTokens = Set(normalizedTokens(for: candidate))
+        var score = weightTokens.intersection(candidateTokens).count * 100
+        let candidateStem = normalizedStem(for: candidate)
+        if !weightStem.isEmpty, !candidateStem.isEmpty {
+            if candidateStem.contains(weightStem) || weightStem.contains(candidateStem) {
+                score += 50
+            }
+        }
+        let upper = candidate.lastPathComponent.uppercased()
+        if upper.contains("F16") { score += 10 }
+        if upper.contains("F32") { score += 8 }
+        if candidate.pathExtension.lowercased() == "mmproj" { score += 5 }
+        return score
+    }
+
+    private static func normalizedStem(for url: URL?) -> String {
+        guard let url else { return "" }
+        let stripped = GGUFShardNaming.strippedShardPath(url.lastPathComponent)
+        return URL(fileURLWithPath: stripped)
+            .deletingPathExtension()
+            .lastPathComponent
+            .lowercased()
+    }
+
+    private static func normalizedTokens(for url: URL?) -> [String] {
+        let stopwords: Set<String> = [
+            "gguf", "mmproj", "projector", "image", "proj", "vision",
+            "clip", "siglip", "model", "main", "weights", "weight",
+            "f16", "f32", "bf16", "of"
+        ]
+        let raw = normalizedStem(for: url)
+            .replacingOccurrences(of: "[^a-z0-9]+", with: " ", options: .regularExpression)
+        return raw
+            .split(separator: " ")
+            .map(String.init)
+            .filter { token in
+                guard !token.isEmpty else { return false }
+                if stopwords.contains(token) { return false }
+                if token.allSatisfy(\.isNumber) { return false }
+                if token.hasPrefix("q"), token.dropFirst().contains(where: \.isNumber) {
+                    return false
+                }
+                return true
+            }
+    }
+}
+
 private extension ExploreDetailView {
     var heroHeader: some View {
         let name = (detail.id.split(separator: "/").last).map(String.init) ?? detail.id
@@ -1534,6 +2548,22 @@ private extension ExploreDetailView {
             Text(name)
                 .font(FontTheme.largeTitle)
                 .foregroundStyle(AppTheme.text)
+
+            if lowBitOnlyRepository {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(LocalizedStringKey("Low-quality quantizations"), systemImage: "exclamationmark.triangle.fill")
+                        .font(FontTheme.caption.weight(.semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.orange.opacity(0.16), in: Capsule())
+                        .foregroundStyle(Color.orange)
+
+                    Text(LocalizedStringKey("This repository only includes 1-bit or 2-bit quantizations. They may be degraded compared with higher-bit builds."))
+                        .font(FontTheme.caption)
+                        .foregroundStyle(AppTheme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
 
             if let owner, owner != name {
                 Text(owner)
@@ -1545,6 +2575,15 @@ private extension ExploreDetailView {
                 Text(summary)
                     .font(FontTheme.body)
                     .foregroundStyle(AppTheme.secondaryText)
+            }
+
+            if let parameterCountLabel = detail.parameterCountLabel, !parameterCountLabel.isEmpty {
+                Text(parameterCountLabel)
+                    .font(FontTheme.caption)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.orange.opacity(0.16), in: Capsule())
+                    .foregroundStyle(Color.orange)
             }
 
             if UIConstants.showMultimodalUI && detail.isVision {
@@ -1615,13 +2654,31 @@ private extension ExploreDetailView {
     }
 
     func quantTile(for quant: QuantInfo) -> some View {
-        QuantRow(
+        let remoteStatus = remoteDownloadStatusMap[quant.label]
+        let remoteCompleted = remoteStatus?.status == .completed || remoteStatus?.status == .alreadyDownloaded
+        let remoteUnsupportedReason: String? = {
+            guard isRemoteDownloadMode else { return nil }
+            if quant.format != .gguf {
+                return String(localized: "Remote endpoint downloads currently support GGUF quantizations only.")
+            }
+            if let unavailable = remoteModeUnavailableReason {
+                return unavailable
+            }
+            return nil
+        }()
+        let afmOpenUnavailableReason: String? = {
+            guard quant.format == .afm else { return nil }
+            let state = AppleFoundationModelAvailability.current
+            guard state.isSupportedDevice, !state.isAvailableNow else { return nil }
+            return state.unavailableReason?.message
+        }()
+        return QuantRow(
             canonicalID: detail.id,
             info: quant,
             progress: Binding(
                 get: {
-                    if let item = downloadController.items.first(where: { $0.detail.id == detail.id && $0.quant.label == quant.label }) {
-                        return item.progress
+                    if isRemoteDownloadMode {
+                        return progressMap[quant.label, default: 0]
                     }
                     return progressMap[quant.label, default: 0]
                 },
@@ -1629,14 +2686,22 @@ private extension ExploreDetailView {
             ),
             speed: Binding(
                 get: {
-                    if let item = downloadController.items.first(where: { $0.detail.id == detail.id && $0.quant.label == quant.label }) {
-                        return item.speed
+                    if isRemoteDownloadMode {
+                        return speedMap[quant.label, default: 0]
                     }
                     return speedMap[quant.label, default: 0]
                 },
                 set: { _ in }
             ),
             downloading: downloading.contains(quant.label),
+            remoteMode: isRemoteDownloadMode,
+            remoteStatusText: remoteStatusText(for: quant.label),
+            remoteErrorText: remoteDownloadErrorMap[quant.label],
+            remoteUnsupportedReason: remoteUnsupportedReason,
+            remoteCompleted: remoteCompleted,
+            openUnavailableReason: afmOpenUnavailableReason,
+            showsLowQualityMarker: quant.isLowBitQuant && !lowBitOnlyRepository,
+            downloadController: downloadController,
             openAction: { await useModel(info: quant) },
             downloadAction: { await download(info: quant) },
             cancelAction: { cancelDownload(label: quant.label) }
@@ -1654,46 +2719,200 @@ private extension ExploreDetailView {
     }
 }
 
+private struct QuantRowDownloadSnapshot: Equatable {
+    var isPresent = false
+    var progress = 0.0
+    var speed = 0.0
+    var status: DownloadJobState?
+    var errorDescription: String?
+    var isRetryableError = false
+    var canPause = false
+    var canResume = false
+    var completed = false
+
+    init() {}
+
+    init(item: DownloadController.Item) {
+        isPresent = true
+        // Quantize progress (0.5% steps) and speed (10 KB/s steps) so that
+        // removeDuplicates() in the Combine pipeline can actually filter out
+        // tiny fluctuations, reducing unnecessary SwiftUI view invalidations.
+        progress = (item.progress * 200).rounded() / 200
+        speed = (item.speed / 10_000).rounded() * 10_000
+        status = item.status
+        errorDescription = item.error?.localizedDescription
+        isRetryableError = item.error?.isRetryable == true
+        canPause = item.canPause
+        canResume = item.canResume || item.status == .paused
+        completed = item.completed || item.status == .completed
+    }
+}
+
+@MainActor
+private final class QuantRowDownloadObserver: ObservableObject {
+    @Published private(set) var snapshot = QuantRowDownloadSnapshot()
+
+    private var cancellable: AnyCancellable?
+    private var observedItemID: String?
+
+    func observe(downloadController: DownloadController, itemID: String) {
+        guard observedItemID != itemID else { return }
+        observedItemID = itemID
+        snapshot = Self.snapshot(for: itemID, in: downloadController.items)
+
+        cancellable = downloadController.$items
+            .map { Self.snapshot(for: itemID, in: $0) }
+            .removeDuplicates()
+            .throttle(for: .milliseconds(250), scheduler: RunLoop.main, latest: true)
+            .sink { [weak self] snapshot in
+                self?.snapshot = snapshot
+            }
+    }
+
+    private static func snapshot(for itemID: String, in items: [DownloadController.Item]) -> QuantRowDownloadSnapshot {
+        guard let item = items.first(where: { $0.id == itemID }) else {
+            return QuantRowDownloadSnapshot()
+        }
+        return QuantRowDownloadSnapshot(item: item)
+    }
+}
+
 struct QuantRow: View {
     let canonicalID: String
     let info: QuantInfo
     @Binding var progress: Double
     @Binding var speed: Double
     let downloading: Bool
+    let remoteMode: Bool
+    let remoteStatusText: String?
+    let remoteErrorText: String?
+    let remoteUnsupportedReason: String?
+    let remoteCompleted: Bool
+    let openUnavailableReason: String?
+    let showsLowQualityMarker: Bool
+    let downloadController: DownloadController
     let openAction: () async -> Void
     let downloadAction: () async -> Void
     let cancelAction: () -> Void
-    @EnvironmentObject var downloadController: DownloadController
     @EnvironmentObject var modelManager: AppModelManager
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @StateObject private var localDownloadObserver = QuantRowDownloadObserver()
+    @State private var showQuantTypeInfo = false
+
+    private static let byteCountFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useMB, .useGB, .useTB]
+        formatter.countStyle = .file
+        formatter.includesUnit = true
+        formatter.isAdaptive = true
+        formatter.zeroPadsFractionDigits = false
+        return formatter
+    }()
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(info.label)
-                        .font(FontTheme.body)
-                        .fontWeight(.medium)
-                        .foregroundStyle(AppTheme.text)
-                }
-                HStack(spacing: 6) {
-                    Text(sizeText)
-                        .font(FontTheme.caption)
-                        .foregroundStyle(AppTheme.secondaryText)
-                    Text(info.format.rawValue)
-                        .font(FontTheme.caption)
-                        .fontWeight(.bold)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(info.format.tagGradient)
-                        .clipShape(Capsule())
-                        .foregroundColor(.white)
-                }
+        Group {
+#if os(macOS)
+            regularLayout
+#else
+            if horizontalSizeClass == .compact {
+                compactLayout
+            } else {
+                regularLayout
             }
-            Spacer()
+#endif
+        }
+        .padding(.vertical, 4)
+        .onAppear {
+            localDownloadObserver.observe(downloadController: downloadController, itemID: itemID)
+        }
+        .onChangeCompat(of: itemID) { _, newValue in
+            localDownloadObserver.observe(downloadController: downloadController, itemID: newValue)
+        }
+    }
+
+    private var regularLayout: some View {
+        HStack(alignment: .center, spacing: 12) {
+            metadataBlock
+                .layoutPriority(1)
+            Spacer(minLength: 8)
             suitabilityBadge
             trailingControls
         }
-        .padding(.vertical, 4)
+    }
+
+    private var compactLayout: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            metadataBlock
+            if remoteMode && remoteStatusNeedsStackedLayout {
+                HStack(alignment: .center, spacing: 10) {
+                    suitabilityBadge
+                    Spacer(minLength: 8)
+                }
+                remoteTrailingControls
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                HStack(alignment: .center, spacing: 10) {
+                    suitabilityBadge
+                    Spacer(minLength: 8)
+                    trailingControls
+                }
+            }
+        }
+    }
+
+    private var metadataBlock: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(info.label)
+                    .font(FontTheme.body)
+                    .fontWeight(.medium)
+                    .foregroundStyle(AppTheme.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                quantTypeChip
+                if showsLowQualityMarker {
+                    lowQualityQuantBadge
+                }
+            }
+            .lineLimit(2)
+
+            HStack(spacing: 6) {
+                Text(sizeText)
+                    .font(FontTheme.caption)
+                    .foregroundStyle(AppTheme.secondaryText)
+
+                if info.isMultipart {
+                    Text("\(info.partCount) parts")
+                        .font(FontTheme.caption)
+                        .foregroundStyle(AppTheme.secondaryText)
+                }
+
+                formatBadge
+            }
+        }
+    }
+
+    private var lowQualityQuantBadge: some View {
+        Label(LocalizedStringKey("Low quality"), systemImage: "exclamationmark.triangle.fill")
+            .font(.caption2.weight(.semibold))
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .foregroundStyle(Color.orange)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Color.orange.opacity(0.12), in: Capsule())
+    }
+
+    private var formatBadge: some View {
+        Text(info.format.displayName)
+            .font(FontTheme.caption)
+            .fontWeight(.bold)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(info.format.tagGradient)
+            .clipShape(Capsule())
+            .foregroundColor(.white)
     }
 
     @ViewBuilder
@@ -1706,15 +2925,14 @@ struct QuantRow: View {
 
     @ViewBuilder
     private var trailingControls: some View {
-        if downloading {
+        if remoteMode {
+            remoteTrailingControls
+        } else if localDownloadSnapshot.isPresent && !localDownloadSnapshot.completed {
             VStack(spacing: 8) {
-                let itemID = "\(canonicalID)-\(info.label)"
-                let downloadItem = downloadController.items.first { $0.id == itemID }
-                
-                if let error = downloadItem?.error {
+                if let error = localDownloadSnapshot.errorDescription {
                     // Show error state
                     VStack {
-                        Text(error.localizedDescription)
+                        Text(error)
                             .font(.caption2)
                             .foregroundStyle(.red)
                             .multilineTextAlignment(.center)
@@ -1724,29 +2942,36 @@ struct QuantRow: View {
                 } else {
                     // Show normal progress
                     // Give the macOS layout extra width so the progress bar matches the tile span.
-                    ModernDownloadProgressView(progress: progress, speed: speed)
-                        .frame(width: downloadColumnWidth)
-                        .padding(.leading, 4)
+                    VStack(alignment: .trailing, spacing: 4) {
+                        if let localStatusText, !localStatusText.isEmpty {
+                            Text(localStatusText)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity, alignment: .trailing)
+                        }
+                        ModernDownloadProgressView(progress: displayedProgress, speed: displayedSpeed)
+                    }
+                    .frame(width: downloadColumnWidth)
+                    .padding(.leading, 4)
                 }
                 HStack {
                     Spacer()
-                    let itemID = "\(canonicalID)-\(info.label)"
-                    let downloadItem = downloadController.items.first { $0.id == itemID }
                     
-                    if let error = downloadItem?.error, error.isRetryable {
+                    if localDownloadSnapshot.isRetryableError {
                         // Show retry button for network errors
                         Button(action: { downloadController.resume(itemID: itemID) }) {
                             Image(systemName: "arrow.clockwise")
                         }
                         .buttonStyle(.borderless)
                         .help(LocalizedStringKey("Retry download"))
-                    } else if downloadController.paused.contains(itemID) {
+                    } else if localDownloadSnapshot.status == .paused || localDownloadSnapshot.canResume {
                         // Show resume button for intentionally paused downloads
                         Button(action: { downloadController.resume(itemID: itemID) }) {
                             Image(systemName: "play.fill")
                         }
                         .buttonStyle(.borderless)
-                    } else if downloadItem?.error == nil {
+                    } else if localDownloadSnapshot.canPause {
                         // Show pause button for active downloads
                         Button(action: { downloadController.pause(itemID: itemID) }) {
                             Image(systemName: "pause.fill")
@@ -1766,9 +2991,67 @@ struct QuantRow: View {
                 Label(LocalizedStringKey("Ready"), systemImage: "checkmark.circle.fill")
                     .labelStyle(.badge)
                     .foregroundColor(.green)
+                if let reason = openUnavailableReason, !reason.isEmpty {
+                    Text(reason)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .frame(width: downloadColumnWidth)
+                        .multilineTextAlignment(.center)
+                }
                 Button(LocalizedStringKey("Open")) { Task { await openAction() } }
                     .buttonStyle(.borderedProminent)
+                    .disabled(openUnavailableReason != nil)
             }
+        } else {
+            Button(LocalizedStringKey("Download")) { Task { await downloadAction() } }
+                .buttonStyle(.borderedProminent)
+        }
+    }
+
+    @ViewBuilder
+    private var remoteTrailingControls: some View {
+        let alignment: HorizontalAlignment = (isCompactLayout && remoteStatusNeedsStackedLayout) ? .leading : .trailing
+        let textAlignment: TextAlignment = (isCompactLayout && remoteStatusNeedsStackedLayout) ? .leading : .trailing
+        if let unsupported = remoteUnsupportedReason {
+            VStack(alignment: alignment, spacing: 4) {
+                Label(LocalizedStringKey("Unavailable"), systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(unsupported)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .multilineTextAlignment(textAlignment)
+            }
+        } else if downloading {
+            VStack(alignment: alignment, spacing: 6) {
+                if let remoteStatusText, !remoteStatusText.isEmpty {
+                    Text(remoteStatusText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(textAlignment)
+                }
+                ModernDownloadProgressView(progress: displayedProgress, speed: displayedSpeed)
+                    .frame(
+                        maxWidth: (isCompactLayout && remoteStatusNeedsStackedLayout) ? .infinity : downloadColumnWidth,
+                        alignment: (isCompactLayout && remoteStatusNeedsStackedLayout) ? .leading : .trailing
+                    )
+            }
+        } else if let remoteErrorText, !remoteErrorText.isEmpty {
+            VStack(alignment: alignment, spacing: 6) {
+                Text(remoteErrorText)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .lineLimit(3)
+                    .multilineTextAlignment(textAlignment)
+                Button(LocalizedStringKey("Retry")) { Task { await downloadAction() } }
+                    .buttonStyle(.bordered)
+            }
+        } else if remoteCompleted {
+            Label(LocalizedStringKey("Downloaded on Remote Endpoint"), systemImage: "checkmark.circle.fill")
+                .labelStyle(.badge)
+                .foregroundColor(.green)
         } else {
             Button(LocalizedStringKey("Download")) { Task { await downloadAction() } }
                 .buttonStyle(.borderedProminent)
@@ -1779,18 +3062,54 @@ struct QuantRow: View {
         modelManager.downloadedModels.contains { $0.modelID == canonicalID && $0.quant == info.label }
     }
 
+    private var itemID: String {
+        "\(canonicalID)-\(info.label)"
+    }
+
+    private var localDownloadSnapshot: QuantRowDownloadSnapshot {
+        localDownloadObserver.snapshot
+    }
+
+    private var displayedProgress: Double {
+        remoteMode ? progress : localDownloadSnapshot.progress
+    }
+
+    private var displayedSpeed: Double {
+        remoteMode ? speed : localDownloadSnapshot.speed
+    }
+
+    private var localStatusText: String? {
+        guard localDownloadSnapshot.errorDescription == nil else { return nil }
+        return localDownloadSnapshot.status?.statusLabelKey
+    }
+
     private var downloadColumnWidth: CGFloat {
 #if os(macOS)
         return 320
 #else
-        return 120
+        return 104
 #endif
     }
 
+    private var isCompactLayout: Bool {
+#if os(macOS)
+        return false
+#else
+        return horizontalSizeClass == .compact
+#endif
+    }
+
+    private var remoteStatusNeedsStackedLayout: Bool {
+        if let reason = remoteUnsupportedReason, !reason.isEmpty { return true }
+        if let error = remoteErrorText, !error.isEmpty { return true }
+        return downloading
+    }
+
     private var sizeText: String {
-        let mb = Double(info.sizeBytes) / 1_048_576.0
-        if mb > 1024 { return String(format: "%.1f GB", mb / 1024) }
-        return String(format: "%.0f MB", mb)
+        guard info.sizeBytes > 0 else {
+            return String(localized: "Unknown size")
+        }
+        return Self.byteCountFormatter.string(fromByteCount: info.sizeBytes)
     }
 
     private var speedText: String {
@@ -1800,18 +3119,77 @@ struct QuantRow: View {
         return String(format: "%.0f KB/s", kb)
     }
 
+    private var quantTypeChip: some View {
+        let descriptor = info.quantTypeDescriptor
+        return Button(action: { showQuantTypeInfo = true }) {
+            Text(descriptor.chipLabel)
+                .font(.caption2.weight(.semibold))
+                .lineLimit(1)
+                .foregroundStyle(AppTheme.secondaryText)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color.secondary.opacity(0.12), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(LocalizedStringKey("Quant type details"))
+        .popover(isPresented: $showQuantTypeInfo) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(descriptor.title)
+                    .font(.headline)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                ScrollView(.vertical, showsIndicators: true) {
+                    Text(descriptor.body)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 280)
+
+                HStack {
+                    Spacer()
+                    Button(LocalizedStringKey("OK")) { showQuantTypeInfo = false }
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+            .padding(12)
+            .lineLimit(nil)
+            .frame(maxWidth: 360, alignment: .leading)
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
+        }
+    }
+
 }
 
 #if canImport(LeapSDK)
 struct LeapRowView: View {
     let entry: LeapCatalogEntry
+    let titleLineLimit: Int?
     let openAction: (LeapCatalogEntry, URL, ModelRunner) -> Void
     @EnvironmentObject var downloadController: DownloadController
+    @EnvironmentObject var modelManager: AppModelManager
+    @EnvironmentObject var chatVM: ChatVM
+    @EnvironmentObject var tabRouter: TabRouter
     @State private var state: LeapBundleDownloader.State = .notInstalled
     @State private var progress = 0.0
     @State private var speed = 0.0
     @State private var expectedBytes: Int64 = 0
     private let downloader = LeapBundleDownloader.shared
+
+    init(
+        entry: LeapCatalogEntry,
+        titleLineLimit: Int? = nil,
+        openAction: @escaping (LeapCatalogEntry, URL, ModelRunner) -> Void
+    ) {
+        self.entry = entry
+        self.titleLineLimit = titleLineLimit
+        self.openAction = openAction
+    }
 
     var body: some View {
         HStack(alignment: .center, spacing: 16) {
@@ -1820,8 +3198,11 @@ struct LeapRowView: View {
                     .font(FontTheme.body)
                     .fontWeight(.medium)
                     .foregroundStyle(AppTheme.text)
+                    .lineLimit(titleLineLimit)
                 
                 HStack(spacing: 6) {
+                    formatPill(entry.sourceFormatLabel)
+
                     Text(subtitleText)
                         .font(FontTheme.caption)
                         .foregroundStyle(AppTheme.secondaryText)
@@ -1831,7 +3212,7 @@ struct LeapRowView: View {
                             .font(.caption2)
                             .foregroundStyle(AppTheme.secondaryText)
                         
-                        ModelRAMAdvisor.badge(format: .slm, sizeBytes: entry.sizeBytes, contextLength: 4096, layerCount: nil)
+                        ModelRAMAdvisor.badge(format: .et, sizeBytes: entry.sizeBytes, contextLength: 4096, layerCount: nil)
                             .scaleEffect(0.9)
                     }
                 }
@@ -1941,9 +3322,14 @@ struct LeapRowView: View {
     }
 
     private var subtitleText: String {
+        var parts: [String] = []
+        if !entry.quantization.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append(entry.quantization)
+        }
         let size = sizeText
-        if size.isEmpty { return entry.slug }
-        return size
+        if !size.isEmpty { parts.append(size) }
+        if !parts.isEmpty { return parts.joined(separator: " • ") }
+        return entry.slug
     }
 
     private func speedText(_ speed: Double) -> String {
@@ -1953,6 +3339,16 @@ struct LeapRowView: View {
         return String(format: "%.0f KB/s", kb)
     }
 
+    @ViewBuilder
+    private func formatPill(_ label: String) -> some View {
+        Text(label)
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(Color.secondary.opacity(0.14), in: Capsule())
+            .foregroundStyle(AppTheme.secondaryText)
+    }
+
     private func start() {
         downloadController.startLeap(entry: entry)
     }
@@ -1960,10 +3356,58 @@ struct LeapRowView: View {
     private func load() {
         guard case .installed(let url) = state else { return }
         Task { @MainActor in
+            var settings = modelManager
+                .downloadedModels
+                .first(where: {
+                    $0.modelID == entry.modelID
+                    && $0.quant.caseInsensitiveCompare(entry.quantization) == .orderedSame
+                })
+                .map { modelManager.settings(for: $0) }
+            ?? ModelSettings.default(for: .et)
+            settings.contextLength = max(1, settings.contextLength)
+
+            if let slmGGUF = SLMArtifactResolver.ggufURLIfPresent(for: url) {
+                let success = await chatVM.load(url: slmGGUF, settings: settings, format: .gguf, forceReload: true)
+                if success {
+                    let architectureLabels = LocalModel.architectureLabels(for: slmGGUF, format: .et, modelID: entry.modelID)
+                    let local = modelManager.downloadedModels.first(where: { $0.modelID == entry.modelID && $0.quant.caseInsensitiveCompare(entry.quantization) == .orderedSame }) ??
+                        LocalModel(
+                            modelID: entry.modelID,
+                            name: entry.displayName,
+                            url: slmGGUF,
+                            quant: entry.quantization,
+                            architecture: architectureLabels.display,
+                            architectureFamily: architectureLabels.family,
+                            format: .et,
+                            sizeGB: Double(entry.sizeBytes) / 1_073_741_824.0,
+                            isMultimodal: entry.isVision,
+                            isToolCapable: true,
+                            isDownloaded: true,
+                            downloadDate: Date(),
+                            lastUsedDate: nil,
+                            isFavourite: false,
+                            totalLayers: 0,
+                            moeInfo: nil
+                        )
+                    modelManager.updateSettings(settings, for: local)
+                    modelManager.markModelUsed(local)
+                    tabRouter.selection = .chat
+                } else {
+                    state = .failed(chatVM.loadError ?? "Load failed")
+                }
+                return
+            }
+
+            chatVM.loadingProgressTracker.startLoading(for: .et)
+            chatVM.loadingProgressTracker.reportBackendProgress(0.12)
+            defer { chatVM.loadingProgressTracker.completeLoading() }
             do {
                 LeapBundleDownloader.sanitizeBundleIfNeeded(at: url)
-                let runner = try await Leap.load(url: url)
+                chatVM.loadingProgressTracker.reportBackendProgress(0.25)
+                let runner = try await LeapRunnerLoader.load(url: url, settings: settings)
+                chatVM.loadingProgressTracker.reportBackendProgress(0.88)
                 openAction(entry, url, runner)
+                chatVM.loadingProgressTracker.reportBackendProgress(0.95)
             } catch {
                 state = .failed(error.localizedDescription)
             }

@@ -87,16 +87,39 @@ public final class ToolCapableLlamaClient: ToolCapableLLM, @unchecked Sendable {
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
-        
+
         let requestData = try JSONEncoder().encode(request)
         urlRequest.httpBody = requestData
-        
+        urlRequest.timeoutInterval = 60
+
         await logger.log("[ToolCapableLlamaClient] Sending request to \(url)")
-        
-        // Enforce off-grid at HTTP boundary
-        if NetworkKillSwitch.isEnabled { throw URLError(.notConnectedToInternet) }
-        NetworkKillSwitch.track(session: URLSession.shared)
-        let (data, response) = try await URLSession.shared.data(for: urlRequest)
+
+        if NetworkKillSwitch.shouldBlock(request: urlRequest) {
+            throw URLError(.notConnectedToInternet)
+        }
+
+        let usesLoopback = NetworkKillSwitch.isLoopback(url: url)
+        let session: URLSession
+        if usesLoopback {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.timeoutIntervalForRequest = 60
+            configuration.timeoutIntervalForResource = 60
+            configuration.waitsForConnectivity = false
+            configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+            configuration.urlCache = nil
+            configuration.connectionProxyDictionary = [AnyHashable: Any]()
+            session = URLSession(configuration: configuration)
+        } else {
+            NetworkKillSwitch.track(session: URLSession.shared)
+            session = URLSession.shared
+        }
+        defer {
+            if usesLoopback {
+                session.finishTasksAndInvalidate()
+            }
+        }
+
+        let (data, response) = try await session.data(for: urlRequest)
         
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ToolError.executionFailed("Invalid response type")
@@ -167,20 +190,32 @@ public final class ToolCapableLlamaClient: ToolCapableLLM, @unchecked Sendable {
 
     private func buildPromptFromMessages(_ messages: [ToolChatMessage], tools: [ToolSpec]?) -> String {
         // Resolve system content via centralized resolver so we always match
-        // ChatVM/systemPromptText and current web-search armed state.
+        // ChatVM/systemPromptText and current tool armed state.
         // For llama.cpp, we can't see UI attachments here, so conservatively mark vision-capable
         // and assume no attached images for tool loop prompts.
+        let availability = ToolAvailability(
+            webSearch: tools?.contains(where: { $0.function.name == "noema.web.retrieve" }) == true
+                && WebToolGate.isAvailable(currentFormat: .gguf),
+            python: tools?.contains(where: { $0.function.name == "noema.python.execute" }) == true
+                && PythonToolGate.isAvailable(currentFormat: .gguf),
+            memory: tools?.contains(where: { $0.function.name == "noema.memory" }) == true
+                && MemoryToolGate.isAvailable(currentFormat: .gguf)
+        )
         var systemContent: String = SystemPromptResolver.general(
             currentFormat: .gguf,
             isVisionCapable: true,
-            hasAttachedImages: false
+            hasAttachedImages: false,
+            toolAvailabilityOverride: availability
         )
 
-        // If tools are available and web tool is gated on, add concise instructions and catalog
-        if let tools, !tools.isEmpty, WebToolGate.isAvailable() {
+        // If tools are available, add concise instructions and catalog.
+        if let tools, !tools.isEmpty, availability.any {
             let catalog = generateJSONGrammarToolCatalog(tools)
             let usage = """
-            Use tools ONLY when the query requires fresh/current information; otherwise answer directly.
+            Use tools only when they would materially improve the answer; otherwise answer directly.
+            - Use `noema.web.retrieve` for fresh/current information.
+            - Use `noema.python.execute` for calculations, data processing, parsing, algorithms, or other computational work.
+            - Use `noema.memory` for durable, cross-conversation facts such as stable user preferences or recurring project constraints.
 
             To call a tool, respond with ONLY one of these formats (no extra text):
             - JSON: {"tool_name": "tool.name", "arguments": {"param": "value"}}
@@ -194,6 +229,7 @@ public final class ToolCapableLlamaClient: ToolCapableLLM, @unchecked Sendable {
             5) Make exactly ONE tool call, then wait for the result.
             6) You may mention tools inside <think>, but finish reasoning and close the tag before emitting the <tool_call> tag or JSON object that actually triggers the call.
             7) Do NOT use code fences (```); emit only the JSON or the <tool_call> wrapper. Do not mix formats.
+            8) For Python, always send runnable Python 3 and use print() for output.
 
             Available tools:
             """ + catalog

@@ -1,9 +1,6 @@
 import SwiftUI
 #if os(macOS)
 import AppKit
-#if canImport(LeapSDK)
-import LeapSDK
-#endif
 
 private func performMediumImpact() {
     NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
@@ -36,6 +33,7 @@ struct MacModelSelectorBar: View {
     @Environment(\.locale) private var locale
     @Environment(\.colorScheme) private var colorScheme
     @State private var showPicker = false
+    @State private var showTokenUsagePercent = false
     @State private var showOffloadWarning = false
     @State private var pendingLoad: (LocalModel, ModelSettings)?
     @AppStorage("hideGGUFOffloadWarning") private var hideGGUFOffloadWarning = false
@@ -54,6 +52,9 @@ struct MacModelSelectorBar: View {
     var body: some View {
         HStack(spacing: 8) {
             selectorButton
+            if showsTokenCounter {
+                tokenCounter
+            }
             if isAdvancedMode {
                 advancedControlsButton
             }
@@ -97,9 +98,38 @@ struct MacModelSelectorBar: View {
             if DeviceGPUInfo.supportsGPUOffload {
                 Text("This model doesn't support GPU offload and may run slowly. Consider an MLX model.")
             } else {
-                Text("This model doesn't support GPU offload and may run slowly. Fastest option: use an SLM model.")
+                Text("This model doesn't support GPU offload and may run slowly. Fastest option: use an ET model.")
             }
         }
+    }
+
+    private var showsTokenCounter: Bool {
+        switch status {
+        case .local, .remote:
+            return true
+        case .loading, .unloaded:
+            return false
+        }
+    }
+
+    private var tokenCounter: some View {
+        let safeContextLimit = max(1.0, chatVM.contextLimit)
+        let usagePercent = Int((Double(chatVM.totalTokens) / safeContextLimit) * 100.0)
+        let label = showTokenUsagePercent ? "\(usagePercent) %" : "\(chatVM.totalTokens) tok"
+
+        return Text(label)
+            .font(.caption2)
+            .monospacedDigit()
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(Color.secondary.opacity(0.12))
+            .clipShape(Capsule())
+            .foregroundStyle(.secondary)
+            .contentShape(Capsule())
+            .onTapGesture {
+                showTokenUsagePercent.toggle()
+            }
+            .help(String(localized: "Tap to toggle token count and context usage percent"))
     }
 
     private var advancedControlsButton: some View {
@@ -330,10 +360,10 @@ struct MacModelSelectorBar: View {
 
     private func subtitle(for model: LocalModel) -> String {
         var parts: [String] = []
-        if model.format != .slm && !model.quant.isEmpty {
+        if !model.quant.isEmpty {
             parts.append(model.quant)
         }
-        parts.append(model.format.rawValue.uppercased())
+        parts.append(model.format.displayName)
         let sizeBytes = Int64(model.sizeGB * 1_073_741_824.0)
         parts.append(localizedByteCountString(bytes: sizeBytes, locale: locale))
         return parts.joined(separator: " · ")
@@ -452,7 +482,7 @@ private struct MacModelPicker: View {
             if DeviceGPUInfo.supportsGPUOffload {
                 Text("This model doesn't support GPU offload and may run slowly. Consider an MLX model.")
             } else {
-                Text("This model doesn't support GPU offload and may run slowly. Fastest option: use an SLM model.")
+                Text("This model doesn't support GPU offload and may run slowly. Fastest option: use an ET model.")
             }
         }
     }
@@ -490,6 +520,9 @@ private struct MacModelPicker: View {
     private var modelList: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 8) {
+                if tabRouter.isAFMHiddenNoticeVisible {
+                    afmHiddenNotice
+                }
                 ForEach(filteredModels, id: \.id) { model in
                     MacModelRow(
                         model: model,
@@ -525,6 +558,31 @@ private struct MacModelPicker: View {
             }
             .padding(.vertical, 4)
         }
+    }
+
+    private var afmHiddenNotice: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Apple Foundation Model is hidden. You can re-enable it in Settings.")
+                .font(.system(size: 12, weight: .semibold))
+            Button {
+                tabRouter.dismissAFMHiddenNotice()
+                tabRouter.selection = .settings
+                isPresented = false
+            } label: {
+                Label("Open Settings", systemImage: "gearshape")
+            }
+            .buttonStyle(.link)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.primary.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        )
     }
 
     private var footer: some View {
@@ -651,19 +709,24 @@ private struct MacModelRow: View {
                         }
                     }
                     HStack(spacing: 6) {
-                        if !model.quant.isEmpty && model.format != .slm {
+                        if !model.quant.isEmpty && model.format != .ane {
                             capsuleLabel(model.quant)
                         }
-                        capsuleLabel(model.format.rawValue.uppercased())
-                        if !model.architectureFamily.isEmpty && model.format != .slm {
+                        if let source = model.slmSourceFormatLabel {
+                            capsuleLabel(source)
+                        }
+                        capsuleLabel(model.format.displayName)
+                        if !model.architectureFamily.isEmpty && model.format != .et && model.format != .ane && model.format != .afm {
                             capsuleLabel(model.architectureFamily.uppercased())
                         }
                     }
                 }
                 Spacer()
-                Text(formattedSize)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                if model.format != .afm {
+                    Text(formattedSize)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
                 if isLoading {
                     ProgressView()
                         .scaleEffect(0.7)
@@ -718,46 +781,42 @@ private func performModelLoad(
     modelManager: AppModelManager,
     tabRouter: TabRouter
 ) async -> Bool {
-    let locale = LocalizationManager.preferredLocale()
-    if model.format == .slm {
-#if canImport(LeapSDK)
-        do {
-            LeapBundleDownloader.sanitizeBundleIfNeeded(at: model.url)
-            let runner = try await Leap.load(url: model.url)
-            chatVM.activate(runner: runner, url: model.url)
-            modelManager.updateSettings(ModelSettings.default(for: .slm), for: model)
+    if model.format == .et {
+        var effectiveSettings = modelManager.normalizeLocalSettings(settings, for: model)
+        effectiveSettings.contextLength = max(1, effectiveSettings.contextLength)
+        let success = await chatVM.load(url: model.url, settings: effectiveSettings, format: .et, forceReload: true)
+        if success {
+            modelManager.updateSettings(effectiveSettings, for: model)
             modelManager.markModelUsed(model)
             modelManager.loadedModel = model
             modelManager.activeRemoteSession = nil
             tabRouter.selection = .chat
             return true
-        } catch {
-            chatVM.loadError = error.localizedDescription
-            modelManager.loadedModel = nil
-            return false
         }
-#else
-        chatVM.loadError = String(localized: "SLM models are not supported on this platform.")
         modelManager.loadedModel = nil
         return false
-#endif
     }
 
     await chatVM.unload()
     try? await Task.sleep(nanoseconds: 200_000_000)
 
+    let normalizedSettings = modelManager.normalizeLocalSettings(settings, for: model)
     let bypass = UserDefaults.standard.bool(forKey: "bypassRAMCheck")
     if !bypass {
         let sizeBytes = Int64(model.sizeGB * 1_073_741_824.0)
-        let context = Int(settings.contextLength)
+        let context = Int(normalizedSettings.contextLength)
         let layerHint = model.totalLayers > 0 ? model.totalLayers : nil
+        let kvCacheEstimate = ModelRAMAdvisor.GGUFKVCacheEstimate.resolved(from: normalizedSettings)
         if !ModelRAMAdvisor.fitsInRAM(
             format: model.format,
             sizeBytes: sizeBytes,
             contextLength: context,
             layerCount: layerHint,
-            moeInfo: model.moeInfo
+            moeInfo: model.moeInfo,
+            kvCacheEstimate: kvCacheEstimate
         ) {
+            AppSoundPlayer.play(.error)
+            Haptics.error()
             chatVM.loadError = String(localized: "Model likely exceeds memory budget. Lower context or choose a smaller quant.")
             return false
         }
@@ -779,20 +838,23 @@ private func performModelLoad(
         loadURL = resolveGGUFURL(from: loadURL, model: model)
     case .mlx:
         loadURL = resolveMLXURL(from: loadURL, model: model)
-    case .slm:
+    case .et:
         break
-    case .apple:
+    case .ane:
         chatVM.loadError = String(localized: "Apple bundle models aren't supported on macOS yet.")
         modelManager.loadedModel = nil
         return false
+    case .afm:
+        loadURL = InstalledModelsStore.baseDir(for: .afm, modelID: model.modelID)
+        try? FileManager.default.createDirectory(at: loadURL, withIntermediateDirectories: true)
     }
 
     guard loadURL != URL(fileURLWithPath: "/dev/null") else {
         return false
     }
 
-    if await chatVM.load(url: loadURL, settings: settings, format: model.format) {
-        modelManager.updateSettings(settings, for: model)
+    if await chatVM.load(url: loadURL, settings: normalizedSettings, format: model.format) {
+        modelManager.updateSettings(normalizedSettings, for: model)
         modelManager.markModelUsed(model)
         modelManager.loadedModel = model
         modelManager.activeRemoteSession = nil

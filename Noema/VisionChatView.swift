@@ -16,10 +16,45 @@ struct ChatView: View {
     @State private var suggestionTriplet: [String] = ChatSuggestions.nextThree()
     @State private var suggestionsSessionID: UUID?
     @State private var showModelRequiredAlert = false
+    @State private var measuredHeight: CGFloat = 0
+
+    private struct InputHeightPreferenceKey: PreferenceKey {
+        static var defaultValue: CGFloat { 0 }
+        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+    }
+
+    private let composerCollapsedHeight: CGFloat = 52
+    private let composerExpandedHeight: CGFloat = 132
+    private let composerHorizontalPadding: CGFloat = 18
+    private let composerTopPadding: CGFloat = 14
+    private let composerBottomPadding: CGFloat = 16
+
+    private var composerMeasurementText: String {
+        vm.prompt.isEmpty ? "Message" : vm.prompt + " "
+    }
+
+    private var composerResolvedHeight: CGFloat {
+        let explicitLineCount = max(1, vm.prompt.replacingOccurrences(of: "\r\n", with: "\n")
+            .split(separator: "\n", omittingEmptySubsequences: false).count)
+        let estimatedFromLines = CGFloat(explicitLineCount) * 22 + composerTopPadding + composerBottomPadding
+        let measuredOrEstimated = max(measuredHeight, estimatedFromLines)
+        return min(max(measuredOrEstimated, composerCollapsedHeight), composerExpandedHeight)
+    }
+
+    private var composerCornerRadius: CGFloat {
+        UIConstants.adaptiveComposerCornerRadius(
+            currentHeight: composerResolvedHeight,
+            collapsedHeight: composerCollapsedHeight,
+            expandedHeight: composerExpandedHeight,
+            expandedRadius: 20
+        )
+    }
 
     private var bindingForPrompt: Binding<String> {
         Binding(get: { vm.prompt }, set: { vm.prompt = $0 })
     }
+
+    private var hasActiveChatModel: Bool { vm.canAcceptChatInput }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -70,12 +105,12 @@ struct ChatView: View {
                 .environmentObject(modelManager)
         }
         .alert(LocalizedStringKey("Load a model to chat"), isPresented: $showModelRequiredAlert) {
-            Button(LocalizedStringKey("Open Explore")) {
-                tabRouter.selection = .explore
+            Button(LocalizedStringKey("Open Stored")) {
+                tabRouter.selection = .stored
             }
             Button(LocalizedStringKey("Cancel"), role: .cancel) { }
         } message: {
-            Text(LocalizedStringKey("Load a local model before chatting. You can download one from the Explore tab or load a model you've already installed."))
+            Text(LocalizedStringKey("Open Stored to choose a model to run locally or connect to a remote endpoint."))
         }
     }
 
@@ -100,6 +135,10 @@ struct ChatView: View {
                     .font(.system(size: 28, weight: .semibold))
                 if let loadError = vm.loadError {
                     Text(loadError)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else if vm.loading || vm.stillLoading {
+                    Text(LocalizedStringKey("Loading model…"))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 } else if vm.isStreaming {
@@ -144,9 +183,9 @@ struct ChatView: View {
                 if isEmptyChat && !vm.isStreaming && !vm.loading {
                     VisionSuggestionsOverlay(
                         suggestions: suggestionTriplet,
-                        enabled: vm.modelLoaded,
+                        enabled: hasActiveChatModel,
                         onTap: { text in
-                            guard vm.modelLoaded else {
+                            guard hasActiveChatModel else {
                                 showModelRequiredAlert = true
                                 return
                             }
@@ -221,23 +260,78 @@ struct ChatView: View {
             }
 
             HStack(alignment: .top, spacing: 12) {
-                WebSearchButton()
-                if UIConstants.showMultimodalUI && vm.supportsImageInput {
-                    VisionAttachmentButton()
-                }
+                VisionAttachmentButton(
+                    showWebSearchOption: true,
+                    showPythonOption: true,
+                    showPlusIcon: true,
+                    onModelRequiredTap: { showModelRequiredAlert = true }
+                )
 
-                TextField(LocalizedStringKey("Message"), text: bindingForPrompt, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .lineLimit(1...6)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 14)
-                    .glassPill()
-                    .disabled(vm.isStreaming)
+                ZStack(alignment: .topLeading) {
+                    MobileBottomAnchoredTextEditor(
+                        text: bindingForPrompt,
+                        isDisabled: vm.isStreaming || vm.loading || vm.stillLoading || !hasActiveChatModel,
+                        topInset: composerTopPadding,
+                        bottomInset: composerBottomPadding,
+                        font: .preferredFont(forTextStyle: .body)
+                    )
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(maxHeight: composerResolvedHeight, alignment: .topLeading)
+                        .padding(.horizontal, composerHorizontalPadding)
+
+                    if vm.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(LocalizedStringKey("Message"))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, composerHorizontalPadding)
+                            .padding(.top, composerTopPadding)
+                            .padding(.bottom, composerBottomPadding)
+                            .frame(maxWidth: .infinity, maxHeight: composerResolvedHeight, alignment: .topLeading)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
+
+                    Text(composerMeasurementText)
+                        .lineLimit(nil)
+                        .padding(.horizontal, composerHorizontalPadding)
+                        .padding(.top, composerTopPadding)
+                        .padding(.bottom, composerBottomPadding)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .background(
+                            GeometryReader { proxy in
+                                Color.clear.preference(key: InputHeightPreferenceKey.self, value: proxy.size.height)
+                            }
+                        )
+                        .hidden()
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+                    .onPreferenceChange(InputHeightPreferenceKey.self) { measuredHeight = $0 }
+                    .frame(minHeight: composerCollapsedHeight, maxHeight: composerExpandedHeight, alignment: .topLeading)
+                    .frame(height: composerResolvedHeight, alignment: .topLeading)
+                    .clipShape(RoundedRectangle(cornerRadius: composerCornerRadius, style: .continuous))
+                    .glassPill(cornerRadius: composerCornerRadius)
+                    .opacity(hasActiveChatModel ? 1.0 : 0.55)
+                    .disabled(vm.isStreaming || vm.loading || vm.stillLoading || !hasActiveChatModel)
+                    .overlay {
+                        if !hasActiveChatModel {
+                            RoundedRectangle(cornerRadius: composerCornerRadius, style: .continuous)
+                                .fill(Color.clear)
+                                .contentShape(RoundedRectangle(cornerRadius: composerCornerRadius, style: .continuous))
+                                .onTapGesture {
+                                    showModelRequiredAlert = true
+                                }
+                        }
+                    }
 
                 Button {
                     if vm.isStreaming {
                         vm.stop()
                     } else {
+                        guard hasActiveChatModel else {
+                            showModelRequiredAlert = true
+                            return
+                        }
                         let text = vm.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !text.isEmpty else { return }
                         Task { await vm.send() }
@@ -248,7 +342,7 @@ struct ChatView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(vm.isStreaming ? .red : .accentColor)
-                .disabled(vm.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !vm.isStreaming)
+                .disabled((vm.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !vm.isStreaming) || (!vm.isStreaming && (vm.loading || vm.stillLoading)))
             }
 
             if vm.crossSessionSendBlocked {
@@ -289,19 +383,19 @@ struct ChatView: View {
 private struct ChatAdvancedOrnament: View {
     @EnvironmentObject private var vm: ChatVM
     @EnvironmentObject private var modelManager: AppModelManager
+    @Environment(\.colorScheme) private var colorScheme
 
     let showRAMUsage: Bool
 
     private let ramInfo = DeviceRAMInfo.current()
-    private var ornamentBackground: some ShapeStyle {
-        LinearGradient(
-            colors: [
-                Color(.secondarySystemBackground).opacity(0.92),
-                Color(.systemGray5).opacity(0.88)
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
+    private var ornamentFillColor: Color {
+        // Keep the ornament a little darker than the surrounding surface
+        // without using a strong gradient.
+        let base = Color(.secondarySystemBackground)
+        if colorScheme == .dark {
+            return base.opacity(0.76)
+        }
+        return base.opacity(0.90)
     }
 
     var body: some View {
@@ -320,7 +414,7 @@ private struct ChatAdvancedOrnament: View {
         .padding(.vertical, 14)
         .background(
             RoundedRectangle(cornerRadius: 44, style: .continuous)
-                .fill(ornamentBackground)
+                .fill(ornamentFillColor)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 44, style: .continuous)

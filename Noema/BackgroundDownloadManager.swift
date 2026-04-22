@@ -8,7 +8,41 @@ import AppKit
 import BackgroundTasks
 #endif
 
+#if canImport(UIKit)
+import UIKit
+#endif
+
 // Thread-safe, monotonic throttler to limit how often we emit progress updates.
+enum DownloadProgressExpectationMode: String, Equatable {
+    case freshTask
+    case freshRecorded
+    case resumeFullSize
+    case resumeRemainingBytes
+    case resumeFallback
+    case resumeRecordedOnly
+    case resumeNoRecorded
+    case unknown
+}
+
+struct DownloadProgressNormalizationResult: Equatable {
+    let writtenTotal: Int64
+    let fullExpected: Int64
+    let mode: DownloadProgressExpectationMode
+}
+
+struct BackgroundDownloadTaskSnapshot: Equatable, Sendable {
+    let jobID: String?
+    let artifactID: String?
+    let destination: URL
+    let resumeOffset: Int64
+    let bytesReceived: Int64
+    let taskExpectedBytes: Int64?
+    let recordedExpectedBytes: Int64?
+    let writtenTotal: Int64
+    let fullExpected: Int64?
+    let hasLiveTask: Bool
+}
+
 private final class ProgressThrottler<Key: Hashable> {
     private let minimumInterval: Double
     private var lastFireSeconds: [Key: Double] = [:]
@@ -50,11 +84,47 @@ final class BackgroundDownloadManager: NSObject {
     static let shared = BackgroundDownloadManager()
 
     private struct TaskRecord: Codable {
+        let jobID: String?
+        let artifactID: String?
         let destination: URL
         let expectedSize: Int64?
         /// When resuming from partial downloads, store the already-downloaded byte count so we can
         /// report accurate absolute progress instead of only the remaining segment.
         let resumeOffset: Int64?
+        let appendsToExistingFile: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case jobID
+            case artifactID
+            case destination
+            case expectedSize
+            case resumeOffset
+            case appendsToExistingFile
+        }
+
+        init(jobID: String?,
+             artifactID: String?,
+             destination: URL,
+             expectedSize: Int64?,
+             resumeOffset: Int64?,
+             appendsToExistingFile: Bool) {
+            self.jobID = jobID
+            self.artifactID = artifactID
+            self.destination = destination
+            self.expectedSize = expectedSize
+            self.resumeOffset = resumeOffset
+            self.appendsToExistingFile = appendsToExistingFile
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            jobID = try container.decodeIfPresent(String.self, forKey: .jobID)
+            artifactID = try container.decodeIfPresent(String.self, forKey: .artifactID)
+            destination = try container.decode(URL.self, forKey: .destination)
+            expectedSize = try container.decodeIfPresent(Int64.self, forKey: .expectedSize)
+            resumeOffset = try container.decodeIfPresent(Int64.self, forKey: .resumeOffset)
+            appendsToExistingFile = try container.decodeIfPresent(Bool.self, forKey: .appendsToExistingFile) ?? false
+        }
     }
 
     private let sessionIdentifier = "com.noema.background-download"
@@ -115,9 +185,13 @@ final class BackgroundDownloadManager: NSObject {
     private var progressBytesHandlers: [TaskKey: (Int64, Int64) -> Void] = [:]
     // Bytes that were already downloaded before a resumed task was created.
     private var resumeOffsets: [TaskKey: Int64] = [:]
+    private var loggedProgressModes: [TaskKey: DownloadProgressExpectationMode] = [:]
     private var backgroundCompletionHandler: (() -> Void)?
     // Map destination path → current task key
     private var taskIdByDestination: [String: TaskKey] = [:]
+    private var taskRecordByKey: [TaskKey: TaskRecord] = [:]
+    private var liveTasks: [TaskKey: URLSessionDownloadTask] = [:]
+    private var liveSnapshots: [TaskKey: BackgroundDownloadTaskSnapshot] = [:]
     // Resume data captured when pausing, keyed by destination path
     private var resumeDataStore: [String: Data] = [:]
     private enum SessionKind { case foreground, background }
@@ -143,13 +217,13 @@ final class BackgroundDownloadManager: NSObject {
 #if canImport(UIKit)
         let center = NotificationCenter.default
         lifecycleObservers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
-            Task { await logger.log("[Download][App] didEnterBackground – downloads will favor background URLSession") }
+            Task { await logger.log("[Download][App] didEnterBackground – durable transfers stay on background URLSession") }
         })
         lifecycleObservers.append(center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { _ in
             Task { await logger.log("[Download][App] willEnterForeground") }
         })
         lifecycleObservers.append(center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
-            Task { await logger.log("[Download][App] didBecomeActive – downloads will prefer foreground URLSession") }
+            Task { await logger.log("[Download][App] didBecomeActive – durable transfers stay on background URLSession") }
         })
 #endif
 #if os(macOS)
@@ -170,22 +244,154 @@ final class BackgroundDownloadManager: NSObject {
         Task { await logger.log("[Download][Session] now using \(label) session (\(reason))") }
     }
 
+    private func resumeDataURL(for record: TaskRecord) -> URL? {
+        guard let jobID = record.jobID, let artifactID = record.artifactID else { return nil }
+        return DownloadPersistencePaths.resumeDataURL(jobID: jobID, artifactID: artifactID)
+    }
+
+    private func loadResumeData(for record: TaskRecord) -> Data? {
+        if let cached = resumeDataStore[record.destination.path] {
+            return cached
+        }
+        guard let url = resumeDataURL(for: record),
+              let data = try? Data(contentsOf: url) else { return nil }
+        resumeDataStore[record.destination.path] = data
+        return data
+    }
+
+    private func persistResumeData(_ data: Data, for record: TaskRecord) {
+        resumeDataStore[record.destination.path] = data
+        guard let url = resumeDataURL(for: record) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
+    private func clearResumeData(for record: TaskRecord) {
+        resumeDataStore.removeValue(forKey: record.destination.path)
+        guard let url = resumeDataURL(for: record) else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    private func register(task: URLSessionDownloadTask, in session: URLSession, record: TaskRecord) -> TaskKey {
+        let key = self.key(for: session, taskID: task.taskIdentifier)
+        destinations[key] = record.destination
+        taskIdByDestination[record.destination.path] = key
+        taskRecordByKey[key] = record
+        liveTasks[key] = task
+        if let expected = record.expectedSize { expectedSizes[key] = expected }
+        if let offset = record.resumeOffset, offset > 0 { resumeOffsets[key] = offset }
+        liveSnapshots[key] = Self.makeTaskSnapshot(
+            jobID: record.jobID,
+            artifactID: record.artifactID,
+            destination: record.destination,
+            resumeOffset: record.resumeOffset ?? 0,
+            bytesReceived: max(0, task.countOfBytesReceived),
+            taskExpected: task.countOfBytesExpectedToReceive > 0 ? task.countOfBytesExpectedToReceive : nil,
+            recordedExpected: record.expectedSize,
+            hasLiveTask: true
+        )
+        return key
+    }
+
+    private func refreshSessionTasks(session: URLSession, completion: (() -> Void)? = nil) {
+        session.getAllTasks { [weak self] tasks in
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    completion?()
+                    return
+                }
+                let sessionID = session.configuration.identifier ?? "foreground"
+                self.liveTasks = self.liveTasks.filter { $0.key.sessionID != sessionID }
+                self.liveSnapshots = self.liveSnapshots.filter { $0.key.sessionID != sessionID }
+                for task in tasks {
+                    guard let downloadTask = task as? URLSessionDownloadTask else { continue }
+                    let key = self.key(for: session, taskID: downloadTask.taskIdentifier)
+                    self.liveTasks[key] = downloadTask
+                    guard let record = self.record(for: downloadTask.taskDescription) else { continue }
+                    self.destinations[key] = record.destination
+                    self.taskIdByDestination[record.destination.path] = key
+                    self.taskRecordByKey[key] = record
+                    if let expected = record.expectedSize {
+                        self.expectedSizes[key] = expected
+                    }
+                    if let offset = record.resumeOffset, offset > 0 {
+                        self.resumeOffsets[key] = offset
+                    }
+                    self.liveSnapshots[key] = Self.makeTaskSnapshot(
+                        jobID: record.jobID,
+                        artifactID: record.artifactID,
+                        destination: record.destination,
+                        resumeOffset: record.resumeOffset ?? 0,
+                        bytesReceived: max(0, downloadTask.countOfBytesReceived),
+                        taskExpected: downloadTask.countOfBytesExpectedToReceive > 0 ? downloadTask.countOfBytesExpectedToReceive : nil,
+                        recordedExpected: record.expectedSize,
+                        hasLiveTask: true
+                    )
+                }
+                completion?()
+            }
+        }
+    }
+
+    private func lookupTask(for destination: URL, completion: @escaping (TaskKey?, URLSessionDownloadTask?) -> Void) {
+        if let key = taskIdByDestination[destination.path], let task = liveTasks[key] {
+            completion(key, task)
+            return
+        }
+        refreshSessionTasks(session: backgroundSession) { [weak self] in
+            guard let self else {
+                completion(nil, nil)
+                return
+            }
+            if let key = self.taskIdByDestination[destination.path], let task = self.liveTasks[key] {
+                completion(key, task)
+                return
+            }
+#if os(macOS)
+            self.refreshSessionTasks(session: self.foregroundSession) { [weak self] in
+                guard let self else {
+                    completion(nil, nil)
+                    return
+                }
+                if let key = self.taskIdByDestination[destination.path], let task = self.liveTasks[key] {
+                    completion(key, task)
+                } else {
+                    completion(nil, nil)
+                }
+            }
+#else
+                completion(nil, nil)
+#endif
+        }
+    }
+
     // MARK: - Public API
     /// Start a download that can continue in the background.
     @discardableResult
     func download(from remote: URL,
                   to local: URL,
+                  jobID: String? = nil,
+                  artifactID: String? = nil,
                   expectedSize: Int64? = nil,
                   progress: ((Double) -> Void)? = nil,
                   progressBytes: ((Int64, Int64) -> Void)? = nil) async throws -> URL {
         var req = URLRequest(url: remote)
-        return try await download(request: req, to: local, expectedSize: expectedSize, progress: progress, progressBytes: progressBytes)
+        return try await download(
+            request: req,
+            to: local,
+            jobID: jobID,
+            artifactID: artifactID,
+            expectedSize: expectedSize,
+            progress: progress,
+            progressBytes: progressBytes
+        )
     }
 
     /// Start a download with a custom request (headers/auth supported).
     @discardableResult
     func download(request: URLRequest,
                   to local: URL,
+                  jobID: String? = nil,
+                  artifactID: String? = nil,
                   expectedSize: Int64? = nil,
                   progress: ((Double) -> Void)? = nil,
                   progressBytes: ((Int64, Int64) -> Void)? = nil) async throws -> URL {
@@ -210,35 +416,58 @@ final class BackgroundDownloadManager: NSObject {
             }()
             Task { await logger.log("[Download][Session] start dest=\(local.lastPathComponent) session=\(sessionLabel) expected=\(expectedLabel)") }
 
-            if let resume = resumeDataStore[local.path] {
+            let resumeRecord = TaskRecord(
+                jobID: jobID,
+                artifactID: artifactID,
+                destination: local,
+                expectedSize: refinedExpected,
+                resumeOffset: nil,
+                appendsToExistingFile: false
+            )
+            if let resume = self.loadResumeData(for: resumeRecord) {
                 let offset = Self.extractResumeOffset(from: resume)
                 let task = session.downloadTask(withResumeData: resume)
-                let record = TaskRecord(destination: local, expectedSize: refinedExpected, resumeOffset: offset > 0 ? offset : nil)
+                let record = TaskRecord(
+                    jobID: jobID,
+                    artifactID: artifactID,
+                    destination: local,
+                    expectedSize: refinedExpected,
+                    resumeOffset: offset > 0 ? offset : nil,
+                    appendsToExistingFile: false
+                )
                 if let data = try? JSONEncoder().encode(record) {
                     task.taskDescription = String(data: data, encoding: .utf8)
                 }
-                let key = self.key(for: session, taskID: task.taskIdentifier)
-                destinations[key] = record.destination
-                taskIdByDestination[local.path] = key
-                if let expected = record.expectedSize { expectedSizes[key] = expected }
-                if offset > 0 { resumeOffsets[key] = offset }
+                let key = self.register(task: task, in: session, record: record)
                 if let progress = progress { progressHandlers[key] = progress }
                 if let progressBytes = progressBytes { progressBytesHandlers[key] = progressBytes }
                 completions[key] = { cont.resume(with: $0) }
-                resumeDataStore.removeValue(forKey: local.path)
+                self.clearResumeData(for: record)
                 task.resume()
                 return
             }
 
-            let task = session.downloadTask(with: request)
-            let record = TaskRecord(destination: local, expectedSize: refinedExpected, resumeOffset: nil)
+            let existingPartialBytes = self.readExistingPartialSize(at: local)
+            let shouldAttemptRangeResume = existingPartialBytes > 0
+            let requestToStart: URLRequest = {
+                guard shouldAttemptRangeResume else { return request }
+                var rangeRequest = request
+                rangeRequest.setValue("bytes=\(existingPartialBytes)-", forHTTPHeaderField: "Range")
+                return rangeRequest
+            }()
+            let task = session.downloadTask(with: requestToStart)
+            let record = TaskRecord(
+                jobID: jobID,
+                artifactID: artifactID,
+                destination: local,
+                expectedSize: refinedExpected,
+                resumeOffset: shouldAttemptRangeResume ? existingPartialBytes : nil,
+                appendsToExistingFile: shouldAttemptRangeResume
+            )
             if let data = try? JSONEncoder().encode(record) {
                 task.taskDescription = String(data: data, encoding: .utf8)
             }
-            let key = self.key(for: session, taskID: task.taskIdentifier)
-            destinations[key] = record.destination
-            taskIdByDestination[local.path] = key
-            if let expected = record.expectedSize { expectedSizes[key] = expected }
+            let key = self.register(task: task, in: session, record: record)
             if let progress = progress { progressHandlers[key] = progress }
             if let progressBytes = progressBytes { progressBytesHandlers[key] = progressBytes }
             completions[key] = { cont.resume(with: $0) }
@@ -257,21 +486,119 @@ final class BackgroundDownloadManager: NSObject {
     /// Pause an in‑flight background download targeting the given destination.
     /// Stores resume data so a subsequent `download` call will resume.
     func pause(destination: URL, completion: (() -> Void)? = nil) {
-        guard let taskID = taskIdByDestination[destination.path] else { completion?(); return }
-        guard let task = currentDownloadTasksSnapshot()[taskID] else { completion?(); return }
-        task.cancel(byProducingResumeData: { [weak self] data in
-            Task { @MainActor in
-                if let d = data { self?.resumeDataStore[destination.path] = d }
+        lookupTask(for: destination) { [weak self] key, task in
+            guard let self, let key, let task else {
                 completion?()
+                return
             }
-        })
+            let record = self.taskRecordByKey[key]
+            task.cancel(byProducingResumeData: { [weak self] data in
+                Task { @MainActor in
+                    if let self, let data, let record {
+                        self.persistResumeData(data, for: record)
+                    }
+                    completion?()
+                }
+            })
+        }
+    }
+
+    func pause(destination: URL) async {
+        await withCheckedContinuation { continuation in
+            pause(destination: destination) {
+                continuation.resume()
+            }
+        }
     }
 
     /// Cancel and discard resume data for a destination.
     func cancel(destination: URL) {
-        resumeDataStore.removeValue(forKey: destination.path)
-        if let taskID = taskIdByDestination[destination.path], let task = currentDownloadTasksSnapshot()[taskID] {
-            task.cancel()
+        lookupTask(for: destination) { [weak self] key, task in
+            guard let self else { return }
+            if let key, let record = self.taskRecordByKey[key] {
+                self.clearResumeData(for: record)
+            } else {
+                self.resumeDataStore.removeValue(forKey: destination.path)
+            }
+            task?.cancel()
+        }
+    }
+
+    func attachObservers(jobID: String?,
+                         artifactID: String?,
+                         destination: URL,
+                         expectedSize: Int64? = nil,
+                         progress: ((Double) -> Void)? = nil,
+                         progressBytes: ((Int64, Int64) -> Void)? = nil,
+                         completion: ((Result<URL, Error>) -> Void)? = nil) {
+        lookupTask(for: destination) { [weak self] key, task in
+            guard let self, let key else { return }
+            let existingRecord = self.taskRecordByKey[key]
+            let record = existingRecord ?? TaskRecord(
+                jobID: jobID,
+                artifactID: artifactID,
+                destination: destination,
+                expectedSize: expectedSize,
+                resumeOffset: nil,
+                appendsToExistingFile: false
+            )
+            if existingRecord == nil, let task {
+                self.taskRecordByKey[key] = record
+                self.liveTasks[key] = task
+            }
+            if let expectedSize, expectedSize > 0 {
+                self.expectedSizes[key] = expectedSize
+            }
+            if let progress { self.progressHandlers[key] = progress }
+            if let progressBytes { self.progressBytesHandlers[key] = progressBytes }
+            if let completion { self.completions[key] = completion }
+            if let snapshot = self.liveSnapshots[key] {
+                if let fullExpected = snapshot.fullExpected, fullExpected > 0 {
+                    let fraction = Double(snapshot.writtenTotal) / Double(fullExpected)
+                    progress?(fraction)
+                    progressBytes?(snapshot.writtenTotal, fullExpected)
+                } else if snapshot.writtenTotal > 0 {
+                    progressBytes?(snapshot.writtenTotal, 0)
+                }
+            }
+        }
+    }
+
+    func hasLiveTask(for destination: URL) async -> Bool {
+        await withCheckedContinuation { continuation in
+            lookupTask(for: destination) { _, task in
+                continuation.resume(returning: task != nil)
+            }
+        }
+    }
+
+    func snapshot(for destination: URL) async -> BackgroundDownloadTaskSnapshot? {
+        await withCheckedContinuation { continuation in
+            lookupTask(for: destination) { [weak self] key, _ in
+                guard let self, let key else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                continuation.resume(returning: self.liveSnapshots[key])
+            }
+        }
+    }
+
+    func snapshots() async -> [BackgroundDownloadTaskSnapshot] {
+        await withCheckedContinuation { continuation in
+            refreshSessionTasks(session: backgroundSession) { [weak self] in
+                guard let self else {
+                    continuation.resume(returning: [])
+                    return
+                }
+#if os(macOS)
+                self.refreshSessionTasks(session: self.foregroundSession) { [weak self] in
+                    continuation.resume(returning: self.map { Array($0.liveSnapshots.values) } ?? [])
+                }
+#else
+                continuation.resume(returning: Array(self.liveSnapshots.values))
+#endif
+            }
         }
     }
 
@@ -307,8 +634,8 @@ final class BackgroundDownloadManager: NSObject {
 
     private func handleMaintenance(task: BGProcessingTask) {
         scheduleMaintenance() // Always reschedule for next time
-        backgroundSession.getAllTasks { _ in
-            // Reconcile stalled tasks or perform cleanup as needed.
+        refreshSessionTasks(session: backgroundSession) {
+            NotificationCenter.default.post(name: .downloadMaintenanceRequested, object: nil)
             task.setTaskCompleted(success: true)
         }
     }
@@ -321,57 +648,18 @@ final class BackgroundDownloadManager: NSObject {
     #endif
 
     private func restorePersistedTasks() {
-        backgroundSession.getAllTasks { [weak self] tasks in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                for task in tasks {
-                    guard let record = self.record(for: task.taskDescription) else { continue }
-                    let key = self.key(for: self.backgroundSession, taskID: task.taskIdentifier)
-                    self.destinations[key] = record.destination
-                    self.taskIdByDestination[record.destination.path] = key
-                    if let expected = record.expectedSize {
-                        self.expectedSizes[key] = expected
-                    }
-                    if let offset = record.resumeOffset, offset > 0 {
-                        self.resumeOffsets[key] = offset
-                    }
-                }
-            }
-        }
+        refreshSessionTasks(session: backgroundSession)
+        #if os(macOS)
+        refreshSessionTasks(session: foregroundSession)
+        #endif
     }
 
-    // Snapshot of download tasks keyed by identifier for quick lookup from @MainActor
-    private func currentDownloadTasksSnapshot() -> [TaskKey: URLSessionDownloadTask] {
-        // Query both sessions separately and merge results for a full snapshot
-        let group = DispatchGroup()
-        var bg: [URLSessionTask] = []
-        var fg: [URLSessionTask] = []
-        group.enter()
-        backgroundSession.getAllTasks { tasks in
-            bg = tasks
-            group.leave()
+    private func readExistingPartialSize(at local: URL) -> Int64 {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: local.path),
+              let size = attrs[.size] as? Int64 else {
+            return 0
         }
-        group.enter()
-        foregroundSession.getAllTasks { tasks in
-            fg = tasks
-            group.leave()
-        }
-        _ = group.wait(timeout: .now() + 1)
-
-        var map: [TaskKey: URLSessionDownloadTask] = [:]
-        for t in bg {
-            if let d = t as? URLSessionDownloadTask {
-                let key = key(for: backgroundSession, taskID: d.taskIdentifier)
-                map[key] = d
-            }
-        }
-        for t in fg {
-            if let d = t as? URLSessionDownloadTask {
-                let key = key(for: foregroundSession, taskID: d.taskIdentifier)
-                map[key] = d
-            }
-        }
-        return map
+        return max(0, size)
     }
 }
 
@@ -392,28 +680,44 @@ extension BackgroundDownloadManager: URLSessionDownloadDelegate {
 
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let offset = self.resumeOffsets[key] ?? 0
-
-            // Some servers report only the *remaining* bytes for resumed downloads. Combine any
-            // previously-downloaded offset with the current callback to compute an absolute total.
-            // Prefer the server-reported length (Content-Length) when available; fall back to the
-            // caller-supplied expected size, without inflating via `max` to avoid overstating totals
-            // when registry metadata overestimates the file size.
+            let statusCode = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
+            let storedOffset = self.resumeOffsets[key] ?? 0
+            let offset = statusCode == 200 ? 0 : storedOffset
             let expectedFromTask = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : nil
             let recordedExpected = self.expectedSizes[key]
+            let normalized = Self.normalizeProgressTotals(
+                resumeOffset: offset,
+                totalBytesWritten: totalBytesWritten,
+                taskExpected: expectedFromTask,
+                recordedExpected: recordedExpected
+            )
+            if let record = self.taskRecordByKey[key] {
+                self.liveSnapshots[key] = Self.makeTaskSnapshot(
+                    jobID: record.jobID,
+                    artifactID: record.artifactID,
+                    destination: record.destination,
+                    resumeOffset: offset,
+                    bytesReceived: max(0, totalBytesWritten),
+                    taskExpected: expectedFromTask,
+                    recordedExpected: recordedExpected,
+                    hasLiveTask: true
+                )
+            }
 
-            let fullExpected: Int64 = {
-                if let expectedFromTask { return expectedFromTask + offset }
-                if let recordedExpected { return recordedExpected }
-                return (offset > 0) ? offset + totalBytesWritten : -1
-            }()
+            if self.loggedProgressModes[key] != normalized.mode {
+                self.loggedProgressModes[key] = normalized.mode
+                let destination = self.destinations[key]?.lastPathComponent ?? "unknown"
+                let taskLabel = expectedFromTask.map(String.init) ?? "nil"
+                let recordedLabel = recordedExpected.map(String.init) ?? "nil"
+                await logger.log(
+                    "[Download][Progress] dest=\(destination) mode=\(normalized.mode.rawValue) offset=\(offset) taskExpected=\(taskLabel) recordedExpected=\(recordedLabel)"
+                )
+            }
 
-            let writtenTotal = totalBytesWritten + offset
-
-            if fullExpected > 0 {
-                let fraction = Double(writtenTotal) / Double(fullExpected)
+            if normalized.fullExpected > 0 {
+                let fraction = Double(normalized.writtenTotal) / Double(normalized.fullExpected)
                 self.progressHandlers[key]?(fraction)
-                self.progressBytesHandlers[key]?(writtenTotal, fullExpected)
+                self.progressBytesHandlers[key]?(normalized.writtenTotal, normalized.fullExpected)
             }
         }
     }
@@ -438,8 +742,17 @@ extension BackgroundDownloadManager: URLSessionDownloadDelegate {
         do {
             let parent = destination.deletingLastPathComponent()
             try? FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-            try FileManager.default.removeItemIfExists(at: destination)
-            try FileManager.default.moveItem(at: location, to: destination)
+            let shouldAppendRangePayload =
+                record.appendsToExistingFile &&
+                (downloadTask.response as? HTTPURLResponse)?.statusCode == 206 &&
+                FileManager.default.fileExists(atPath: destination.path)
+            if shouldAppendRangePayload {
+                try Self.appendDownloadedChunk(at: location, to: destination)
+                try? FileManager.default.removeItem(at: location)
+            } else {
+                try FileManager.default.removeItemIfExists(at: destination)
+                try FileManager.default.moveItem(at: location, to: destination)
+            }
             Task { @MainActor [weak self] in
                 await self?.finalizeSuccess(key: key, destination: destination)
             }
@@ -472,17 +785,23 @@ extension BackgroundDownloadManager: URLSessionDownloadDelegate {
 
     @MainActor
     private func finalizeSuccess(key: TaskKey, destination: URL) async {
+        if let record = taskRecordByKey[key] {
+            clearResumeData(for: record)
+        }
         if let completion = completions[key] {
             completion(.success(destination))
         } else {
             // No in-memory continuation (likely after app restart). Notify observers so
             // they can reconcile and finalize installation from the completed file.
+            let record = taskRecordByKey[key]
             NotificationCenter.default.post(
                 name: .backgroundDownloadCompleted,
                 object: nil,
                 userInfo: [
                     "destinationURL": destination,
-                    "taskID": key.taskID
+                    "taskID": key.taskID,
+                    "jobID": record?.jobID as Any,
+                    "artifactID": record?.artifactID as Any
                 ]
             )
         }
@@ -500,10 +819,14 @@ extension BackgroundDownloadManager: URLSessionDownloadDelegate {
                 "taskID": key.taskID
             ]
             // Best-effort: include original URL if we can still see the task
-            if let task = currentDownloadTasksSnapshot()[key], let url = task.originalRequest?.url {
+            if let task = liveTasks[key], let url = task.originalRequest?.url {
                 info["originalURL"] = url
             }
             if let dest = destinations[key] { info["destinationURL"] = dest }
+            if let record = taskRecordByKey[key] {
+                info["jobID"] = record.jobID
+                info["artifactID"] = record.artifactID
+            }
             NotificationCenter.default.post(name: .backgroundDownloadCompleted, object: nil, userInfo: info)
         }
         cleanup(key: key)
@@ -515,16 +838,144 @@ extension BackgroundDownloadManager: URLSessionDownloadDelegate {
             taskIdByDestination[dest.path] = nil
         }
         destinations[key] = nil
+        taskRecordByKey[key] = nil
+        liveTasks[key] = nil
         progressThrottler.clear(key: key)
         completions[key] = nil
         progressHandlers[key] = nil
         progressBytesHandlers[key] = nil
         expectedSizes[key] = nil
         resumeOffsets[key] = nil
+        liveSnapshots[key] = nil
+        loggedProgressModes[key] = nil
     }
 }
 
 extension BackgroundDownloadManager {
+    nonisolated private static func appendDownloadedChunk(at chunkURL: URL, to destination: URL) throws {
+        let chunkHandle = try FileHandle(forReadingFrom: chunkURL)
+        defer { try? chunkHandle.close() }
+        let destinationHandle = try FileHandle(forWritingTo: destination)
+        defer { try? destinationHandle.close() }
+        try destinationHandle.seekToEnd()
+        while autoreleasepool(invoking: {
+            let data = try? chunkHandle.read(upToCount: 1_048_576) ?? Data()
+            guard let data, !data.isEmpty else { return false }
+            try? destinationHandle.write(contentsOf: data)
+            return true
+        }) {}
+    }
+
+    nonisolated static func makeTaskSnapshot(jobID: String?,
+                                             artifactID: String?,
+                                             destination: URL,
+                                             resumeOffset: Int64,
+                                             bytesReceived: Int64,
+                                             taskExpected: Int64?,
+                                             recordedExpected: Int64?,
+                                             hasLiveTask: Bool) -> BackgroundDownloadTaskSnapshot {
+        let normalized = normalizeProgressTotals(
+            resumeOffset: resumeOffset,
+            totalBytesWritten: max(0, bytesReceived),
+            taskExpected: taskExpected,
+            recordedExpected: recordedExpected
+        )
+        return BackgroundDownloadTaskSnapshot(
+            jobID: jobID,
+            artifactID: artifactID,
+            destination: destination,
+            resumeOffset: max(0, resumeOffset),
+            bytesReceived: max(0, bytesReceived),
+            taskExpectedBytes: taskExpected,
+            recordedExpectedBytes: recordedExpected,
+            writtenTotal: normalized.writtenTotal,
+            fullExpected: normalized.fullExpected > 0 ? normalized.fullExpected : nil,
+            hasLiveTask: hasLiveTask
+        )
+    }
+
+    nonisolated static func normalizeProgressTotals(
+        resumeOffset: Int64,
+        totalBytesWritten: Int64,
+        taskExpected: Int64?,
+        recordedExpected: Int64?
+    ) -> DownloadProgressNormalizationResult {
+        let offset = max(0, resumeOffset)
+        let writtenTotal = totalBytesWritten + offset
+        let expectedFromTask = taskExpected.flatMap { $0 > 0 ? $0 : nil }
+        let expectedFromRecord = recordedExpected.flatMap { $0 > 0 ? $0 : nil }
+
+        if offset == 0 {
+            if let expectedFromTask {
+                return DownloadProgressNormalizationResult(
+                    writtenTotal: totalBytesWritten,
+                    fullExpected: expectedFromTask,
+                    mode: .freshTask
+                )
+            }
+            if let expectedFromRecord {
+                return DownloadProgressNormalizationResult(
+                    writtenTotal: totalBytesWritten,
+                    fullExpected: expectedFromRecord,
+                    mode: .freshRecorded
+                )
+            }
+            return DownloadProgressNormalizationResult(
+                writtenTotal: totalBytesWritten,
+                fullExpected: -1,
+                mode: .unknown
+            )
+        }
+
+        if let expectedFromTask {
+            if let expectedFromRecord {
+                let tolerance = max(Int64(512 * 1024), expectedFromRecord / 100)
+                if abs(expectedFromTask - expectedFromRecord) <= tolerance {
+                    return DownloadProgressNormalizationResult(
+                        writtenTotal: writtenTotal,
+                        fullExpected: expectedFromRecord,
+                        mode: .resumeFullSize
+                    )
+                }
+
+                let remainingExpected = offset + expectedFromTask
+                if expectedFromTask + tolerance < expectedFromRecord {
+                    return DownloadProgressNormalizationResult(
+                        writtenTotal: writtenTotal,
+                        fullExpected: remainingExpected,
+                        mode: .resumeRemainingBytes
+                    )
+                }
+
+                return DownloadProgressNormalizationResult(
+                    writtenTotal: writtenTotal,
+                    fullExpected: max(expectedFromRecord, remainingExpected),
+                    mode: .resumeFallback
+                )
+            }
+
+            return DownloadProgressNormalizationResult(
+                writtenTotal: writtenTotal,
+                fullExpected: offset + expectedFromTask,
+                mode: .resumeNoRecorded
+            )
+        }
+
+        if let expectedFromRecord {
+            return DownloadProgressNormalizationResult(
+                writtenTotal: writtenTotal,
+                fullExpected: expectedFromRecord,
+                mode: .resumeRecordedOnly
+            )
+        }
+
+        return DownloadProgressNormalizationResult(
+            writtenTotal: writtenTotal,
+            fullExpected: -1,
+            mode: .unknown
+        )
+    }
+
     /// Best-effort HEAD to learn the true Content-Length before starting a download.
     private func remoteContentLength(for request: URLRequest) async -> Int64? {
         var head = request
@@ -568,7 +1019,8 @@ extension BackgroundDownloadManager {
         logSessionChoice(kind: .foreground, reason: "macOS")
         return foregroundSession
         #elseif canImport(UIKit)
-        // iOS/tvOS/watchOS: prefer fast foreground when active, fall back to background when suspended.
+        // iOS/iPadOS: durable downloads always use the background session so they
+        // survive suspend/lock and can be reattached after relaunch.
         let state = UIApplication.sharedIfAvailable?.applicationState
         let stateLabel: String = {
             switch state {
@@ -578,10 +1030,8 @@ extension BackgroundDownloadManager {
             default: return "unknown"
             }
         }()
-        let kind: SessionKind = (state == .active) ? .foreground : .background
-        let reason = "appState=\(stateLabel)"
-        logSessionChoice(kind: kind, reason: reason)
-        return kind == .foreground ? foregroundSession : backgroundSession
+        logSessionChoice(kind: .background, reason: "durable iOS transfer appState=\(stateLabel)")
+        return backgroundSession
         #else
         logSessionChoice(kind: .background, reason: "platform default")
         return backgroundSession
@@ -612,7 +1062,6 @@ private extension BackgroundDownloadManager {
 }
 
 #if canImport(UIKit)
-import UIKit
 private extension UIApplication {
     static var sharedIfAvailable: UIApplication? {
         // Avoid accessing UIApplication in app extensions

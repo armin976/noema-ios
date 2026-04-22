@@ -31,7 +31,7 @@
 "App Memory Usage (estimated)" = "应用程序内存使用情况（估计）";
 "App memory usage budget: %@ (conservative)" = "应用程序内存使用预算：%@（保守）";
 "Approx. Tokens" = "大约。代币";
-"Arm web search when you truly need outside info. It has a small daily limit and most chats don’t require it." = "当您真正需要外部信息时，请启动网络搜索。它的每日限制很小，大多数聊天都不需要它。";
+"Arm web search when you truly need outside info. Most chats don’t require it." = "当您真正需要外部信息时，请启用网络搜索。大多数聊天都不需要它。";
 "Ask Noema anything" = "向诺玛询问任何事情";
 "Ask…" = "问…";
 "Attach Photos" = "附上照片";
@@ -72,6 +72,7 @@
 "Creativity: %@. Low values focus responses; high values add variety." = "创造力：%@。低值焦点响应；高价值增加了​​多样性。";
 "Dark" = "黑暗的";
 "Dataset" = "数据集";
+"Processing Prompt" = "正在处理提示词";
 "Dataset indexing in progress..." = "数据集索引正在进行中...";
 "Dataset ready to use" = "数据集可供使用";
 "Datasets" = "数据集";
@@ -196,6 +197,9 @@
 "No models yet" = "还没有型号";
 "No parameters" = "无参数";
 "No quant files available" = "没有可用的定量文件";
+"Low quality" = "低质量";
+"Low-quality quantizations" = "低质量量化";
+"This repository only includes 1-bit or 2-bit quantizations. They may be degraded compared with higher-bit builds." = "此仓库仅包含 1 位或 2 位量化。与更高位数的构建相比，它们的质量可能会下降。";
 "No recent devices. We'll list clients the next time they talk to this relay." = "没有最近的设备。我们将在客户下次与此中继通信时列出客户。";
 "No remote endpoints configured yet." = "尚未配置远程端点。";
 "No remote endpoints configured." = "未配置远程端点。";
@@ -416,8 +420,56 @@
 "Vision" = "视觉";
 "Continue" = "继续";
 "Try bullet" = "尝试：\n• 更换关键词（如用“gemma-3”替代“gemma 3”）\n• %@\n• 调整 文本/视觉 筛选\n• 检查搜索筛选条件";
-"Select one or more .gguf files. For vision models, also select the projector .gguf (files containing ‘mmproj’ or ‘projector’). Files will be copied into your local model library." = "Select one or more .gguf files. For vision models, also select the projector .gguf (files containing ‘mmproj’ or ‘projector’). Files will be copied into your local model library.";
-"Select the model folder that contains config.json and the weights (safetensors/npz). The entire folder will be imported into your local model library." = "Select the model folder that contains config.json and the weights (safetensors/npz). The entire folder will be imported into your local model library.";
+"Select one or more .gguf files. For vision models, also select the projector .gguf (files containing 'mmproj' or 'projector'). Files will be copied into your local model library." = "选择一个或多个 .gguf 文件。对于视觉模型，还需选择投影器 .gguf（包含 'mmproj' 或 'projector' 的文件）。文件将被复制到您的本地模型库中。";
+
+/* Web Search & Vision Attachment Buttons */
+"Custom SearXNG URL" = "Custom SearXNG URL";
+"Using default: https://search.noemaai.com. Search requests are available without quotas." = "Using default: https://search.noemaai.com. Search requests are available without quotas.";
+"Using custom instance: %@" = "Using custom instance: %@";
+"Web Search Unavailable" = "Web Search Unavailable";
+"Tool Calling" = "Tool Calling";
+"Web Search is currently unreliable with MLX models due to MLX limitations." = "Web Search is currently unreliable with MLX models due to MLX limitations.";
+"This model does not support function calling; web search requires it." = "This model does not support function calling; web search requires it.";
+"Web search can't be used while a dataset is active or indexing." = "Web search can't be used while a dataset is active or indexing.";
+"Off‑Grid mode is on. Network features like web search are disabled." = "Off‑Grid mode is on. Network features like web search are disabled.";
+"Web Search is turned off in Settings." = "Web Search is turned off in Settings.";
+"Web Search is currently unavailable." = "Web Search is currently unavailable.";
+"Disabled: load a model in Stored first" = "Disabled: load a model in Stored first";
+"Disabled: MLX models can't use reliable web search right now" = "Disabled: MLX models can't use reliable web search right now";
+"Disabled: model lacks function calling support" = "Disabled: model lacks function calling support";
+"Disabled while using a dataset" = "Disabled while using a dataset";
+"Web search is currently unreliable on MLX due to platform limitations." = "Web search is currently unreliable on MLX due to platform limitations.";
+"This model does not advertise function calling support in its model card; web search is disabled." = "This model does not advertise function calling support in its model card; web search is disabled.";
+"Toggle web search tool. Uses SearXNG. Requires models with function calling support." = "Toggle web search tool. Uses SearXNG. Requires models with function calling support.";
+"Actions" = "Actions";
+"Add Photos" = "Add Photos";
+"Disable Web Search" = "Disable Web Search";
+"Enable Web Search" = "Enable Web Search";
+"More actions" = "More actions";
+"Vision Attachments Unavailable" = "Vision Attachments Unavailable";
+"Photo Access Needed" = "Photo Access Needed";
+"Camera Unavailable" = "Camera Unavailable";
+"Open Settings" = "Open Settings";
+"Allow photo access to show your recent pictures or use All Photos." = "Allow photo access to show your recent pictures or use All Photos.";
+"This device doesn't have a camera available. Try picking from All Photos instead." = "This device doesn't have a camera available. Try picking from All Photos instead.";
+"Vision features are disabled by configuration." = "Vision features are disabled by configuration.";
+"Load a model before attaching images." = "Load a model before attaching images.";
+"The active model can't process images." = "The active model can't process images.";
+"You've already attached the maximum of %d images." = "You've already attached the maximum of %d images.";
+"Vision attachments are currently unavailable." = "Vision attachments are currently unavailable.";
+"Disabled: %@" = "Disabled: %@";
+"Disabled: %1$@ %2$@" = "Disabled: %1$@ %2$@";
+"Open quick actions for photos and web search." = "Open quick actions for photos and web search.";
+"Add photos to your next message." = "Add photos to your next message.";
+"Add more photos or review attached images." = "Add more photos or review attached images.";
+"Attach up to %d images (order preserved). No resizing needed — llama.cpp preprocesses images automatically." = "Attach up to %d images (order preserved). No resizing needed — llama.cpp preprocesses images automatically.";
+"All Photos" = "All Photos";
+"Enabled" = "Enabled";
+"Disabled" = "Disabled";
+"No recent photos yet." = "No recent photos yet.";
+"Allow photo access to see recents." = "Allow photo access to see recents.";
+"Tap All Photos to choose manually." = "Tap All Photos to choose manually.";
+"Select the model folder that contains config.json and the weights (safetensors/npz). The entire folder will be imported into your local model library." = "选择包含 config.json 和权重文件（safetensors/npz）的模型文件夹。整个文件夹将被导入到您的本地模型库中。";
 "K Cache Quantization" = "K 缓存量化";
 "V Cache Quantization" = "V 缓存量化";
 "Favorite Limit Reached" = "已达收藏上限";
@@ -523,6 +575,7 @@
 "Contact Support" = "联系支持";
 "Write a Review" = "撰写评价";
 "Notes & Issues" = "备注与问题";
+"Bonsai-8B-GGUF is a 1-bit, GGUF-packaged 8B language model built on a Qwen3-8B dense architecture and designed for efficient local inference with llama.cpp across CUDA, Metal, CPU, and mobile environments." = "Bonsai-8B-GGUF is a 1-bit, GGUF-packaged 8B language model built on a Qwen3-8B dense architecture and designed for efficient local inference with llama.cpp across CUDA, Metal, CPU, and mobile environments.";
 "Qwen3-1.7B is a compact and efficient model from the Qwen3 family, suitable for on-device usage with strong general capabilities." = "Qwen3-1.7B 是 Qwen3 系列中紧凑高效的模型，适合具备强大通用能力的本地部署。";
 "Gemma 3n E2B is a lightweight instruction-tuned model from Google's Gemma family, optimized for efficient on-device conversations." = "Gemma 3n E2B 是 Google Gemma 系列的轻量级指令微调模型，为高效本地对话优化。";
 "Gemma 3n E2B is an instruction-tuned variant of Google's Gemma family built for efficient reasoning on low-resource devices.\nAvailable in GGUF quants (Q3_K_M, Q4_K_M, Q6_K) and an MLX 4-bit build for Apple Silicon.\n" = "Gemma 3n E2B 是 Gemma 家族面向指令的变体，旨在资源受限设备上高效推理。\n提供 GGUF 量化（Q3_K_M、Q4_K_M、Q6_K）以及适用于 Apple Silicon 的 MLX 4 位构建。\n";
@@ -679,6 +732,7 @@
 /* Tabs & accessibility labels */
 "Stored" = "存储";
 "Web Search" = "网页搜索";
+"Python" = "Python";
 "Open Stored" = "打开存储";
 "Message input" = "消息输入";
 "What is Web Search button?" = "什么是网页搜索按钮？";
@@ -687,3 +741,279 @@
 "Open Model Library" = "打开模型库";
 "Favorites" = "收藏夹";
 "Recent" = "最近";
+"Context Overflow" = "上下文溢出";
+"Truncate Middle" = "截断中间";
+"Rolling Window" = "滚动窗口";
+"Stop at Limit" = "达到限制时停止";
+"When context overflows, keep the beginning and latest turns while removing middle turns." = "当上下文溢出时，保留对话的开头和最新轮次，移除中间的轮次。";
+"When context overflows, keep recent turns and drop the earliest conversation." = "当上下文溢出时，保留最近的对话轮次，丢弃最早的对话。";
+"When context overflows, stop generation and show an error instead of trimming." = "当上下文溢出时，停止生成并显示错误，而不是裁剪对话。";
+"Middle conversation turns were trimmed to fit this model's context window." = "为适应此模型的上下文窗口，中间的对话轮次已被裁剪。";
+"Earlier conversation turns were trimmed to fit this model's context window." = "为适应此模型的上下文窗口，较早的对话轮次已被裁剪。";
+"Generation stopped at the context limit for this model." = "此模型已达到上下文限制，生成已停止。";
+"Memory quality deteriorates in the middle of the conversation when trimming is applied." = "应用裁剪时，对话中间部分的记忆质量会下降。";
+"Memory quality deteriorates for the beginning of the conversation when trimming is applied." = "应用裁剪时，对话开头部分的记忆质量会下降。";
+"Memory quality no longer improves because generation is stopped once the limit is reached." = "由于达到限制后生成即停止，记忆质量将不再提升。";
+"The model context window was exceeded." = "已超出模型的上下文窗口。";
+"Prompt tokens: %@ • Context limit: %@." = "提示词令牌数：%@ • 上下文限制：%@。";
+"Context limit: %@ tokens." = "上下文限制：%@ 个令牌。";
+"Context Length Exceeded" = "上下文长度超出";
+"Context Length Exceeded (%@ > %@ tokens). Stop at Limit is enabled, so this turn was not sent." = "上下文长度超出（%@ > %@ 个令牌）。已启用\u201c达到限制时停止\u201d，因此本轮未发送。";
+"Context Length Exceeded. Stop at Limit is enabled, so this turn was not sent." = "上下文长度超出。已启用“达到限制时停止”，因此本轮未发送。";
+"Context Length Exceeded. Middle turns were trimmed, but the prompt is still too large. Increase context length or shorten this chat." = "上下文长度超出。中间轮次已被裁剪，但提示仍然过长。请增加上下文长度或缩短此对话。";
+"Context Length Exceeded. Older turns were trimmed, but the prompt is still too large. Increase context length or shorten this chat." = "上下文长度超出。较早的轮次已被裁剪，但提示仍然过长。请增加上下文长度或缩短此对话。";
+"Context Length Exceeded. Stop at Limit is enabled, so generation was halted before sending." = "上下文长度超出。已启用“达到限制时停止”，因此发送前生成已停止。";
+
+/* ============================================================
+   Missing keys – Settings & UI
+   ============================================================ */
+"About RAM Usage" = "关于 RAM 使用";
+"Add Identifier" = "添加标识符";
+"Add remote default" = "添加远程默认";
+"App Data Reset" = "应用数据已重置";
+"Appearance" = "外观";
+"Auth header (optional)" = "Auth 头部（可选）";
+"Chat History Deleted" = "聊天记录已删除";
+"Custom Backend" = "自定义 Backend";
+"Download Embedding Model" = "下载嵌入模型";
+"Est. Time" = "预计时间";
+"Failed to Delete Embedding Model" = "删除嵌入模型失败";
+"Filter" = "筛选";
+"Installing…" = "正在安装…";
+"Join Early Testers" = "加入早期测试";
+"Local default" = "本地默认";
+"Memory Budget" = "内存预算";
+"Model identifier" = "模型标识符";
+"Peak RAM" = "峰值 RAM";
+"Remote timeout: %ds" = "远程超时：%ds";
+"Remove identifier" = "移除标识符";
+"Reopen Onboarding" = "重新打开引导";
+"Resume" = "恢复";
+"Retry download" = "重试下载";
+"Section" = "分类";
+"Startup Defaults" = "启动默认设置";
+"Things to keep in mind" = "注意事项";
+"Verifying…" = "正在验证…";
+"Vision-capable" = "支持视觉";
+"When both are available" = "当两者都可用时";
+"Working set estimate (%@): %@ @ %d tokens" = "工作集估算（%@）：%@ @ %d 个令牌";
+"Mixture-of-Experts" = "混合专家模型";
+"Discover and download local models" = "发现并下载本地模型";
+
+/* ============================================================
+   Missing keys – Ollama & Backend connections
+   ============================================================ */
+"Connections to localhost may not work from other devices. Replace it with your machine's LAN IP address to allow remote access." = "从其他设备连接 localhost 可能无法工作。请将其替换为您机器的局域网 IP 地址以允许远程访问。";
+"Launch Ollama with `OLLAMA_HOST=0.0.0.0` so it can accept remote clients." = "使用 `OLLAMA_HOST=0.0.0.0` 启动 Ollama 以接受远程客户端。";
+"Could not connect to the Ollama server. Make sure Ollama is running on %@ and is configured to accept connections from this device (for example by launching it with `OLLAMA_HOST=0.0.0.0`)." = "无法连接到 Ollama 服务器。请确保 Ollama 正在 %@ 上运行，并且已配置为接受来自此设备的连接（例如使用 `OLLAMA_HOST=0.0.0.0` 启动）。";
+"Could not connect to Ollama at localhost. When connecting from another device, replace \"localhost\" with your computer's IP address or hostname and start Ollama with `OLLAMA_HOST=0.0.0.0` so it can accept remote connections." = "无法连接到 localhost 上的 Ollama。从其他设备连接时，请将 \"localhost\" 替换为您计算机的 IP 地址或主机名，并使用 `OLLAMA_HOST=0.0.0.0` 启动 Ollama 以接受远程连接。";
+
+/* ============================================================
+   Missing keys – Noema Relay status messages
+   ============================================================ */
+"Relay stopped" = "中继已停止";
+"Loaded model ready" = "模型已加载就绪";
+"Failed to load model" = "模型加载失败";
+"Refreshing relay catalog…" = "正在刷新中继目录…";
+"Relay catalog refreshed" = "中继目录已刷新";
+"Failed to refresh catalog: %@" = "刷新目录失败：%@";
+"Updating LAN status…" = "正在更新局域网状态…";
+"Failed to update LAN status" = "更新局域网状态失败";
+"Activating %@…" = "正在激活 %@…";
+"Relay switched to %@" = "中继已切换至 %@";
+"Failed to activate %@" = "激活 %@ 失败";
+"Relay idle after ejecting %@" = "弹出 %@ 后中继进入空闲";
+"Failed to eject %@" = "弹出 %@ 失败";
+"Checking exposed endpoints…" = "正在检查暴露的端点…";
+"Failed to start LAN server" = "启动局域网服务器失败";
+"Starting relay…" = "正在启动中继…";
+"Starting relay… Offline: %@" = "正在启动中继… 离线：%@";
+"Listening for conversations…" = "正在监听对话…";
+"iOS requested a relay switch. Start the relay to respond." = "iOS 请求切换中继。请启动中继以响应。";
+
+/* ============================================================
+   Missing keys – Noema Relay Bluetooth & CloudKit
+   ============================================================ */
+"Bluetooth ready to advertise" = "蓝牙已就绪，可进行广播";
+"Warming up Bluetooth radio…" = "正在预热蓝牙…";
+"Broadcasting relay details" = "正在广播中继详情";
+"Pairing refreshed %@" = "配对已刷新 %@";
+"Client Wi-Fi: %@" = "客户端 Wi-Fi：%@";
+"Last seen %@" = "最后一次出现 %@";
+"Checking iCloud availability…" = "正在检查 iCloud 可用性…";
+"CloudKit unavailable" = "CloudKit 不可用";
+"Connected to iCloud" = "已连接到 iCloud";
+"Sign in to iCloud to enable the relay" = "登录 iCloud 以启用中继";
+"iCloud access is restricted" = "iCloud 访问受限";
+"Unable to determine iCloud status" = "无法确定 iCloud 状态";
+"CloudKit status unknown" = "CloudKit 状态未知";
+"Set a CloudKit container identifier in RelayConfiguration.swift to publish the catalog." = "请在 RelayConfiguration.swift 中设置 CloudKit 容器标识符以发布目录。";
+"Verifying access to %@…" = "正在验证对 %@ 的访问权限…";
+"Open System Settings → Apple ID and sign in with the same account as your iPhone or iPad." = "打开系统设置 → Apple ID，使用与 iPhone 或 iPad 相同的帐户登录。";
+"Screen Time or device management restrictions may be blocking iCloud access." = "屏幕使用时间或设备管理限制可能阻止了 iCloud 访问。";
+"Check your internet connection and try again." = "请检查网络连接并重试。";
+"Relay catalog is still syncing. Initial publishes typically finish within about 30 seconds after you start the relay." = "中继目录仍在同步中。初次发布通常在启动中继后约 30 秒内完成。";
+"Publishing catalog updates to CloudKit…" = "正在将目录更新发布到 CloudKit…";
+"Catalog is live and ready for paired devices." = "目录已上线，可供配对设备使用。";
+"Start the relay to resume CloudKit updates." = "启动中继以恢复 CloudKit 更新。";
+"Waiting for the first catalog publish from this Mac." = "正在等待此 Mac 首次发布目录。";
+"CloudKit reported an error while publishing the catalog. Restart the relay to retry." = "CloudKit 在发布目录时报告了错误。请重新启动中继以重试。";
+"Catalog version %@ synced %@." = "目录版本 %@ 已于 %@ 同步。";
+"Catalog version %@ is ready." = "目录版本 %@ 已就绪。";
+
+/* ============================================================
+   Missing keys – Noema Relay exposure controls
+   ============================================================ */
+"Clear All" = "清除全部";
+"Select All" = "全选";
+"Hide every relay source from paired devices" = "对配对设备隐藏所有中继来源";
+"Expose every relay source to paired devices" = "向配对设备暴露所有中继来源";
+"auth" = "已认证";
+"no auth" = "无认证";
+"hidden" = "已隐藏";
+"unavailable" = "不可用";
+"Eject button unloads relay model" = "弹出按钮卸载中继模型";
+
+/* ============================================================
+   Missing keys – Dataset & Embedding helpers
+   ============================================================ */
+"Close other applications to free up RAM" = "关闭其他应用程序以释放 RAM";
+"Embedding happens locally on your device" = "嵌入在您的设备上本地完成";
+"Larger datasets take exponentially more time" = "较大的数据集所需时间呈指数增长";
+"You can pause and resume downloads if needed" = "如有需要，您可以暂停和恢复下载";
+
+/* ============================================================
+   Missing keys – Import instructions (curly-quote variant)
+   ============================================================ */
+"Select one or more .gguf files. For vision models, also select the projector .gguf (files containing ‘mmproj’ or ‘projector’). Files will be copied into your local model library." = "选择一个或多个 .gguf 文件。对于视觉模型，还需选择投影器 .gguf（包含 ‘mmproj’ 或 ‘projector’ 的文件）。文件将被复制到您的本地模型库中。";
+
+/* LM Studio remote endpoint download */
+"Download Model on Remote Endpoint" = "在远程端点下载模型";
+"Remote endpoint download mode" = "远程端点下载模式";
+"New downloads from Explore will be sent to %@ until you clear this mode." = "在你清除此模式之前，来自 Explore 的新下载将发送到 %@。";
+"New downloads from this screen will be sent to %@." = "来自此页面的新下载将发送到 %@。";
+"Remote access is disabled in Off-Grid mode." = "在离线模式下，远程访问已禁用。";
+"Remote endpoint download target is unavailable." = "远程端点下载目标不可用。";
+"Remote endpoint downloads currently support GGUF quantizations only." = "远程端点下载当前仅支持 GGUF 量化。";
+"Remote endpoint did not return a download job ID." = "远程端点未返回下载任务 ID。";
+"Downloading on remote endpoint" = "正在远程端点下载";
+"Download paused on remote endpoint" = "远程端点下载已暂停";
+"Downloaded on remote endpoint" = "已在远程端点下载";
+"Remote download failed" = "远程下载失败";
+"Already downloaded on remote endpoint" = "远程端点上已下载";
+"Downloaded on Remote Endpoint" = "已在远程端点下载";
+"Unavailable" = "不可用";
+"Retry" = "重试";
+"Clear" = "清除";
+"Remote model download failed." = "远程模型下载失败。";
+"Remote model downloads are only supported for LM Studio endpoints." = "远程模型下载仅支持 LM Studio 端点。";
+"Using system Python 3." = "Using system Python 3.";
+"Python runtime unavailable." = "Python runtime unavailable.";
+"Embedded Python runtime is missing from the app bundle." = "Embedded Python runtime is missing from the app bundle.";
+"Embedded Python standard library is missing from the app bundle." = "Embedded Python standard library is missing from the app bundle.";
+"Embedded Python runtime unavailable. Falling back to system Python 3." = "Embedded Python runtime unavailable. Falling back to system Python 3.";
+"System Python 3 is not available on this Mac." = "System Python 3 is not available on this Mac.";
+"Take Photo" = "Take Photo";
+"Opens the camera to attach a photo to your next message." = "Opens the camera to attach a photo to your next message.";
+"Recent photo %d" = "Recent photo %d";
+"Adds this photo to your next message." = "Adds this photo to your next message.";
+"Removes this photo from your next message." = "Removes this photo from your next message.";
+"Selected" = "Selected";
+"Dismiss" = "关闭";
+"Cancel Embedding?" = "取消嵌入？";
+"Cancel Embedding" = "取消嵌入";
+"You can restart this process in the dataset details at any time." = "你可以随时在数据集详情中重新启动此过程。";
+"Embedding is resource intensive. For best performance, plug in your device. Do you want to proceed on battery?" = "嵌入会占用较多资源。为获得最佳性能，请将设备接入电源。要在电池供电下继续吗？";
+"For best performance, please plug in your device until this completes." = "为获得最佳性能，请在完成前将设备接入电源。";
+"Ready to compute embeddings. Tap Confirm to start. For best performance, plug in your device." = "已准备好计算嵌入。点击“确认”开始。为获得最佳性能，请将设备接入电源。";
+"Checking embedding model…" = "正在检查嵌入模型…";
+"Downloading embedding model…" = "正在下载嵌入模型…";
+"Warming up embedding model…" = "正在预热嵌入模型…";
+"Preparing chunks" = "正在准备分块";
+"Embedding complete" = "嵌入完成";
+"Failed to download embedding model: %@" = "下载嵌入模型失败：%@";
+"Failed to initialize" = "初始化失败";
+"Extract" = "提取";
+"Compress" = "压缩";
+"Embed" = "嵌入";
+"Ready for use" = "已可使用";
+"No retrievable text found in imported files" = "导入的文件中未找到可检索文本";
+"Extracting text from files (images ignored)" = "正在从文件中提取文本（忽略图像）";
+"Normalizing whitespace and merging paragraphs" = "正在规范空白并合并段落";
+"Stopped" = "已停止";
+"%d%% · %@" = "%d%% · %@";
+"~%dm %02ds" = "~%dm %02ds";
+"Stop" = "停止";
+"Proceed" = "继续";
+"Proceed on battery power?" = "使用电池电源继续吗？";
+"Extracting" = "提取中";
+"Compressing" = "压缩中";
+"Failed" = "失败";
+"Memory" = "Memory";
+"Persistent Memory" = "Persistent Memory";
+"What is Persistent Memory?" = "What is Persistent Memory?";
+"Memory entries persist across conversations on this device. When enabled, tool-capable models can read or update them automatically." = "Memory entries persist across conversations on this device. When enabled, tool-capable models can read or update them automatically.";
+"Add Memory" = "Add Memory";
+"%d saved" = "%d saved";
+"No memories saved yet." = "No memories saved yet.";
+"When enabled, models can save durable facts like stable preferences or recurring project constraints to on-device memory that persists across conversations." = "When enabled, models can save durable facts like stable preferences or recurring project constraints to on-device memory that persists across conversations.";
+"Delete Memory" = "Delete Memory";
+"This permanently removes the selected memory entry." = "This permanently removes the selected memory entry.";
+"New Memory" = "New Memory";
+"Edit Memory" = "Edit Memory";
+"Memory Title" = "Memory Title";
+"Use memory for durable facts that should remain available in future conversations." = "Use memory for durable facts that should remain available in future conversations.";
+"No memory entries returned." = "No memory entries returned.";
+"Provide either an entry id or a title." = "Provide either an entry id or a title.";
+"Memory entry not found." = "Memory entry not found.";
+"A memory entry with that title already exists." = "A memory entry with that title already exists.";
+"Memory title cannot be empty." = "Memory title cannot be empty.";
+"Memory content cannot be empty." = "Memory content cannot be empty.";
+"The text to replace was not found in the memory entry." = "The text to replace was not found in the memory entry.";
+"Insert index is outside the memory entry content." = "Insert index is outside the memory entry content.";
+
+"Manage Memories" = "Manage Memories";
+"%d of %d saved" = "%d of %d saved";
+"Memory is full. Delete an entry to add another." = "Memory is full. Delete an entry to add another.";
+"Memories" = "Memories";
+"View, edit, or delete saved memories. This list is limited to 20 entries." = "View, edit, or delete saved memories. This list is limited to 20 entries.";
+"Up to %d memories can be stored across conversations on this device." = "Up to %d memories can be stored across conversations on this device.";
+"You can store up to 20 memory entries." = "You can store up to 20 memory entries.";
+
+"Memory limited: %d of %d preloaded" = "Memory limited: %d of %d preloaded";
+"Memory not preloaded" = "Memory not preloaded";
+"Memory Limited" = "Memory Limited";
+"Memory Not Preloaded" = "Memory Not Preloaded";
+"Only %d of %d saved memories were preloaded for this turn. The remaining memories were skipped so the current model stays within its context budget." = "Only %d of %d saved memories were preloaded for this turn. The remaining memories were skipped so the current model stays within its context budget.";
+"Saved memories were not preloaded for this turn because the current model's context budget is too small." = "Saved memories were not preloaded for this turn because the current model's context budget is too small.";
+"System Prompt Intro" = "System Prompt Intro";
+"Edit only Noema's opening instructions. Tool, retrieval, memory, date/time, styling, and safety instructions are managed by Noema and cannot be edited here. If this field is left blank, Noema uses the default intro." = "Edit only Noema's opening instructions. Tool, retrieval, memory, date/time, styling, and safety instructions are managed by Noema and cannot be edited here. If this field is left blank, Noema uses the default intro.";
+"System Prompt" = "System Prompt";
+"Model System Prompt" = "Model System Prompt";
+"Use Global Default" = "Use Global Default";
+"Use Model Prompt" = "Use Model Prompt";
+"Exclude Global Default" = "Exclude Global Default";
+"Uses the default system prompt from Settings for this model." = "Uses the default system prompt from Settings for this model.";
+"Use a model-specific prompt instead of the shared Settings prompt." = "Use a model-specific prompt instead of the shared Settings prompt.";
+"Skip the editable Settings prompt for this model while keeping Noema's built-in system guidance." = "Skip the editable Settings prompt for this model while keeping Noema's built-in system guidance.";
+"Reset System Prompt" = "Reset System Prompt";
+"Restore Noema's default system prompt? Your custom text will be replaced." = "Restore Noema's default system prompt? Your custom text will be replaced.";
+"Reset System Prompt Intro" = "Reset System Prompt Intro";
+"Restore Noema's default opening instructions? Your custom intro will be replaced, but the protected Noema-managed instructions remain unchanged." = "Restore Noema's default opening instructions? Your custom intro will be replaced, but the protected Noema-managed instructions remain unchanged.";
+"Reset to Default" = "Reset to Default";
+"Return Key Sends" = "Return 键发送";
+"Return Inserts New Line" = "Return 键换行";
+"Return inserts a new line. Use the Send button to send." = "Return 键会插入新行。请使用发送按钮发送。";
+"Return sends your message instead of inserting a new line." = "Return 键会发送消息，而不是插入新行。";
+"Return inserts a new line. Use Command-Return or the Send button to send." = "Return 键会插入新行。请使用 Command-Return 或发送按钮发送。";
+"Return sends your message." = "Return 键会发送你的消息。";
+"Return Key Behavior" = "Return 键行为";
+"Download Cleanup Complete" = "Download Cleanup Complete";
+"Clean Download Leftovers" = "Clean Download Leftovers";
+"Cleaning Download Leftovers…" = "Cleaning Download Leftovers…";
+"Remove incomplete downloads, stale resume data, and temporary download files without deleting installed models or datasets." = "Remove incomplete downloads, stale resume data, and temporary download files without deleting installed models or datasets.";
+"Removed %1$d temporary file(s), %2$d resume item(s), and %3$d stale download record(s). Repaired %4$d download artifact(s)." = "Removed %1$d temporary file(s), %2$d resume item(s), and %3$d stale download record(s). Repaired %4$d download artifact(s).";
+"Sampling unavailable for Argmax models" = "Argmax 模型不支持采样";
+"Configured context" = "Configured context";
+"Reserved for response" = "Reserved for response";
+"Usable prompt budget" = "Usable prompt budget";

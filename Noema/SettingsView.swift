@@ -4,21 +4,128 @@ import SwiftUI
 import UIKit
 #endif
 
+enum ContextOverflowStrategy: String, CaseIterable, Identifiable {
+    case truncateMiddle = "truncate_middle"
+    case rollingWindow = "rolling_window"
+    case stopAtLimit = "stop_at_limit"
+
+    static let defaultValue: ContextOverflowStrategy = .truncateMiddle
+
+    var id: String { rawValue }
+
+    static func from(_ rawValue: String) -> ContextOverflowStrategy {
+        ContextOverflowStrategy(rawValue: rawValue) ?? .defaultValue
+    }
+
+    var titleKey: String {
+        switch self {
+        case .truncateMiddle:
+            return "Truncate Middle"
+        case .rollingWindow:
+            return "Rolling Window"
+        case .stopAtLimit:
+            return "Stop at Limit"
+        }
+    }
+
+    var settingsDescriptionKey: String {
+        switch self {
+        case .truncateMiddle:
+            return "When context overflows, keep the beginning and latest turns while removing middle turns."
+        case .rollingWindow:
+            return "When context overflows, keep recent turns and drop the earliest conversation."
+        case .stopAtLimit:
+            return "When context overflows, stop generation and show an error instead of trimming."
+        }
+    }
+
+    var overflowActionKey: String {
+        switch self {
+        case .truncateMiddle:
+            return "Middle conversation turns were trimmed to fit this model's context window."
+        case .rollingWindow:
+            return "Earlier conversation turns were trimmed to fit this model's context window."
+        case .stopAtLimit:
+            return "Generation stopped at the context limit for this model."
+        }
+    }
+
+    var overflowDeteriorationKey: String {
+        switch self {
+        case .truncateMiddle:
+            return "Memory quality deteriorates in the middle of the conversation when trimming is applied."
+        case .rollingWindow:
+            return "Memory quality deteriorates for the beginning of the conversation when trimming is applied."
+        case .stopAtLimit:
+            return "Memory quality no longer improves because generation is stopped once the limit is reached."
+        }
+    }
+}
+
+enum ChatAttachmentCleanupPolicy: String, CaseIterable, Identifiable {
+    case immediate = "immediate"
+    case daily = "daily"
+    case weekly = "weekly"
+    case never = "never"
+
+    static let storageKey = "chatAttachmentCleanupPolicy"
+    static let defaultValue: ChatAttachmentCleanupPolicy = .immediate
+
+    var id: String { rawValue }
+
+    static func from(_ rawValue: String) -> ChatAttachmentCleanupPolicy {
+        ChatAttachmentCleanupPolicy(rawValue: rawValue) ?? .defaultValue
+    }
+
+    var titleKey: String {
+        switch self {
+        case .immediate:
+            return "Immediately"
+        case .daily:
+            return "Daily"
+        case .weekly:
+            return "Weekly"
+        case .never:
+            return "Never"
+        }
+    }
+
+    var settingsDescriptionKey: String {
+        switch self {
+        case .immediate:
+            return "Delete chat image files as soon as a chat is deleted. Recommended for minimum storage use."
+        case .daily:
+            return "Keep deleted-chat image files temporarily and clean them up once per day."
+        case .weekly:
+            return "Keep deleted-chat image files temporarily and clean them up once per week."
+        case .never:
+            return "Never automatically delete chat image files after chat deletion."
+        }
+    }
+}
+
 final class SettingsModel: ObservableObject {
     @AppStorage("isAdvancedMode") var isAdvancedMode = false {
         didSet { objectWillChange.send() }
     }
     @AppStorage("offGrid") var offGrid = false
+    @AppStorage("hapticsEnabled") var hapticsEnabled = true
+    @AppStorage("muteSoundEffects") var muteSoundEffects = false
+    @AppStorage("playSoundEffectsInSilentMode") var playSoundEffectsInSilentMode = false
     @AppStorage("appearance") var appearance = "system" // light, dark, system
     @AppStorage("verboseLogging") var verboseLogging = false
     @AppStorage("huggingFaceToken") var huggingFaceToken = ""
     @AppStorage("bypassRAMCheck") var bypassRAMCheck = false
 #if os(visionOS)
-    @AppStorage("visionVerticalPanelLayout") var visionVerticalPanelLayout = true
+    @AppStorage("visionVerticalPanelLayout") var visionVerticalPanelLayout = false
 #endif
     // System preset removed; default system behavior is always used
     @AppStorage("ragMaxChunks") var ragMaxChunks = 5
     @AppStorage("ragMinScore") var ragMinScore: Double = 0.5
+    @AppStorage("contextOverflowStrategy") var contextOverflowStrategyRaw = ContextOverflowStrategy.defaultValue.rawValue
+    @AppStorage(ChatAttachmentCleanupPolicy.storageKey) var chatAttachmentCleanupPolicyRaw = ChatAttachmentCleanupPolicy.defaultValue.rawValue
+    @AppStorage(ChatSendBehavior.storageKey) var chatSendBehaviorRaw = ChatSendBehavior.defaultValue.rawValue
+    @AppStorage(SystemPreset.customSystemPromptIntroKey) var customSystemPromptIntro = SystemPreset.defaultEditableIntro
 
     // MCPs removed
 
@@ -26,8 +133,7 @@ final class SettingsModel: ObservableObject {
     /// the `MainActor`, so ensure we're also on the main actor when calling it.
     @MainActor
     func clearChatHistory(_ vm: ChatVM) {
-        vm.sessions.removeAll()
-        vm.startNewSession()
+        vm.clearChatHistory()
     }
 
 
@@ -42,12 +148,22 @@ final class SettingsModel: ObservableObject {
         // Restore default values so UI reflects the reset immediately.
         isAdvancedMode = false
         offGrid = false
+        hapticsEnabled = true
+        muteSoundEffects = false
+        playSoundEffectsInSilentMode = false
         appearance = "system"
         verboseLogging = false
         huggingFaceToken = ""
         bypassRAMCheck = false
+#if os(visionOS)
+        visionVerticalPanelLayout = false
+#endif
         ragMaxChunks = 5
         ragMinScore = 0.5
+        contextOverflowStrategyRaw = ContextOverflowStrategy.defaultValue.rawValue
+        chatAttachmentCleanupPolicyRaw = ChatAttachmentCleanupPolicy.defaultValue.rawValue
+        chatSendBehaviorRaw = ChatSendBehavior.defaultValue.rawValue
+        customSystemPromptIntro = SystemPreset.defaultEditableIntro
         StartupPreferencesStore.save(StartupPreferences())
     }
 }
@@ -58,6 +174,7 @@ struct SettingsView: View {
     @EnvironmentObject var chatVM: ChatVM
     @EnvironmentObject var modelManager: AppModelManager
     @EnvironmentObject var datasetManager: DatasetManager
+    @EnvironmentObject var downloadController: DownloadController
     @EnvironmentObject var walkthrough: GuidedWalkthroughManager
     @EnvironmentObject var localizationManager: LocalizationManager
     // Installer used to mirror onboarding's embedding model download flow
@@ -70,6 +187,7 @@ struct SettingsView: View {
     @State private var showChatsCleared = false
     @State private var confirmClearChats = false
     @State private var confirmResetAppData = false
+    @State private var confirmResetSystemPrompt = false
     @State private var showResetComplete = false
     @State private var isResettingAppData = false
     @State private var showRAMInfo = false
@@ -79,10 +197,14 @@ struct SettingsView: View {
     @State private var embedAvailable = FileManager.default.fileExists(atPath: EmbeddingModel.modelURL.path)
     @State private var showEmbedDeleteError = false
     @State private var embedDeleteErrorMessage = ""
+    @State private var isCleaningDownloadLeftovers = false
+    @State private var showDownloadCleanupResult = false
+    @State private var downloadCleanupResultMessage = ""
     @State private var startupPreferences = StartupPreferencesStore.load()
     @State private var showWebSearchInfo = false
     @State private var selectedLanguageCode: String = UserDefaults.standard.string(forKey: "appLanguageCode") ?? LocalizationManager.detectSystemLanguage()
-    private let llamaCppBuild = "b7313"
+    @FocusState private var systemPromptFocused: Bool
+    private let llamaCppBuild = "0.9.11 (009a1133)"
     private let appVersion = "2.0"
     private enum ScrollTarget: Hashable {
         case offGrid
@@ -157,6 +279,16 @@ struct SettingsView: View {
                 } message: {
                     Text(LocalizedStringKey("Deletes all chats, downloaded models, and datasets, and restores settings to defaults. The embedding model stays installed."))
                 }
+                .confirmationDialog(LocalizedStringKey("Reset System Prompt"), isPresented: $confirmResetSystemPrompt, titleVisibility: .visible) {
+                    Button(LocalizedStringKey("Reset to Default"), role: .destructive) {
+                        settings.customSystemPromptIntro = SystemPreset.defaultEditableIntro
+                        systemPromptFocused = false
+                        confirmResetSystemPrompt = false
+                    }
+                    Button(LocalizedStringKey("Cancel"), role: .cancel) { confirmResetSystemPrompt = false }
+                } message: {
+                    Text(LocalizedStringKey("Restore Noema's default system prompt? Your custom text will be replaced."))
+                }
                 .alert(LocalizedStringKey("About RAM Usage"), isPresented: $showRAMInfo) {
                     Button(LocalizedStringKey("OK"), role: .cancel) { }
                 } message: {
@@ -176,6 +308,11 @@ struct SettingsView: View {
                     Button(LocalizedStringKey("OK"), role: .cancel) {}
                 } message: {
                     Text(embedDeleteErrorMessage)
+                }
+                .alert(LocalizedStringKey("Download Cleanup Complete"), isPresented: $showDownloadCleanupResult) {
+                    Button(LocalizedStringKey("OK"), role: .cancel) {}
+                } message: {
+                    Text(downloadCleanupResultMessage)
                 }
 #if os(macOS)
                 .frame(minWidth: 640, minHeight: 560)
@@ -204,7 +341,7 @@ struct SettingsView: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(LocalizedStringKey("This device doesn't support GPU offload; GGUF models will run on the CPU and generation speed will be significantly slower."))
                                     .font(.caption)
-                                Text(LocalizedStringKey("Fastest option on this device: SLM (Leap) models."))
+                                Text(LocalizedStringKey("Fastest option on this device: ET models."))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -215,8 +352,13 @@ struct SettingsView: View {
                 modeSection
                 ramSection
                 startupSection
+                if !modelManager.hiddenModels.isEmpty {
+                    hiddenModelsSection
+                }
                 ramBypassSection
                 SettingsWebSearchSection()
+                SettingsMemorySection()
+                SettingsPythonSection()
                 offGridSection
                 generalSection
                 earlyTestersSection
@@ -230,6 +372,9 @@ struct SettingsView: View {
             }
 #if os(macOS)
             .formStyle(.grouped)
+#endif
+#if os(iOS)
+            .scrollDismissesKeyboard(.interactively)
 #endif
             .guideHighlight(.settingsForm)
             .onChange(of: walkthrough.step) { step in
@@ -354,7 +499,7 @@ struct SettingsView: View {
                 if !DeviceGPUInfo.supportsGPUOffload {
                     SettingsNoticeCard(
                         title: String(localized: "CPU Rendering Only"),
-                        message: String(localized: "This Mac cannot offload GGUF models to the GPU. Expect slower generation speeds. Leap SLM models remain the fastest option here.")
+                        message: String(localized: "This Mac cannot offload GGUF models to the GPU. Expect slower generation speeds. ET models remain the fastest option here.")
                     )
                 }
                 modeCard
@@ -366,10 +511,14 @@ struct SettingsView: View {
                 ramCard
                 ramBypassCard
                 embeddingCard
+                if !modelManager.hiddenModels.isEmpty {
+                    hiddenModelsCard
+                }
             }
         case .search:
             VStack(spacing: 24) {
                 webSearchCard
+                memoryCard
                 offGridCard
             }
         case .privacy:
@@ -413,7 +562,6 @@ struct SettingsView: View {
             Toggle(isOn: $webSettings.webSearchEnabled) {
                 HStack(spacing: 8) {
                     Text(LocalizedStringKey("Web Search button"))
-                        .font(FontTheme.body)
                         .foregroundStyle(AppTheme.text)
                     Button { showWebSearchInfo = true } label: {
                         Image(systemName: "questionmark.circle").foregroundStyle(AppTheme.secondaryText)
@@ -422,7 +570,6 @@ struct SettingsView: View {
                     .accessibilityLabel(LocalizedStringKey("What is Web Search button?"))
                 }
             }
-            .toggleStyle(ModernToggleStyle())
             .tint(.blue)
             .onChangeCompat(of: webSettings.webSearchEnabled) { _, on in
                 if !on { webSettings.webSearchArmed = false }
@@ -430,12 +577,23 @@ struct SettingsView: View {
 
             if webSettings.webSearchEnabled {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(LocalizedStringKey("SearXNG web search is enabled for this device."))
-                        .font(FontTheme.subheadline)
-                        .foregroundStyle(AppTheme.text)
-                    Text(LocalizedStringKey("Search requests are proxied through https://search.noemaai.com and are available without quotas."))
-                        .font(FontTheme.caption)
-                        .foregroundStyle(AppTheme.secondaryText)
+                    if settings.isAdvancedMode {
+                        Text(LocalizedStringKey("Custom SearXNG URL"))
+                            .foregroundStyle(AppTheme.text)
+                        TextField("https://search.noemaai.com", text: $webSettings.customSearXNGURL)
+                            .autocorrectionDisabled(true)
+                            .textFieldStyle(.roundedBorder)
+                        if webSettings.customSearXNGURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Text(LocalizedStringKey("Using default: https://search.noemaai.com. Search requests are available without quotas."))
+                                .foregroundStyle(AppTheme.secondaryText)
+                        } else {
+                            Text("Using custom instance: \(webSettings.customSearXNGURL)")
+                                .foregroundStyle(AppTheme.secondaryText)
+                        }
+                    } else {
+                        Text(LocalizedStringKey("Using default: https://search.noemaai.com. Search requests are available without quotas."))
+                            .foregroundStyle(AppTheme.secondaryText)
+                    }
                 }
                 .padding(.top, 4)
             }
@@ -444,6 +602,12 @@ struct SettingsView: View {
             Button(LocalizedStringKey("OK"), role: .cancel) { }
         } message: {
             Text(LocalizedStringKey("Allows models to use a privacy-preserving web search API when you tap the globe in chat. Default is ON. In Offline Only mode, the button is disabled."))
+        }
+    }
+
+    private var memoryCard: some View {
+        SettingsCard(title: LocalizedStringKey("Memory"), icon: "bookmark", minHeight: 220) {
+            SettingsMemorySummaryContent()
         }
     }
 
@@ -462,6 +626,12 @@ struct SettingsView: View {
     private var embeddingCard: some View {
         SettingsCard(title: LocalizedStringKey("Embedding Model"), icon: "square.stack.3d.up", minHeight: 220) {
             embeddingContent
+        }
+    }
+
+    private var hiddenModelsCard: some View {
+        SettingsCard(title: LocalizedStringKey("Hidden Models"), icon: "eye.slash", minHeight: 180) {
+            hiddenModelsContent
         }
     }
 
@@ -736,6 +906,65 @@ struct SettingsView: View {
         }
     }
 
+#if os(iOS)
+    private struct ThermalStateStageView: View {
+        @State private var thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
+
+        private struct Stage: Identifiable {
+            let state: ProcessInfo.ThermalState
+            let title: LocalizedStringKey
+            let color: Color
+
+            var id: Int { state.rawValue }
+        }
+
+        private let stages: [Stage] = [
+            Stage(state: .nominal, title: LocalizedStringKey("Nominal"), color: .green),
+            Stage(state: .fair, title: LocalizedStringKey("Fair"), color: .yellow),
+            Stage(state: .serious, title: LocalizedStringKey("Serious"), color: .orange),
+            Stage(state: .critical, title: LocalizedStringKey("Critical"), color: .red)
+        ]
+
+        private var currentStage: Stage {
+            stages.first(where: { $0.state == thermalState }) ?? stages[0]
+        }
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(LocalizedStringKey("Thermal Stage"))
+                    .font(FontTheme.body)
+                    .fontWeight(.medium)
+                    .foregroundStyle(AppTheme.text)
+
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(currentStage.color)
+                        .frame(width: 8, height: 8)
+                    Text(currentStage.title)
+                        .font(FontTheme.caption)
+                        .fontWeight(.semibold)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(currentStage.color.opacity(0.22))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(currentStage.color.opacity(0.75), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+            .onAppear {
+                thermalState = ProcessInfo.processInfo.thermalState
+            }
+            .onReceive(NotificationCenter.default.publisher(for: ProcessInfo.thermalStateDidChangeNotification)) { _ in
+                thermalState = ProcessInfo.processInfo.thermalState
+            }
+        }
+    }
+#endif
+
     private var modeSection: some View {
         Section { modeSettingsContent }
     }
@@ -777,12 +1006,14 @@ struct SettingsView: View {
             let sizeBytes = Int64(m.sizeGB * 1_073_741_824.0)
             let ctx = Int(settings.contextLength)
             let layerHint: Int? = m.totalLayers > 0 ? m.totalLayers : nil
+            let kvCacheEstimate = ModelRAMAdvisor.GGUFKVCacheEstimate.resolved(from: settings)
             let (estimate, _) = ModelRAMAdvisor.estimateAndBudget(
                 format: m.format,
                 sizeBytes: sizeBytes,
                 contextLength: ctx,
                 layerCount: layerHint,
-                moeInfo: m.moeInfo
+                moeInfo: m.moeInfo,
+                kvCacheEstimate: kvCacheEstimate
             )
             return byteFormatter.string(fromByteCount: estimate)
         }()
@@ -854,6 +1085,9 @@ struct SettingsView: View {
             .padding(4)
         }
         if settings.isAdvancedMode {
+#if os(iOS)
+            ThermalStateStageView()
+#endif
             // Quick estimator: choose a model to preview its working set without changing defaults
             if !modelManager.downloadedModels.isEmpty {
                 Picker(LocalizedStringKey("Estimate for"), selection: $estimateModelPath) {
@@ -875,6 +1109,35 @@ struct SettingsView: View {
         Section(LocalizedStringKey("Startup")) { startupSettingsContent }
     }
 
+    private var hiddenModelsSection: some View {
+        Section(LocalizedStringKey("Hidden Models")) { hiddenModelsContent }
+    }
+
+    @ViewBuilder
+    private var hiddenModelsContent: some View {
+        ForEach(modelManager.hiddenModels, id: \.id) { model in
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(model.name)
+                        .foregroundStyle(AppTheme.text)
+                    Text(model.format.displayName)
+                        .font(.caption)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(model.format.tagGradient)
+                        .clipShape(Capsule())
+                        .foregroundColor(.white)
+                }
+                Spacer()
+                Button(LocalizedStringKey("Show in Stored")) {
+                    modelManager.unhide(modelID: model.modelID, quantLabel: model.quant)
+                    refreshStartupPreferences()
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
     @ViewBuilder
     private var startupSettingsContent: some View {
         localStartupPicker
@@ -889,9 +1152,7 @@ struct SettingsView: View {
     @ViewBuilder
     private var ramBypassContent: some View {
         Toggle(LocalizedStringKey("Bypass RAM safety check (may cause crashes)"), isOn: $settings.bypassRAMCheck)
-            .toggleStyle(ModernToggleStyle())
         Text(LocalizedStringKey("If enabled, the app will attempt to load models even when they likely exceed your device's memory budget. This can cause the app to terminate."))
-            .font(FontTheme.caption)
             .foregroundStyle(AppTheme.secondaryText)
     }
 
@@ -902,14 +1163,12 @@ struct SettingsView: View {
     @ViewBuilder
     private var offGridContent: some View {
         Toggle(LocalizedStringKey("Off-grid Mode"), isOn: $settings.offGrid)
-            .toggleStyle(ModernToggleStyle())
             .id(ScrollTarget.offGrid)
             .guideHighlight(.settingsOffGrid)
             .onChange(of: settings.offGrid) { on in
                 NetworkKillSwitch.setEnabled(on)
             }
         Text(LocalizedStringKey("Blocks all network traffic, model downloads, and cloud connections so everything stays on‑device."))
-            .font(FontTheme.caption)
             .foregroundStyle(AppTheme.secondaryText)
     }
 
@@ -1163,9 +1422,7 @@ struct SettingsView: View {
     private var generalContent: some View {
 #if os(visionOS)
         Toggle(LocalizedStringKey("Show vertical workspace"), isOn: $settings.visionVerticalPanelLayout)
-            .toggleStyle(ModernToggleStyle())
         Text(LocalizedStringKey("Swap between the new stacked chat panel and the classic tab bar layout."))
-            .font(FontTheme.caption)
             .foregroundStyle(AppTheme.secondaryText)
 #endif
 
@@ -1175,6 +1432,45 @@ struct SettingsView: View {
             Text(LocalizedStringKey("Dark")).tag("dark")
         }
 
+        if settings.isAdvancedMode {
+            Picker(
+                LocalizedStringKey("Context Overflow"),
+                selection: Binding(
+                    get: { ContextOverflowStrategy.from(settings.contextOverflowStrategyRaw) },
+                    set: { settings.contextOverflowStrategyRaw = $0.rawValue }
+                )
+            ) {
+                ForEach(ContextOverflowStrategy.allCases) { strategy in
+                    Text(LocalizedStringKey(strategy.titleKey)).tag(strategy)
+                }
+            }
+        }
+
+#if os(iOS)
+        Toggle(LocalizedStringKey("Haptics"), isOn: $settings.hapticsEnabled)
+
+        Picker(
+            LocalizedStringKey("Return Key Behavior"),
+            selection: Binding(
+                get: { ChatSendBehavior.from(settings.chatSendBehaviorRaw) },
+                set: { settings.chatSendBehaviorRaw = $0.rawValue }
+            )
+        ) {
+            ForEach(ChatSendBehavior.allCases) { behavior in
+                Text(LocalizedStringKey(behavior.titleKey)).tag(behavior)
+            }
+        }
+        Text(LocalizedStringKey(ChatSendBehavior.from(settings.chatSendBehaviorRaw).settingsDescriptionKey))
+            .font(FontTheme.caption)
+            .foregroundStyle(AppTheme.secondaryText)
+#endif
+
+        Toggle(LocalizedStringKey("Mute Sound Effects"), isOn: $settings.muteSoundEffects)
+
+#if os(iOS)
+        Toggle(LocalizedStringKey("Play Sound Effects in Silent Mode"), isOn: $settings.playSoundEffectsInSilentMode)
+#endif
+
         Picker(LocalizedStringKey("Language"), selection: $selectedLanguageCode) {
             ForEach(languageOptions, id: \.code) { option in
                 Text(option.name).tag(option.code)
@@ -1183,9 +1479,8 @@ struct SettingsView: View {
         .onChange(of: selectedLanguageCode) { newValue in
             localizationManager.updateLanguage(code: newValue)
         }
-        Text(LocalizedStringKey("Override the app language. Defaults to the device language on first launch."))
-            .font(FontTheme.caption)
-            .foregroundStyle(AppTheme.secondaryText)
+
+        systemPromptIntroEditor
 
 #if canImport(UIKit)
         Button(LocalizedStringKey("Reopen Onboarding")) {
@@ -1230,10 +1525,49 @@ struct SettingsView: View {
         }
     }
 
-    // System prompt section fully removed
+    @ViewBuilder
+    private var systemPromptIntroEditor: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(LocalizedStringKey("System Prompt"))
+                .font(FontTheme.body)
+                .fontWeight(.medium)
+                .foregroundStyle(AppTheme.text)
 
+            TextEditor(text: $settings.customSystemPromptIntro)
+                .font(FontTheme.body)
+                .focused($systemPromptFocused)
+                .frame(minHeight: 150)
+                .padding(10)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(AppTheme.cardFill)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(AppTheme.cardStroke, lineWidth: 1)
+                )
+#if os(iOS)
+                .scrollContentBackground(.hidden)
+#endif
 
-    // Title section removed
+            Button(LocalizedStringKey("Reset to Default")) {
+                triggerImpact(.medium)
+                confirmResetSystemPrompt = true
+            }
+            .tint(.red)
+        }
+#if os(iOS)
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button(LocalizedStringKey("Done")) {
+                    systemPromptFocused = false
+                    hideKeyboard()
+                }
+            }
+        }
+#endif
+    }
 
     private var privacySection: some View {
         Section(LocalizedStringKey("Privacy")) { privacyContent }
@@ -1241,6 +1575,26 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var privacyContent: some View {
+        Picker(
+            LocalizedStringKey("Chat Image Cleanup"),
+            selection: Binding(
+                get: { ChatAttachmentCleanupPolicy.from(settings.chatAttachmentCleanupPolicyRaw) },
+                set: { newPolicy in
+                    settings.chatAttachmentCleanupPolicyRaw = newPolicy.rawValue
+                    if newPolicy != .never {
+                        chatVM.runAttachmentGarbageCollectionNow()
+                    }
+                }
+            )
+        ) {
+            ForEach(ChatAttachmentCleanupPolicy.allCases) { policy in
+                Text(LocalizedStringKey(policy.titleKey)).tag(policy)
+            }
+        }
+        Text(LocalizedStringKey(ChatAttachmentCleanupPolicy.from(settings.chatAttachmentCleanupPolicyRaw).settingsDescriptionKey))
+            .font(FontTheme.caption)
+            .foregroundStyle(AppTheme.secondaryText)
+
         Button(LocalizedStringKey("Delete All Chats")) {
             triggerImpact(.medium)
             confirmClearChats = true
@@ -1252,6 +1606,20 @@ struct SettingsView: View {
         }
         .tint(.red)
         .disabled(isResettingAppData)
+
+        Button {
+            Task { await performDownloadCleanup() }
+        } label: {
+            if isCleaningDownloadLeftovers {
+                Label(LocalizedStringKey("Cleaning Download Leftovers…"), systemImage: "arrow.triangle.2.circlepath")
+            } else {
+                Label(LocalizedStringKey("Clean Download Leftovers"), systemImage: "externaldrive.badge.xmark")
+            }
+        }
+        .disabled(isCleaningDownloadLeftovers)
+        Text(LocalizedStringKey("Remove incomplete downloads, stale resume data, and temporary download files without deleting installed models or datasets."))
+            .font(FontTheme.caption)
+            .foregroundStyle(AppTheme.secondaryText)
     }
 
     private var aboutSection: some View {
@@ -1437,6 +1805,7 @@ private extension SettingsView {
         modelManager.setActiveDataset(nil)
 
         settings.clearChatHistory(chatVM)
+        chatVM.runAttachmentGarbageCollectionNow()
         estimateModelPath = ""
 
         await settings.resetAppData()
@@ -1478,6 +1847,27 @@ private extension SettingsView {
                 }
             }
         }
+    }
+
+    @MainActor
+    func performDownloadCleanup() async {
+        guard !isCleaningDownloadLeftovers else { return }
+        isCleaningDownloadLeftovers = true
+        defer { isCleaningDownloadLeftovers = false }
+
+        let result = await downloadController.runDownloadMaintenance(manual: true, force: true)
+        let format = String(
+            localized: "Removed %1$d temporary file(s), %2$d resume item(s), and %3$d stale download record(s). Repaired %4$d download artifact(s).",
+            locale: localizationManager.locale
+        )
+        downloadCleanupResultMessage = String.localizedStringWithFormat(
+            format,
+            result.removedOrphanFiles,
+            result.removedResumeData,
+            result.removedJobs,
+            result.repairedArtifacts
+        )
+        showDownloadCleanupResult = true
     }
 }
 

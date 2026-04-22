@@ -2,10 +2,30 @@ import SwiftUI
 
 /// A reusable “liquid glass” pill background for inputs and controls.
 struct GlassPill: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    private let cornerRadius: CGFloat
+
+    init(cornerRadius: CGFloat = UIConstants.extraLargeCornerRadius) {
+        self.cornerRadius = cornerRadius
+    }
+
     func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: UIConstants.extraLargeCornerRadius, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         content
             .glassifyIfAvailable(in: shape)
+#if os(iOS)
+            .overlay(
+                shape
+                    .fill(Color.white.opacity(colorScheme == .dark ? 0.04 : 0.12))
+                    .allowsHitTesting(false)
+            )
+            .overlay(
+                shape
+                    .stroke(Color.white.opacity(colorScheme == .dark ? 0.20 : 0.34), lineWidth: 0.8)
+                    .allowsHitTesting(false)
+            )
+            .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.22 : 0.10), radius: 14, x: 0, y: 8)
+#else
             .overlay(
                 shape
                     .stroke(
@@ -20,17 +40,22 @@ struct GlassPill: ViewModifier {
                         ),
                         lineWidth: 1
                     )
+                    .allowsHitTesting(false)
             )
             .overlay(
                 shape
                     .stroke(Color.white.opacity(0.35), lineWidth: 0.75)
                     .blendMode(.plusLighter)
+                    .allowsHitTesting(false)
             )
             .shadow(color: Color.black.opacity(0.12), radius: 18, x: 0, y: 10)
+#endif
     }
 }
 
 extension View {
     /// Applies a pill-shaped, frosted glass background suitable for an input field.
-    func glassPill() -> some View { modifier(GlassPill()) }
+    func glassPill(cornerRadius: CGFloat = UIConstants.extraLargeCornerRadius) -> some View {
+        modifier(GlassPill(cornerRadius: cornerRadius))
+    }
 }

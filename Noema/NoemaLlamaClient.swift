@@ -3,6 +3,7 @@
 
 import Foundation
 import Dispatch
+import os
 import NoemaPackages
 #if canImport(UIKit)
 import UIKit
@@ -11,7 +12,21 @@ import UIKit
 import AppKit
 #endif
 
-private actor GenerationCoordinator {
+enum LoopbackVisionState {
+    private static let stateLock = OSAllocatedUnfairLock<Bool>(initialState: false)
+
+    static func setEnabled(_ enabled: Bool) {
+        stateLock.withLock { state in
+            state = enabled
+        }
+    }
+
+    static func isEnabled() -> Bool {
+        stateLock.withLock { $0 }
+    }
+}
+
+actor GenerationCoordinator {
     private var isGenerationActive = false
     private var isUnloading = false
     private var generationWaiters: [CheckedContinuation<Void, Never>] = []
@@ -74,16 +89,18 @@ private actor GenerationCoordinator {
     }
 
     func endUnload() {
-        if let continuation = unloadWaiters.first {
-            unloadWaiters.removeFirst()
+        isUnloading = false
+
+        let waitingUnloaders = unloadWaiters
+        unloadWaiters.removeAll()
+        for continuation in waitingUnloaders {
             continuation.resume()
-        } else {
-            isUnloading = false
-            if let continuation = generationWaiters.first {
-                generationWaiters.removeFirst()
-                isGenerationActive = true
-                continuation.resume()
-            }
+        }
+
+        if !isGenerationActive, let continuation = generationWaiters.first {
+            generationWaiters.removeFirst()
+            isGenerationActive = true
+            continuation.resume()
         }
     }
 }
@@ -114,6 +131,26 @@ private actor StreamState {
     }
 }
 
+private actor LoopbackSessionState {
+    private var activeSession: URLSession?
+
+    func set(_ session: URLSession) {
+        activeSession = session
+    }
+
+    func clearIfMatching(_ session: URLSession) {
+        if activeSession === session {
+            activeSession = nil
+        }
+    }
+
+    func cancelActive() {
+        let session = activeSession
+        activeSession = nil
+        session?.invalidateAndCancel()
+    }
+}
+
 // MARK: - Errors
 
 enum NoemaLlamaError: Error, LocalizedError {
@@ -134,13 +171,6 @@ enum NoemaLlamaError: Error, LocalizedError {
     }
 }
 
-// MARK: - Vision configuration
-public enum LlamaVisionMode: Sendable {
-    case auto
-    case mergedOnly
-    case projectorRequired
-}
-
 // MARK: - LLM Input/Output Types
 
 public struct LLMInput: Sendable {
@@ -148,6 +178,7 @@ public struct LLMInput: Sendable {
         case plain(String)
         case messages([ChatMessage])
         case multimodal(text: String, imagePaths: [String])
+        case multimodalMessages(messages: [ChatMessage], imagePaths: [String])
     }
     
     public let content: Content
@@ -165,6 +196,8 @@ public struct LLMInput: Sendable {
         case .multimodal(let text, _):
             // For llama.cpp we inject an image placeholder token per image; adapters will handle real images
             return text
+        case .multimodalMessages(let messages, _):
+            return messages.map { "\($0.role): \($0.content)" }.joined(separator: "\n")
         }
     }
 }
@@ -172,58 +205,101 @@ public struct LLMInput: Sendable {
 public extension LLMInput {
     static func plain(_ text: String) -> LLMInput { LLMInput(.plain(text)) }
     static func multimodal(text: String, imagePaths: [String]) -> LLMInput { LLMInput(.multimodal(text: text, imagePaths: imagePaths)) }
+    static func multimodal(messages: [ChatMessage], imagePaths: [String]) -> LLMInput {
+        LLMInput(.multimodalMessages(messages: messages, imagePaths: imagePaths))
+    }
 }
 
 public struct ChatMessage: Sendable {
     public let role: String
     public let content: String
-    
-    public init(role: String, content: String) {
+    public let toolCalls: [ToolCall]?
+    public let toolCallId: String?
+
+    public init(
+        role: String,
+        content: String,
+        toolCalls: [ToolCall]? = nil,
+        toolCallId: String? = nil
+    ) {
         self.role = role
         self.content = content
+        self.toolCalls = toolCalls
+        self.toolCallId = toolCallId
     }
 }
 
 // MARK: - NoemaLlamaClient
 
 public final class NoemaLlamaClient: @unchecked Sendable {
-    private var runner: LlamaRunner?
-    private var routeAllViaLoopback: Bool = false
     private let modelURL: URL
-    private let temperature: Float
-    private let topP: Float
-    private let topK: Int32
     private let contextLength: Int32
-    private let visionMode: LlamaVisionMode
     private let mmprojPath: String?
     private let explicitThreadCount: Int32?
-    // Capability flag for vision-enabled builds; set dynamically on load
-    private var visionImagesSupported: Bool = false
+    // Keep loopback requests effectively unbounded for long local generations.
+    private static let loopbackRequestTimeout: TimeInterval = 60 * 60 * 24 * 365 * 10
+    private static let loopbackResourceTimeout: TimeInterval = 60 * 60 * 24 * 365 * 10
+    private static let loopbackReadyProbeTimeout: TimeInterval = 30
+    private static let loopbackRetryProbeTimeout: TimeInterval = 4
+    private static let loopbackReadyProbeRequestTimeout: TimeInterval = 1.5
+    private static let loopbackReadyProbeIntervalNanos: UInt64 = 200_000_000
     // Snapshot of effective load-time knobs for richer logging
     private var effectiveContext: Int32 = 0
-    private var effectiveThreads: Int32 = 0
-    private var effectiveGpuLayers: Int32 = 0
     private var effectiveMMProj: String? = nil
-    private var hasVisionOpsFlag: Bool = false
-    private var lastVisionProbe: LlamaVisionProbe = .unavailable
     private let generationCoordinator = GenerationCoordinator()
+    private let loopbackSessionState = LoopbackSessionState()
+
+    private struct LoopbackReadyProbeResult {
+        let ready: Bool
+        let statusCode: Int?
+        let attempts: Int
+        let elapsedMs: Int
+        let usedBridgeFallback: Bool
+    }
+
+    private var templateProfile: TemplateDrivenModelSupport.Profile {
+        TemplateDrivenModelSupport.resolvedProfile(modelURL: modelURL)
+    }
+
+    private var usesTemplateDrivenMessages: Bool {
+        templateProfile.usesTemplateDrivenMessages
+    }
+
+    private var isQwen35Model: Bool {
+        templateProfile == .qwen35
+    }
+
+    private var isGemma4Model: Bool {
+        templateProfile == .gemma4
+    }
+
+    private func performCoordinatedUnload(completionMessage: String) async -> Bool {
+        let acquired = await generationCoordinator.beginUnloadAcquiring()
+        guard acquired else { return false }
+
+        LlamaServerBridge.stop()
+        LoopbackVisionState.setEnabled(false)
+        await generationCoordinator.endUnload()
+        fputs(completionMessage, stderr)
+        return true
+    }
+
+    private func loopbackStartConfiguration(mmprojPath: String?) -> LlamaServerBridge.StartConfiguration {
+        TemplateDrivenModelSupport.loopbackStartConfiguration(
+            modelURL: modelURL,
+            ggufPath: modelURL.path,
+            mmprojPath: mmprojPath
+        )
+    }
     
     public init(
         url: URL,
         contextLength: Int32 = 2048,
-        temperature: Float = 0.7,
-        topP: Float = 0.9,
-        topK: Int32 = 40,
-        visionMode: LlamaVisionMode = .auto,
         mmprojPath: String? = nil,
         threadCount: Int32? = nil
     ) {
         self.modelURL = url
         self.contextLength = contextLength
-        self.temperature = temperature
-        self.topP = topP
-        self.topK = topK
-        self.visionMode = visionMode
         self.mmprojPath = mmprojPath
         if let threadCount, threadCount > 0 {
             self.explicitThreadCount = threadCount
@@ -249,232 +325,56 @@ public final class NoemaLlamaClient: @unchecked Sendable {
                 guard let c = getenv(key) else { return nil }
                 return Int32(String(cString: c))
             }
+
             let threadsEnv = intEnv("LLAMA_THREADS")
-            let gpuLayersEnv = intEnv("LLAMA_N_GPU_LAYERS")
             let ctxEnv = intEnv("LLAMA_CONTEXT_SIZE")
 
-            let fallbackThreadCount = Int32(max(1, ProcessInfo.processInfo.processorCount - 2))
-            let resolvedThreads: Int32 = {
-                if let explicitThreadCount, explicitThreadCount > 0 {
-                    return explicitThreadCount
-                }
-                if let env = threadsEnv, env > 0 {
-                    return env
-                }
-                return fallbackThreadCount
-            }()
-            let threads = max(Int32(1), resolvedThreads)
-
-            #if canImport(Metal)
-            let defaultGpuLayers: Int32 = 1_000_000
-            #else
-            let defaultGpuLayers: Int32 = 0
-            #endif
-
-            let nGpuLayers: Int32 = {
-                if DeviceGPUInfo.supportsGPUOffload {
-                    return gpuLayersEnv ?? defaultGpuLayers
-                }
-                return 0
-            }()
-
-            // If images will be used in this process, prefer a generous context
             let requestedCtx = ctxEnv ?? self.contextLength
-            let envVerbose = (getenv("NOEMA_LLAMA_VERBOSE") != nil)
-            if envVerbose {
-                fputs("[NoemaLlamaClient] Using \(threads) CPU thread\(threads == 1 ? "" : "s").\n", stderr)
-            }
-            let nCtx: Int32 = {
-                if envVerbose { return max(requestedCtx, 8192) }
-                return requestedCtx
-            }()
-
-            // Validate projector if provided: exists and quant family aligns with base
-            var projectorPathToUse: String? = nil
-            if let mm = self.mmprojPath, !mm.isEmpty {
-                var isDir: ObjCBool = false
-                if FileManager.default.fileExists(atPath: mm, isDirectory: &isDir), !isDir.boolValue {
-                    // Compare quant family tokens (e.g., Q4_K_M vs F16)
-                    let baseLabel = QuantExtractor.shortLabel(from: self.modelURL.lastPathComponent, format: .gguf)
-                    let projLabel = QuantExtractor.shortLabel(from: URL(fileURLWithPath: mm).lastPathComponent, format: .gguf)
-                    // Accept F16/F32 projectors for any base, or exact family match otherwise
-                    let normalizedProj = projLabel.uppercased()
-                    if normalizedProj.contains("F16") || normalizedProj.contains("F32") || normalizedProj == baseLabel.uppercased() {
-                        projectorPathToUse = mm
-                    } else {
-                        if envVerbose { fputs("[NoemaLlamaClient] Projector quant (\(projLabel)) mismatches base (\(baseLabel)).\n", stderr) }
-                        // Leave nil to run merged-only mode
-                    }
-                } else {
-                    if envVerbose { fputs("[NoemaLlamaClient] Projector file missing: \(mm)\n", stderr) }
-                }
-            }
-
-            // If no explicit projector provided and GGUF lacks an integrated projector, try auto-discovery
-            if projectorPathToUse == nil {
-                let hasMergedVision = GGUFMetadata.hasMultimodalProjector(at: self.modelURL)
-                if hasMergedVision == false {
-                    // 1) artifacts.json hint next to weights
-                    let dir = self.modelURL.deletingLastPathComponent()
-                    let artifactsURL = dir.appendingPathComponent("artifacts.json")
-                    if let data = try? Data(contentsOf: artifactsURL),
-                       let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                       let mmRel = obj["mmproj"] as? String {
-                        let cand = dir.appendingPathComponent(mmRel)
-                        if FileManager.default.fileExists(atPath: cand.path) {
-                            projectorPathToUse = cand.path
-                        }
-                    }
-                    // 2) filename heuristics in the same directory
-                    if projectorPathToUse == nil {
-                        if let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
-                            let baseLabel = QuantExtractor.shortLabel(from: self.modelURL.lastPathComponent, format: .gguf).uppercased()
-                            let isMMProjName: (String) -> Bool = { name in
-                                let lower = name.lowercased()
-                                return lower.contains("mmproj") || lower.contains("projector") || lower.contains("image_proj")
-                            }
-                            // Prefer F16/F32 projectors first, else exact quant family match
-                            let ggufs = files.filter { $0.pathExtension.lowercased() == "gguf" && isMMProjName($0.lastPathComponent) }
-                            let f16First = ggufs.first(where: { QuantExtractor.shortLabel(from: $0.lastPathComponent, format: .gguf).uppercased().contains("F16") || QuantExtractor.shortLabel(from: $0.lastPathComponent, format: .gguf).uppercased().contains("F32") })
-                            let familyMatch = ggufs.first(where: { QuantExtractor.shortLabel(from: $0.lastPathComponent, format: .gguf).uppercased() == baseLabel })
-                            if let pick = f16First ?? familyMatch, FileManager.default.fileExists(atPath: pick.path) {
-                                projectorPathToUse = pick.path
-                                if envVerbose { fputs("[NoemaLlamaClient] Auto-detected projector: \(pick.lastPathComponent)\n", stderr) }
-                            } else if envVerbose {
-                                fputs("[NoemaLlamaClient] No projector found next to weights; vision will be disabled if the model requires one.\n", stderr)
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Decide whether to route everything to the loopback server to avoid
-            // double-loading the model (in-process + server).
-            let defaults = UserDefaults.standard
-            let compiledVision = LlamaRunner.runtimeHasVisionSymbols()
-            
-            // Check if server is enabled in settings
-            let serverEnabledInSettings = defaults.bool(forKey: "serverVisionEnabled")
-            
-            // If enabled, wait briefly for the port to be reported (handling potential race conditions)
-            if serverEnabledInSettings && Int(LlamaServerBridge.port()) <= 0 {
-                for _ in 0..<10 { // allow up to ~1s on slower iOS startups
-                    try? await Task.sleep(nanoseconds: 100_000_000) // 0.1s
-                    if Int(LlamaServerBridge.port()) > 0 { break }
-                }
-            }
-            
-            // Prefer server when ChatVM has enabled it or when a server is already bound.
-            // Avoid starting/stopping the server here to prevent race conditions with ChatVM.
-            let serverActive = Int(LlamaServerBridge.port()) > 0
-            let shouldRouteViaServer = serverEnabledInSettings || serverActive
-
-            if shouldRouteViaServer {
-                self.routeAllViaLoopback = true
-                self.effectiveMMProj = projectorPathToUse
-                self.hasVisionOpsFlag = compiledVision
-                if envVerbose {
-                    let projName = projectorPathToUse.map { URL(fileURLWithPath: $0).lastPathComponent } ?? (GGUFMetadata.hasMultimodalProjector(at: self.modelURL) ? "merged" : "none")
-                    fputs("[NoemaLlamaClient] Loopback routing enabled port=\(Int(LlamaServerBridge.port())) gguf=\(self.modelURL.lastPathComponent) mmproj=\(projName)\n", stderr)
-                }
-            } else {
-                if let projectorPathToUse {
-                    self.runner = LlamaRunner(
-                        modelPath: self.modelURL.path,
-                        mmprojPath: projectorPathToUse,
-                        nCtxTokens: nCtx,
-                        nGpuLayers: nGpuLayers,
-                        nThreads: threads
-                    )
-                    self.effectiveMMProj = projectorPathToUse
-                } else {
-                    self.runner = LlamaRunner(
-                        modelPath: self.modelURL.path,
-                        nCtxTokens: nCtx,
-                        nGpuLayers: nGpuLayers,
-                        nThreads: threads
-                    )
-                    self.effectiveMMProj = nil
-                }
-                if self.runner == nil { throw NoemaLlamaError.modelLoadFailed }
-                // Detect compile-time vision capability
-                self.hasVisionOpsFlag = compiledVision
-            }
-            self.visionImagesSupported = self.hasVisionOpsFlag
-            if self.routeAllViaLoopback {
-                // When routing through the loopback server, honor vision unconditionally
-                // (the app only enables the server for vision-capable models).
-                self.visionImagesSupported = true
-            } else if self.hasVisionOpsFlag {
-                // Runtime probe to distinguish between compiled-with-vision vs model missing projector
-                let probe = self.runner?.probeVision() ?? .unavailable
-                self.lastVisionProbe = probe
-                // Determine if we effectively have a projector (external or merged)
-                let hasMerged = GGUFMetadata.hasMultimodalProjector(at: self.modelURL)
-                let hasExternal = (self.effectiveMMProj != nil)
-                let hasAnyProjector = hasMerged || hasExternal
-                switch self.visionMode {
-                case .mergedOnly:
-                    // Accept merged projector even if our probe path is unavailable on this build
-                    self.visionImagesSupported = (probe == .OK) || (probe == .unavailable && hasMerged)
-                case .projectorRequired:
-                    // Require a projector but allow runtime symbol-only builds
-                    self.visionImagesSupported = (probe == .OK) || (probe == .unavailable && hasAnyProjector)
-                case .auto:
-                    // Prefer probe OK; otherwise, if symbols are present and a projector exists, allow images
-                    self.visionImagesSupported = (probe == .OK) || (probe == .unavailable && hasAnyProjector)
-                }
-                if envVerbose {
-                    if self.visionImagesSupported {
-                        fputs("[NoemaLlamaClient] Vision enabled with mode=\(self.visionMode).\n", stderr)
-                    } else {
-                        fputs("[NoemaLlamaClient] Vision disabled with mode=\(self.visionMode).\n", stderr)
-                    }
-                }
-            }
-            // Persist compile/probe status so the UI can gate image controls without having
-            // to reach through the client’s internals.
-            let userDefaults = UserDefaults.standard
-            userDefaults.set(self.hasVisionOpsFlag, forKey: "llama.compiledVision")
-            let probeStr: String = {
-                switch self.lastVisionProbe {
-                case .OK: return "OK"
-                case .noProjector: return "noProjector"
-                case .unavailable: return "unavailable"
-                @unknown default: return "unknown"
-                }
-            }()
-            userDefaults.set(probeStr, forKey: "llama.visionProbe")
-            userDefaults.set(self.effectiveMMProj ?? "", forKey: "llama.mmprojPath")
-            userDefaults.synchronize()
-            // Remember the effective knobs used when creating the runner
+            let nCtx = max(Int32(1), requestedCtx)
             self.effectiveContext = nCtx
-            self.effectiveThreads = threads
-            self.effectiveGpuLayers = nGpuLayers
-            if envVerbose {
-                let mm = self.effectiveMMProj != nil ? URL(fileURLWithPath: self.effectiveMMProj!).lastPathComponent : (GGUFMetadata.hasMultimodalProjector(at: self.modelURL) ? "merged" : "none")
-                let caps = "compiledVision=\(self.hasVisionOpsFlag) probe=\(self.lastVisionProbe)"
-                fputs("[NoemaLlamaClient] Load flags: ctx=\(nCtx) n_gpu_layers=\(nGpuLayers) threads=\(threads) mmproj=\(mm) \(caps)\n", stderr)
+
+            // Resolve projector (if any) so a lazy-start fallback can enable vision.
+            self.effectiveMMProj = (self.mmprojPath?.isEmpty == false ? self.mmprojPath : nil)
+                ?? ProjectorLocator.projectorPath(alongside: self.modelURL)
+
+            // Ensure the loopback server is running. ChatVM normally starts it during model load,
+            // but we keep a defensive fallback here.
+            var port = Int(LlamaServerBridge.port())
+            if port <= 0 {
+                port = Int(LlamaServerBridge.start(
+                    self.loopbackStartConfiguration(mmprojPath: self.effectiveMMProj)
+                ))
+                if port > 0 {
+                    LoopbackVisionState.setEnabled(true)
+                }
+            }
+            if port <= 0 {
+                let diagnostics = LlamaServerBridge.lastStartDiagnostics()
+                throw NSError(
+                    domain: "Noema",
+                    code: 2001,
+                    userInfo: [
+                        NSLocalizedDescriptionKey: LoopbackStartupPlanner.formatFailureMessage(diagnostics, retryAttempted: false)
+                    ]
+                )
+            }
+
+            if getenv("NOEMA_LLAMA_VERBOSE") != nil {
+                let threads = (self.explicitThreadCount ?? threadsEnv ?? 0)
+                let mm = self.effectiveMMProj.map { URL(fileURLWithPath: $0).lastPathComponent }
+                    ?? (GGUFMetadata.hasMultimodalProjector(at: self.modelURL) ? "merged" : "none")
+                fputs("[NoemaLlamaClient] Loopback ready port=\(port) gguf=\(self.modelURL.lastPathComponent) ctx=\(nCtx) threads=\(threads) mmproj=\(mm)\n", stderr)
             }
         }.value
     }
     
     public func unload() {
-        Task.detached { [weak self] in
-            guard let strongSelf = self else {
-                return
-            }
+        Task.detached(priority: .utility) { [weak self] in
+            guard let self else { return }
             fputs("[NoemaLlamaClient] Unload requested. Waiting for active generation to finish...\n", stderr)
-            await strongSelf.generationCoordinator.beginUnload()
-            strongSelf.runner?.cancelCurrent()
-            strongSelf.runner?.unload()
-            strongSelf.runner = nil
-            if strongSelf.routeAllViaLoopback {
-                LlamaServerBridge.stop()
-                UserDefaults.standard.set(false, forKey: "serverVisionEnabled")
-            }
-            await strongSelf.generationCoordinator.endUnload()
-            fputs("[NoemaLlamaClient] Unloaded and resources released.\n", stderr)
+            _ = await self.performCoordinatedUnload(
+                completionMessage: "[NoemaLlamaClient] Unloaded and resources released.\n"
+            )
         }
         // Optionally allow the global backend to free when app is truly going idle via notification
     }
@@ -485,31 +385,24 @@ public final class NoemaLlamaClient: @unchecked Sendable {
         // Execute heavy teardown work on a utility-priority task.
         await Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
-            let acquired = await self.generationCoordinator.beginUnloadAcquiring()
-            if acquired {
-                self.runner?.cancelCurrent()
-                self.runner?.unload()
-                self.runner = nil
-                if self.routeAllViaLoopback {
-                    LlamaServerBridge.stop()
-                    UserDefaults.standard.set(false, forKey: "serverVisionEnabled")
-                }
-                await self.generationCoordinator.endUnload()
-                fputs("[NoemaLlamaClient] Unloaded and resources released (awaited).\n", stderr)
-            } else {
-                // Another unload finished while we were waiting. Nothing left to do.
-            }
+            _ = await self.performCoordinatedUnload(
+                completionMessage: "[NoemaLlamaClient] Unloaded and resources released (awaited).\n"
+            )
         }.value
     }
 
     // MARK: - Cancellation
     public func cancel() {
-        runner?.cancelCurrent()
+        Task { await loopbackSessionState.cancelActive() }
     }
     
     // MARK: - Text Generation
     
-    public func textStream(from input: LLMInput) async throws -> AsyncThrowingStream<String, Error> {
+#if false
+    public func textStream(
+        from input: LLMInput,
+        onPromptProgress: (@Sendable (Double) -> Void)? = nil
+    ) async throws -> AsyncThrowingStream<String, Error> {
         // If configured to use the loopback server for all requests, bypass the runner.
         if routeAllViaLoopback {
             await generationCoordinator.acquireGeneration()
@@ -615,10 +508,10 @@ public final class NoemaLlamaClient: @unchecked Sendable {
                         Task { await logger.log("[Images][Probe] compiled=\(self.hasVisionOpsFlag) mmproj=\(mm) result=\(probeDesc)") }
                     }
 
-                    let serverVisionEnabled = UserDefaults.standard.bool(forKey: "serverVisionEnabled")
+                    let serverVisionEnabled = LoopbackVisionState.isEnabled()
                     let loopbackAvailable = self.routeAllViaLoopback || serverVisionEnabled || Int(LlamaServerBridge.port()) > 0
 
-                    // If images are present, prefer loopback because the embedded xcframework slices lack vision ops on iOS.
+                    // If images are present, prefer loopback because the in-process llama backend may not include vision ops on iOS.
                     if let paths = imagePaths, !paths.isEmpty, loopbackAvailable {
                         do {
                             let imgCount = paths.count
@@ -737,6 +630,72 @@ public final class NoemaLlamaClient: @unchecked Sendable {
             }
         }
     }
+#endif
+
+    public func textStream(
+        from input: LLMInput,
+        onPromptProgress: (@Sendable (Double) -> Void)? = nil
+    ) async throws -> AsyncThrowingStream<String, Error> {
+        await generationCoordinator.acquireGeneration()
+        if Task.isCancelled { await generationCoordinator.releaseGeneration(); throw CancellationError() }
+        let releaseToken = GenerationReleaseToken(coordinator: generationCoordinator)
+        let streamState = StreamState()
+
+        return AsyncThrowingStream<String, Error>(bufferingPolicy: .unbounded) { @Sendable continuation in
+            let generationTask = Task { [weak self, input, releaseToken, streamState] in
+                do {
+                    guard let self else {
+                        await releaseToken.release()
+                        continuation.finish(throwing: NoemaLlamaError.invalidParameters)
+                        return
+                    }
+                    let hasContent: Bool = {
+                        switch input.content {
+                        case .plain(let text):
+                            return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        case .messages(let messages):
+                            return !messages.isEmpty
+                        case .multimodal(let text, let paths):
+                            return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !paths.isEmpty
+                        case .multimodalMessages(let messages, let paths):
+                            return !messages.isEmpty || !paths.isEmpty
+                        }
+                    }()
+                    guard hasContent else {
+                        await releaseToken.release()
+                        continuation.finish(throwing: NoemaLlamaError.invalidParameters)
+                        return
+                    }
+                    await streamState.markStarted()
+                    _ = try await self.generateViaLoopbackServer(
+                        input: input,
+                        onToken: { chunk in
+                            continuation.yield(chunk)
+                        },
+                        onPromptProgress: onPromptProgress
+                    )
+                    continuation.finish()
+                    await releaseToken.release()
+                } catch {
+                    if Task.isCancelled || (error as? URLError)?.code == .cancelled {
+                        await releaseToken.release()
+                        continuation.finish(throwing: CancellationError())
+                        return
+                    }
+                    Task { await logger.log("[Loopback][Error] \(error.localizedDescription)") }
+                    await releaseToken.release()
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { [weak self, releaseToken, streamState] termination in
+                if case .cancelled = termination {
+                    generationTask.cancel()
+                    self?.cancel()
+                }
+                Task { if await !streamState.hasStarted() { await releaseToken.release() } }
+            }
+        }
+    }
     
     public func text(from input: LLMInput) async throws -> String {
         var result = ""
@@ -804,120 +763,27 @@ public struct LlamaOptions {
     }
 }
 
-// MARK: - Flag summary helpers
-
-extension NoemaLlamaClient {
-    /// Builds a concise, single-line summary of generation flags used by llama.cpp.
-    /// Pulls values from environment variables (set via ChatVM/RelayServerEngine) and load-time snapshot.
-    static func makeGenerationFlagSummary(
-        modelName: String,
-        ctx: Int32,
-        threads: Int32,
-        gpuLayers: Int32,
-        mmproj: String?,
-        hasVisionOps: Bool,
-        probe: LlamaVisionProbe
-    ) -> String {
-        func env(_ k: String) -> String? { guard let v = getenv(k) else { return nil }; return String(cString: v) }
-        func yn(_ s: String?) -> String { (s == "1" || s?.lowercased() == "true") ? "on" : "off" }
-        let temp = env("NOEMA_TEMPERATURE") ?? "0.7"
-        let topK = env("NOEMA_TOP_K") ?? "40"
-        let topP = env("NOEMA_TOP_P") ?? "0.9"
-        let minP = env("NOEMA_MIN_P")
-        let rep = env("NOEMA_REPEAT_PENALTY")
-        let lastN = env("NOEMA_REPEAT_LAST_N")
-        let pres = env("NOEMA_PRESENCE_PENALTY")
-        let freq = env("NOEMA_FREQUENCY_PENALTY")
-        let seed = env("LLAMA_SEED")
-        let mmap = yn(env("LLAMA_MMAP"))
-        let keep = yn(env("LLAMA_KEEP"))
-        let kvOff = yn(env("LLAMA_KV_OFFLOAD"))
-        let flash = env("LLAMA_FLASH_ATTENTION")
-        let kq = env("LLAMA_K_QUANT")
-        let vq = env("LLAMA_V_QUANT")
-        let rope = env("NOEMA_ROPE_SCALING")
-        let ropeBase = env("NOEMA_ROPE_BASE")
-        let ropeFactor = env("NOEMA_ROPE_FACTOR")
-        let draftID = env("NOEMA_DRAFT_MODEL")
-        let draftMode = env("NOEMA_DRAFT_MODE")
-        let draftValue = env("NOEMA_DRAFT_VALUE")
-        let promptCache = env("NOEMA_PROMPT_CACHE")
-        let promptCacheAll = yn(env("NOEMA_PROMPT_CACHE_ALL"))
-
-        var parts: [String] = []
-        parts.append("model=\(modelName)")
-        parts.append("ctx=\(ctx)")
-        if threads > 0 { parts.append("threads=\(threads)") }
-        parts.append("n_gpu_layers=\(gpuLayers)")
-        // mmproj: use file name only for brevity
-        let mm: String
-        if let m = mmproj, !m.isEmpty { mm = URL(fileURLWithPath: m).lastPathComponent } else { mm = "merged/none" }
-        parts.append("mmproj=\(mm)")
-
-        // Sampler
-        parts.append("temp=\(temp)")
-        parts.append("topP=\(topP)")
-        parts.append("topK=\(topK)")
-        if let minP { parts.append("minP=\(minP)") }
-        if let rep { parts.append("repeat_penalty=\(rep)") }
-        if let lastN { parts.append("repeat_last_n=\(lastN)") }
-        if let pres { parts.append("presence_penalty=\(pres)") }
-        if let freq { parts.append("frequency_penalty=\(freq)") }
-
-        // KV / runtime
-        if let kq { parts.append("K=\(kq)") }
-        if let vq { parts.append("V=\(vq)") }
-        if let flash { parts.append("flash=\(flash)") }
-        parts.append("mmap=\(mmap)")
-        parts.append("keep=\(keep)")
-        parts.append("kv_offload=\(kvOff)")
-        if let seed { parts.append("seed=\(seed)") }
-
-        // Rope scaling (optional)
-        if rope == "yarn" { parts.append("rope=yarn base=\(ropeBase ?? "?") factor=\(ropeFactor ?? "?")") }
-
-        // Prompt cache
-        if let promptCache, !promptCache.isEmpty {
-            parts.append("pcache=on(")
-            parts.append(URL(fileURLWithPath: promptCache).lastPathComponent + ")")
-            parts.append("pcache_all=\(promptCacheAll)")
-        } else { parts.append("pcache=off") }
-
-        // Speculative decoding
-        if let draftID, !draftID.isEmpty {
-            parts.append("draft=\(draftID) mode=\(draftMode ?? "tokens") value=\(draftValue ?? "?")")
-        }
-
-        // Vision
-        let probeStr: String = {
-            switch probe {
-            case .OK: return "OK"
-            case .noProjector: return "noProjector"
-            case .unavailable: return "unavailable"
-            @unknown default: return "unknown"
-            }
-        }()
-        parts.append("vision.compiled=\(hasVisionOps)")
-        parts.append("vision.probe=\(probeStr)")
-
-        return parts.joined(separator: " ")
-    }
-}
-
 // MARK: - AnyLLMClient Wrapper
 
 public struct AnyLLMClient: Sendable {
     private let textStreamClosure: @Sendable (LLMInput) async throws -> AsyncThrowingStream<String, Error>
+    private let textStreamWithProgressClosure: @Sendable (LLMInput, (@Sendable (Double) -> Void)?) async throws -> AsyncThrowingStream<String, Error>
     private let textClosure: @Sendable (LLMInput) async throws -> String
+    private let tokenCountClosure: (@Sendable (String) async throws -> Int)?
     private let cancelClosure: (@Sendable () -> Void)?
     private let unloadClosure: (@Sendable () -> Void)?
     private let unloadAsyncClosure: (@Sendable () async -> Void)?
     private let resetClosure: (@Sendable () async -> Void)?
+    private let syncSystemPromptClosure: (@Sendable (String?) async -> Void)?
     
     public init(_ client: NoemaLlamaClient) {
-        let streamClosure: @Sendable (LLMInput) async throws -> AsyncThrowingStream<String, Error> = { input in
-            try await client.textStream(from: input)
+        let streamWithProgressClosure: @Sendable (LLMInput, (@Sendable (Double) -> Void)?) async throws -> AsyncThrowingStream<String, Error> = { input, onPromptProgress in
+            try await client.textStream(from: input, onPromptProgress: onPromptProgress)
         }
+        let streamClosure: @Sendable (LLMInput) async throws -> AsyncThrowingStream<String, Error> = { input in
+            try await streamWithProgressClosure(input, nil)
+        }
+        self.textStreamWithProgressClosure = streamWithProgressClosure
         self.textStreamClosure = streamClosure
         self.textClosure = { input in
             var result = ""
@@ -926,41 +792,26 @@ public struct AnyLLMClient: Sendable {
             }
             return result
         }
+        self.tokenCountClosure = nil
         self.cancelClosure = { [weak client] in client?.cancel() }
         self.unloadClosure = { [weak client] in client?.unload() }
         self.unloadAsyncClosure = { [weak client] in await client?.unloadAndWait() }
         self.resetClosure = nil
+        self.syncSystemPromptClosure = nil
     }
     
     // Removed LocalLLMClient bridging initializer to avoid undefined symbols
     
-#if canImport(LeapSDK)
-    public init(_ client: LeapLLMClient) {
-        let streamClosure: @Sendable (LLMInput) async throws -> AsyncThrowingStream<String, Error> = { input in
-            try await client.textStream(from: input)
-        }
-        self.textStreamClosure = streamClosure
-        self.textClosure = { input in
-            var result = ""
-            for try await token in try await streamClosure(input) {
-                result += token
-            }
-            return result
-        }
-        self.cancelClosure = { Task { await client.cancelActive() } }
-        self.unloadClosure = nil
-        self.unloadAsyncClosure = nil
-        self.resetClosure = { await client.hardResetConversation() }
-    }
-#endif
+    
 
-    
-    
     @available(macOS 13.0, iOS 16.0, *)
     public init(_ client: MLXTextClient) {
         let streamClosure: @Sendable (LLMInput) async throws -> AsyncThrowingStream<String, Error> = { input in
             try await client.textStream(from: input)
         }
+        self.textStreamWithProgressClosure = { input, _ in
+            try await streamClosure(input)
+        }
         self.textStreamClosure = streamClosure
         self.textClosure = { input in
             var result = ""
@@ -969,17 +820,22 @@ public struct AnyLLMClient: Sendable {
             }
             return result
         }
+        self.tokenCountClosure = nil
         self.cancelClosure = { client.cancel() }
-        self.unloadClosure = nil
+        self.unloadClosure = { [weak client] in client?.unload() }
         self.unloadAsyncClosure = nil
         self.resetClosure = nil
+        self.syncSystemPromptClosure = nil
     }
-    
+
     @available(macOS 13.0, iOS 16.0, *)
     public init(_ client: MLXVLMClient) {
         let streamClosure: @Sendable (LLMInput) async throws -> AsyncThrowingStream<String, Error> = { input in
             try await client.textStream(from: input)
         }
+        self.textStreamWithProgressClosure = { input, _ in
+            try await streamClosure(input)
+        }
         self.textStreamClosure = streamClosure
         self.textClosure = { input in
             var result = ""
@@ -988,12 +844,14 @@ public struct AnyLLMClient: Sendable {
             }
             return result
         }
+        self.tokenCountClosure = nil
         self.cancelClosure = { client.cancel() }
-        self.unloadClosure = nil
+        self.unloadClosure = { [weak client] in client?.unload() }
         self.unloadAsyncClosure = nil
         self.resetClosure = nil
+        self.syncSystemPromptClosure = nil
     }
-    
+
     // Convenience initializer to build a failing client for unimplemented adapters.
     public static func makeFailing(message: String) -> AnyLLMClient {
         let stream: @Sendable (LLMInput) async throws -> AsyncThrowingStream<String, Error> = { _ in
@@ -1006,6 +864,9 @@ public struct AnyLLMClient: Sendable {
 
     // Unsafe convenience init to build AnyLLMClient from a custom stream.
     init(unsafeStream: @escaping @Sendable (LLMInput) async throws -> AsyncThrowingStream<String, Error>) {
+        self.textStreamWithProgressClosure = { input, _ in
+            try await unsafeStream(input)
+        }
         self.textStreamClosure = unsafeStream
         self.textClosure = { input in
             var result = ""
@@ -1014,20 +875,29 @@ public struct AnyLLMClient: Sendable {
             }
             return result
         }
+        self.tokenCountClosure = nil
         self.cancelClosure = nil
         self.unloadClosure = nil
         self.unloadAsyncClosure = nil
         self.resetClosure = nil
+        self.syncSystemPromptClosure = nil
     }
 
     public init(
         textStream: @escaping @Sendable (LLMInput) async throws -> AsyncThrowingStream<String, Error>,
+        textStreamWithProgress: (@Sendable (LLMInput, (@Sendable (Double) -> Void)?) async throws -> AsyncThrowingStream<String, Error>)? = nil,
         text: (@Sendable (LLMInput) async throws -> String)? = nil,
         cancel: (@Sendable () -> Void)? = nil,
         unload: (@Sendable () -> Void)? = nil,
-        reset: (@Sendable () async -> Void)? = nil
+        unloadAsync: (@Sendable () async -> Void)? = nil,
+        reset: (@Sendable () async -> Void)? = nil,
+        syncSystemPrompt: (@Sendable (String?) async -> Void)? = nil,
+        tokenCount: (@Sendable (String) async throws -> Int)? = nil
     ) {
         self.textStreamClosure = textStream
+        self.textStreamWithProgressClosure = textStreamWithProgress ?? { input, _ in
+            try await textStream(input)
+        }
         if let text {
             self.textClosure = text
         } else {
@@ -1039,18 +909,32 @@ public struct AnyLLMClient: Sendable {
                 return result
             }
         }
+        self.tokenCountClosure = tokenCount
         self.cancelClosure = cancel
         self.unloadClosure = unload
-        self.unloadAsyncClosure = nil
+        self.unloadAsyncClosure = unloadAsync
         self.resetClosure = reset
+        self.syncSystemPromptClosure = syncSystemPrompt
     }
     
     public func textStream(from input: LLMInput) async throws -> AsyncThrowingStream<String, Error> {
         try await textStreamClosure(input)
     }
+
+    public func textStream(
+        from input: LLMInput,
+        onPromptProgress: (@Sendable (Double) -> Void)?
+    ) async throws -> AsyncThrowingStream<String, Error> {
+        try await textStreamWithProgressClosure(input, onPromptProgress)
+    }
     
     public func text(from input: LLMInput) async throws -> String {
         try await textClosure(input)
+    }
+
+    public func countTokens(in text: String) async -> Int? {
+        guard let tokenCountClosure else { return nil }
+        return try? await tokenCountClosure(text)
     }
 
     public func cancelActive() {
@@ -1073,120 +957,503 @@ public struct AnyLLMClient: Sendable {
         await resetClosure?()
     }
 
-    // No explicit reset hooks; conversation continuity is preserved by Leap SDK
+    public func syncSystemPrompt(_ prompt: String?) async {
+        await syncSystemPromptClosure?(prompt)
+    }
+
+    // Reset behavior is backend dependent.
 }
 
 // MARK: - Loopback server multimodal fallback (member of NoemaLlamaClient)
 extension NoemaLlamaClient {
-    private func reencodeIfNeeded(path: String) -> (data: Data, mime: String) {
-        let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
-        // Prefer PNG/JPEG for server compatibility; HEIC/HEIF are not widely supported by stb_image.
-        #if canImport(UIKit)
-        if let img = UIImage(contentsOfFile: path) {
-            // Re-encode to JPEG (quality 0.9) for broad compatibility
-            if let jpeg = img.jpegData(compressionQuality: 0.9) {
-                Task { await logger.log("[Images][Reencode] iOS src=\(ext) -> jpeg bytes=\(jpeg.count) name=\(URL(fileURLWithPath: path).lastPathComponent)") }
-                return (jpeg, "image/jpeg")
-            }
-            if let png = img.pngData() {
-                Task { await logger.log("[Images][Reencode] iOS src=\(ext) -> png bytes=\(png.count) name=\(URL(fileURLWithPath: path).lastPathComponent)") }
-                return (png, "image/png")
+    private struct LoopbackChatChunk: Decodable {
+        struct PromptProgress: Decodable {
+            let total: Int?
+            let cache: Int?
+            let processed: Int?
+            let timeMs: Int64?
+
+            enum CodingKeys: String, CodingKey {
+                case total
+                case cache
+                case processed
+                case timeMs = "time_ms"
             }
         }
-        #elseif canImport(AppKit)
-        if let image = NSImage(contentsOfFile: path) {
-            guard let tiff = image.tiffRepresentation,
-                  let rep = NSBitmapImageRep(data: tiff),
-                  let jpeg = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.9]) else {
-                // Fallback to PNG
-                if let tiff = image.tiffRepresentation,
-                   let rep2 = NSBitmapImageRep(data: tiff),
-                   let png = rep2.representation(using: .png, properties: [:]) {
-                    Task { await logger.log("[Images][Reencode] macOS src=\(ext) -> png bytes=\(png.count) name=\(URL(fileURLWithPath: path).lastPathComponent)") }
-                    return (png, "image/png")
+
+        struct Choice: Decodable {
+            struct Delta: Decodable {
+                let content: String?
+                let reasoningContent: String?
+
+                enum CodingKeys: String, CodingKey {
+                    case content
+                    case reasoningContent = "reasoning_content"
                 }
-                // Last resort: file bytes
-                let data = (try? Data(contentsOf: URL(fileURLWithPath: path))) ?? Data()
-                Task { await logger.log("[Images][Reencode] macOS fallback bytes=\(data.count) name=\(URL(fileURLWithPath: path).lastPathComponent)") }
-                return (data, ext == "png" ? "image/png" : "image/jpeg")
             }
-            Task { await logger.log("[Images][Reencode] macOS src=\(ext) -> jpeg bytes=\(jpeg.count) name=\(URL(fileURLWithPath: path).lastPathComponent)") }
-            return (jpeg, "image/jpeg")
+
+            struct Message: Decodable {
+                let content: String?
+                let reasoningContent: String?
+
+                enum CodingKeys: String, CodingKey {
+                    case content
+                    case reasoningContent = "reasoning_content"
+                }
+            }
+
+            let delta: Delta?
+            let message: Message?
+            let text: String?
+            let completion: String?
+            let finishReason: String?
+
+            enum CodingKeys: String, CodingKey {
+                case delta
+                case message
+                case text
+                case completion
+                case finishReason = "finish_reason"
+            }
         }
-        #endif
-        // Default: use original bytes and guess mime from extension
-        let data = (try? Data(contentsOf: URL(fileURLWithPath: path))) ?? Data()
-        switch ext {
-        case "png": return (data, "image/png")
-        case "jpg", "jpeg": return (data, "image/jpeg")
-        case "webp": return (data, "image/webp")
-        default: return (data, "image/jpeg")
+
+        let choices: [Choice]
+        let promptProgress: PromptProgress?
+
+        enum CodingKeys: String, CodingKey {
+            case choices
+            case promptProgress = "prompt_progress"
         }
     }
 
-    fileprivate func generateViaLoopbackServer(prompt: String, imagePaths: [String]) async throws -> String {
-        // Off-grid guard with explicit log so users know why local loopback is blocked.
-        if NetworkKillSwitch.isEnabled {
-            Task { await logger.log("[Loopback] blocked by off-grid/kill-switch") }
-            throw URLError(.notConnectedToInternet)
+    /// Response chunk from the raw `/completion` endpoint (non-OAI format).
+    private struct LoopbackCompletionChunk: Decodable {
+        let content: String?
+        let stop: Bool?
+    }
+
+    private struct LoopbackErrorEnvelope: Decodable {
+        struct LoopbackError: Decodable {
+            let message: String?
         }
-        // Ensure RAM safety and keep the loopback server aligned with the active model settings.
-        let ctxForRAM = Int(self.effectiveContext > 0 ? self.effectiveContext : self.contextLength)
-        if let size = (try? FileManager.default.attributesOfItem(atPath: self.modelURL.path)[.size]) as? Int64 {
-            if ModelRAMAdvisor.fitsInRAM(format: .gguf, sizeBytes: size, contextLength: ctxForRAM, layerCount: nil, moeInfo: nil) == false {
-                Task { await logger.log("[Loopback][RAMGuard] blocked model=\(self.modelURL.lastPathComponent) ctx=\(ctxForRAM)") }
-                throw NSError(
-                    domain: "Noema",
-                    code: 2003,
-                    userInfo: [NSLocalizedDescriptionKey: "Loopback server blocked by RAM safety guard for this model/context. Lower context length or bypass the safety check."]
+
+        let error: LoopbackError?
+    }
+
+    struct LoopbackRequestPlan {
+        let endpoint: String
+        let body: [String: Any]
+        let imagePaths: [String]
+        let requestMode: String
+    }
+
+    struct LoopbackImagePayload {
+        let data: Data
+        let mime: String
+        let pixelWidth: Int
+        let pixelHeight: Int
+        let originalPixelWidth: Int?
+        let originalPixelHeight: Int?
+        let wasClamped: Bool
+        let suspiciouslyLargeSource: Bool
+    }
+
+    private func makeLoopbackImageObject(from path: String) -> [String: Any] {
+        let payload = loopbackImagePayload(for: path)
+        let b64 = payload.data.base64EncodedString()
+        return [
+            "type": "image_url",
+            "image_url": ["url": "data:\(payload.mime);base64,\(b64)"]
+        ]
+    }
+
+    private func buildLoopbackChatMessages(from messages: [ChatMessage]) -> [[String: Any]] {
+        messages.map { message in
+            var payload: [String: Any] = ["role": message.role]
+
+            if let toolCalls = message.toolCalls, !toolCalls.isEmpty {
+                payload["tool_calls"] = toolCalls.map { toolCall in
+                    [
+                        "id": toolCall.id,
+                        "type": toolCall.type,
+                        "function": [
+                            "name": toolCall.function.name,
+                            "arguments": toolCall.function.arguments
+                        ]
+                    ]
+                }
+                let trimmedContent = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                payload["content"] = trimmedContent.isEmpty ? NSNull() : message.content
+            } else {
+                payload["content"] = message.content
+            }
+
+            if let toolCallId = message.toolCallId,
+               !toolCallId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                payload["tool_call_id"] = toolCallId
+            }
+
+            return payload
+        }
+    }
+
+    private func buildLoopbackChatBody(messages: [[String: Any]], forceNonStreaming: Bool) -> [String: Any] {
+        var body: [String: Any] = [
+            "model": self.modelURL.lastPathComponent,
+            "messages": messages,
+            "stream": !forceNonStreaming,
+            "n_predict": -1,
+            "return_progress": true,
+        ]
+        if isQwen35Model {
+            body["reasoning_format"] = "deepseek"
+            body["chat_template_kwargs"] = ["enable_thinking": true]
+        }
+        if usesTemplateDrivenMessages {
+            body["add_generation_prompt"] = true
+        }
+        return body
+    }
+
+    private func buildLoopbackMultimodalMessages(from messages: [ChatMessage], imagePaths: [String]) -> [[String: Any]] {
+        var payloads = buildLoopbackChatMessages(from: messages)
+        var content: [[String: Any]] = []
+
+        if let userIndex = payloads.lastIndex(where: { (($0["role"] as? String) ?? "").lowercased() == "user" }) {
+            if let text = payloads[userIndex]["content"] as? String,
+               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                content.append(["type": "text", "text": text])
+            }
+            content.append(contentsOf: imagePaths.map(makeLoopbackImageObject(from:)))
+            payloads[userIndex]["content"] = content
+            return payloads
+        }
+
+        content.append(contentsOf: imagePaths.map(makeLoopbackImageObject(from:)))
+        payloads.append([
+            "role": "user",
+            "content": content
+        ])
+        return payloads
+    }
+
+    func buildLoopbackRequestPlan(for input: LLMInput, forceNonStreaming: Bool) -> LoopbackRequestPlan {
+        switch input.content {
+        case .plain(let prompt):
+            return LoopbackRequestPlan(
+                endpoint: "/completion",
+                body: [
+                    "prompt": prompt,
+                    "stream": !forceNonStreaming,
+                    "n_predict": -1,
+                    "return_progress": true,
+                ],
+                imagePaths: [],
+                requestMode: "completion"
+            )
+        case .messages(let messages):
+            let body = buildLoopbackChatBody(
+                messages: buildLoopbackChatMessages(from: messages),
+                forceNonStreaming: forceNonStreaming
+            )
+            return LoopbackRequestPlan(
+                endpoint: "/v1/chat/completions",
+                body: body,
+                imagePaths: [],
+                requestMode: "chat_completions"
+            )
+        case .multimodal(let prompt, let paths):
+            var content: [[String: Any]] = [["type": "text", "text": prompt]]
+            content.append(contentsOf: paths.map(makeLoopbackImageObject(from:)))
+            let body = buildLoopbackChatBody(
+                messages: [["role": "user", "content": content]],
+                forceNonStreaming: forceNonStreaming
+            )
+            return LoopbackRequestPlan(
+                endpoint: "/v1/chat/completions",
+                body: body,
+                imagePaths: paths,
+                requestMode: "chat_completions"
+            )
+        case .multimodalMessages(let messages, let paths):
+            let body = buildLoopbackChatBody(
+                messages: buildLoopbackMultimodalMessages(from: messages, imagePaths: paths),
+                forceNonStreaming: forceNonStreaming
+            )
+            return LoopbackRequestPlan(
+                endpoint: "/v1/chat/completions",
+                body: body,
+                imagePaths: paths,
+                requestMode: "chat_completions"
+            )
+        }
+    }
+
+    func loopbackImagePayload(for path: String) -> LoopbackImagePayload {
+        let fileURL = URL(fileURLWithPath: path)
+        let ext = fileURL.pathExtension.lowercased()
+
+        if let data = try? Data(contentsOf: fileURL),
+           let normalized = AttachmentImageNormalizer.normalizeAttachmentData(data) {
+            let originalWidth = normalized.originalPixelWidth ?? normalized.pixelWidth
+            let originalHeight = normalized.originalPixelHeight ?? normalized.pixelHeight
+            Task {
+                await logger.log(
+                    "[Images][Reencode] src=\(ext) original=\(originalWidth)x\(originalHeight) normalized=\(normalized.pixelWidth)x\(normalized.pixelHeight) clamped=\(normalized.wasClamped) suspicious=\(normalized.suspiciouslyLargeSource) bytes=\(normalized.data.count) name=\(fileURL.lastPathComponent)"
                 )
             }
+            return LoopbackImagePayload(
+                data: normalized.data,
+                mime: "image/jpeg",
+                pixelWidth: normalized.pixelWidth,
+                pixelHeight: normalized.pixelHeight,
+                originalPixelWidth: normalized.originalPixelWidth,
+                originalPixelHeight: normalized.originalPixelHeight,
+                wasClamped: normalized.wasClamped,
+                suspiciouslyLargeSource: normalized.suspiciouslyLargeSource
+            )
         }
+
+        let data = (try? Data(contentsOf: fileURL)) ?? Data()
+        let metadata = AttachmentImageNormalizer.metadata(forFileAt: fileURL)
+        let mime: String
+        switch ext {
+        case "png":
+            mime = "image/png"
+        case "jpg", "jpeg":
+            mime = "image/jpeg"
+        case "webp":
+            mime = "image/webp"
+        default:
+            mime = "image/jpeg"
+        }
+        Task {
+            await logger.log(
+                "[Images][Reencode] fallback src=\(ext) original=\(metadata?.pixelWidth ?? 0)x\(metadata?.pixelHeight ?? 0) normalized=\(metadata?.pixelWidth ?? 0)x\(metadata?.pixelHeight ?? 0) clamped=false suspicious=\(((metadata?.fileBytes) ?? data.count) > AttachmentImageNormalizer.suspiciousFileSizeBytes) bytes=\(data.count) name=\(fileURL.lastPathComponent)"
+            )
+        }
+        return LoopbackImagePayload(
+            data: data,
+            mime: mime,
+            pixelWidth: metadata?.pixelWidth ?? 0,
+            pixelHeight: metadata?.pixelHeight ?? 0,
+            originalPixelWidth: metadata?.pixelWidth,
+            originalPixelHeight: metadata?.pixelHeight,
+            wasClamped: false,
+            suspiciouslyLargeSource: ((metadata?.fileBytes) ?? data.count) > AttachmentImageNormalizer.suspiciousFileSizeBytes
+        )
+    }
+
+    private func loopbackStillLoadingError() -> NSError {
+        NSError(
+            domain: "Noema",
+            code: 2004,
+            userInfo: [NSLocalizedDescriptionKey: "Local model server is still loading. Please try again in a moment."]
+        )
+    }
+
+    private func bridgeReportsLoopbackReady(expectedPort: Int?) -> Bool {
+        let bridgePort = Int(LlamaServerBridge.port())
+        guard bridgePort > 0 else { return false }
+        if let expectedPort, expectedPort > 0, bridgePort != expectedPort {
+            return false
+        }
+        if LlamaServerBridge.isLoading() {
+            return false
+        }
+        return LlamaServerBridge.loadProgress() >= 0.999
+    }
+
+    private func probeLoopbackHealthStatus(baseURL: URL) async -> Int? {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = Self.loopbackReadyProbeRequestTimeout
+        configuration.timeoutIntervalForResource = Self.loopbackReadyProbeRequestTimeout
+        configuration.waitsForConnectivity = false
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.connectionProxyDictionary = [AnyHashable: Any]()
+        let session = URLSession(configuration: configuration)
+        defer { session.finishTasksAndInvalidate() }
+
+        for path in ["health", "v1/health"] {
+            var request = URLRequest(url: baseURL.appendingPathComponent(path))
+            request.httpMethod = "GET"
+            request.timeoutInterval = Self.loopbackReadyProbeRequestTimeout
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            do {
+                let (_, response) = try await session.data(for: request)
+                if let http = response as? HTTPURLResponse {
+                    return http.statusCode
+                }
+            } catch {
+                continue
+            }
+        }
+        return nil
+    }
+
+    private func waitForLoopbackReady(baseURL: URL, timeout: TimeInterval) async -> LoopbackReadyProbeResult {
+        let started = Date()
+        let clampedTimeout = max(0.5, timeout)
+        let deadline = started.addingTimeInterval(clampedTimeout)
+        let expectedPort = baseURL.port
+        var attempts = 0
+        var lastStatus: Int? = nil
+
+        // Use bridge state as a precondition: if the bridge says the model
+        // hasn't finished loading, there's no point sending HTTP probes yet.
+        // But once the bridge reports ready we STILL require at least one
+        // successful HTTP health-check before declaring the server ready.
+        // This avoids masking a broken HTTP transport behind C-level flags.
+        var bridgeReady = bridgeReportsLoopbackReady(expectedPort: expectedPort)
+
+        while Date() < deadline {
+            attempts += 1
+            lastStatus = await probeLoopbackHealthStatus(baseURL: baseURL)
+            if lastStatus == 200 {
+                let elapsedMs = max(0, Int(Date().timeIntervalSince(started) * 1000))
+                return LoopbackReadyProbeResult(
+                    ready: true,
+                    statusCode: 200,
+                    attempts: attempts,
+                    elapsedMs: elapsedMs,
+                    usedBridgeFallback: false
+                )
+            }
+
+            // Re-check bridge state each iteration.
+            if !bridgeReady {
+                bridgeReady = bridgeReportsLoopbackReady(expectedPort: expectedPort)
+            }
+
+            // If the bridge says the model is loaded but we've tried enough
+            // HTTP probes (5 × 200ms = 1s) without success, accept bridge-only
+            // readiness as a fallback so we don't block forever.
+            if bridgeReady, attempts >= 5 {
+                let elapsedMs = max(0, Int(Date().timeIntervalSince(started) * 1000))
+                return LoopbackReadyProbeResult(
+                    ready: true,
+                    statusCode: lastStatus,
+                    attempts: attempts,
+                    elapsedMs: elapsedMs,
+                    usedBridgeFallback: true
+                )
+            }
+
+            try? await Task.sleep(nanoseconds: Self.loopbackReadyProbeIntervalNanos)
+        }
+
+        // Timed out. If the bridge at least reports the model is loaded,
+        // treat as a degraded-ready so the caller can attempt the request.
+        if bridgeReady {
+            let elapsedMs = max(0, Int(Date().timeIntervalSince(started) * 1000))
+            return LoopbackReadyProbeResult(
+                ready: true,
+                statusCode: lastStatus,
+                attempts: attempts,
+                elapsedMs: elapsedMs,
+                usedBridgeFallback: true
+            )
+        }
+
+        let elapsedMs = max(0, Int(Date().timeIntervalSince(started) * 1000))
+        return LoopbackReadyProbeResult(
+            ready: false,
+            statusCode: lastStatus,
+            attempts: attempts,
+            elapsedMs: elapsedMs,
+            usedBridgeFallback: false
+        )
+    }
+
+    fileprivate func generateViaLoopbackServer(
+        input: LLMInput,
+        onToken: ((String) -> Void)? = nil,
+        onPromptProgress: (@Sendable (Double) -> Void)? = nil,
+        forceNonStreaming: Bool = false,
+        allowRetry: Bool = true
+    ) async throws -> String {
+        let bypassRAMCheck = UserDefaults.standard.bool(forKey: "bypassRAMCheck")
+        let ctxForRAM = Int(self.effectiveContext > 0 ? self.effectiveContext : self.contextLength)
         // Re-assert context length for the embedded server so it matches the current model settings.
         setenv("LLAMA_CONTEXT_SIZE", String(ctxForRAM), 1)
+
         var port = Int(LlamaServerBridge.port())
+        // Only enforce the RAM safety guard when we are about to start the embedded server.
+        // Once the server is already running, available memory will naturally be lower (because
+        // the model/KV/vision buffers are already allocated), so a "can we load?" check here
+        // becomes a false-positive gate.
+        if port <= 0, !bypassRAMCheck,
+           let size = (try? FileManager.default.attributesOfItem(atPath: self.modelURL.path)[.size]) as? Int64,
+           ModelRAMAdvisor.fitsInRAM(
+               format: .gguf,
+               sizeBytes: size,
+               contextLength: ctxForRAM,
+               layerCount: nil,
+               moeInfo: nil,
+               kvCacheEstimate: .resolvedFromEnvironment()
+           ) == false {
+            Task { await logger.log("[Loopback][RAMGuard] blocked model=\(self.modelURL.lastPathComponent) ctx=\(ctxForRAM)") }
+            throw NSError(
+                domain: "Noema",
+                code: 2003,
+                userInfo: [NSLocalizedDescriptionKey: "Loopback server blocked by RAM safety guard for this model/context. Lower context length or bypass the safety check."]
+            )
+        }
         if port <= 0 {
-            // Best-effort lazy start: if a projector is available and the embedded build lacks vision,
-            // spin up the server now.
+            // Best-effort lazy start: ChatVM normally starts loopback during model load, but
+            // keep a defensive fallback here for race conditions.
             let mm = self.effectiveMMProj ?? ProjectorLocator.projectorPath(alongside: self.modelURL)
-            if let mm, !mm.isEmpty {
-                let p = Int(LlamaServerBridge.start(host: "127.0.0.1", preferredPort: 0, ggufPath: self.modelURL.path, mmprojPath: mm))
-                if p > 0 {
-                    UserDefaults.standard.set(true, forKey: "serverVisionEnabled")
-                    Task { await logger.log("[Loopback] lazyStart ok port=\(p) gguf=\(self.modelURL.lastPathComponent) mmproj=\(URL(fileURLWithPath: mm).lastPathComponent)") }
-                    port = p
-                    // Free in-process runner memory if it was previously loaded.
-                    if self.runner != nil {
-                        self.runner?.cancelCurrent()
-                        self.runner?.unload()
-                        self.runner = nil
-                    }
-                    self.routeAllViaLoopback = true
-                } else {
-                    Task { await logger.log("[Loopback] lazyStart failed gguf=\(self.modelURL.lastPathComponent) mmproj=\(URL(fileURLWithPath: mm).lastPathComponent)") }
-                }
+            let p = Int(LlamaServerBridge.start(self.loopbackStartConfiguration(mmprojPath: mm)))
+            if p > 0 {
+                LoopbackVisionState.setEnabled(true)
+                let projName = mm.map { URL(fileURLWithPath: $0).lastPathComponent }
+                    ?? (GGUFMetadata.hasMultimodalProjector(at: self.modelURL) ? "merged" : "none")
+                let templateLabel = self.templateProfile.templateLabel
+                Task { await logger.log("[Loopback] lazyStart ok port=\(p) gguf=\(self.modelURL.lastPathComponent) mmproj=\(projName) template=\(templateLabel)") }
+                port = p
+            } else {
+                let diagnostics = LlamaServerBridge.lastStartDiagnostics()
+                let reason = diagnostics?.message.isEmpty == false
+                    ? diagnostics!.message
+                    : (diagnostics?.code ?? "startup_failed")
+                Task { await logger.log("[Loopback] lazyStart failed gguf=\(self.modelURL.lastPathComponent) reason=\(reason)") }
             }
         }
         guard port > 0, let baseURL = URL(string: "http://127.0.0.1:\(port)") else {
-            throw NSError(domain: "Noema", code: 2001, userInfo: [NSLocalizedDescriptionKey: "Loopback server not running"])
+            let diagnostics = LlamaServerBridge.lastStartDiagnostics()
+            throw NSError(
+                domain: "Noema",
+                code: 2001,
+                userInfo: [
+                    NSLocalizedDescriptionKey: LoopbackStartupPlanner.formatFailureMessage(diagnostics, retryAttempted: false)
+                ]
+            )
         }
-        func makeImageObject(from path: String) -> [String: Any] {
-            let (data, mime) = reencodeIfNeeded(path: path)
-            let b64 = data.base64EncodedString()
-            return [
-                "type": "image_url",
-                "image_url": ["url": "data:\(mime);base64,\(b64)"]
-            ]
+        let preflightProbe = await waitForLoopbackReady(baseURL: baseURL, timeout: Self.loopbackReadyProbeTimeout)
+        let preflightStatus = preflightProbe.statusCode.map(String.init) ?? "-1"
+        Task {
+            await logger.log(
+                "[Loopback][ReadyProbe] preflight ready=\(preflightProbe.ready) status=\(preflightStatus) elapsed_ms=\(preflightProbe.elapsedMs) attempts=\(preflightProbe.attempts) bridge_fallback=\(preflightProbe.usedBridgeFallback)"
+            )
         }
-        var content: [[String: Any]] = [["type": "text", "text": prompt]]
-        content.append(contentsOf: imagePaths.map(makeImageObject(from:)))
+        guard preflightProbe.ready else {
+            throw loopbackStillLoadingError()
+        }
+        // If readiness came from bridge state (not an HTTP 200 probe), pause briefly
+        // so the server main loop can finish its first scheduling turn.
+        if preflightProbe.usedBridgeFallback {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
         // Pull current sampling knobs from environment variables, which ChatVM sets from ModelSettings
         func env(_ k: String) -> String? { guard let v = getenv(k) else { return nil }; return String(cString: v) }
-        var body: [String: Any] = [
-            "model": self.modelURL.lastPathComponent,
-            "messages": [["role": "user", "content": content]],
-            "stream": false
-        ]
+
+        let requestPlan = buildLoopbackRequestPlan(for: input, forceNonStreaming: forceNonStreaming)
+        let endpoint = requestPlan.endpoint
+        var body = requestPlan.body
+        let imagePaths = requestPlan.imagePaths
+        let requestMode = requestPlan.requestMode
+
         if let s = env("LLAMA_SEED"), let n = Int(s) { body["seed"] = n }
         if let t = env("NOEMA_TEMPERATURE"), let f = Double(t) { body["temperature"] = f }
         if let k = env("NOEMA_TOP_K"), let n = Int(k) { body["top_k"] = n }
@@ -1196,24 +1463,338 @@ extension NoemaLlamaClient {
         if let rl = env("NOEMA_REPEAT_LAST_N"), let n = Int(rl) { body["repeat_last_n"] = n }
         if let pr = env("NOEMA_PRESENCE_PENALTY"), let f = Double(pr) { body["presence_penalty"] = f }
         if let fr = env("NOEMA_FREQUENCY_PENALTY"), let f = Double(fr) { body["frequency_penalty"] = f }
-        var req = URLRequest(url: baseURL.appendingPathComponent("/v1/chat/completions"))
+        var req = URLRequest(url: baseURL.appendingPathComponent(endpoint))
         req.httpMethod = "POST"
+        req.setValue(forceNonStreaming ? "application/json" : "text/event-stream", forHTTPHeaderField: "Accept")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("close", forHTTPHeaderField: "Connection")
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let approxBytes: Int = content.reduce(0) { acc, item in
-            let urlStr = ((item["image_url"] as? [String: Any])?["url"] as? String) ?? ""
-            return acc + urlStr.count
+        req.timeoutInterval = Self.loopbackRequestTimeout
+        if NetworkKillSwitch.shouldBlock(request: req) {
+            Task { await logger.log("[Loopback] blocked by off-grid/kill-switch url=\(req.url?.absoluteString ?? "nil")") }
+            throw URLError(.notConnectedToInternet)
         }
-        Task { await logger.log("[Loopback] request url=\(baseURL)/v1/chat/completions images=\(imagePaths.count) bytes=\(approxBytes)") }
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-            let msg = String(decoding: data, as: UTF8.self)
-            throw NSError(domain: "Noema", code: 2002, userInfo: [NSLocalizedDescriptionKey: "Server error: \(msg)"])
+        let approxBytes: Int = imagePaths.reduce(0) { acc, path in
+            let fileURL = URL(fileURLWithPath: path)
+            let bytes = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            return acc + max(0, bytes)
         }
-        struct ChatResp: Decodable { struct Choice: Decodable { struct Msg: Decodable { let content: String? }; let message: Msg }; let choices: [Choice] }
-        let decoded = try JSONDecoder().decode(ChatResp.self, from: data)
-        let out = decoded.choices.first?.message.content ?? ""
-        Task { await logger.log("[Loopback] response ok chars=\(out.count)") }
-        return out
+        let modeLabel = forceNonStreaming ? "json" : "sse"
+        let templateLabel = templateProfile.templateLabel
+        let structuredMultimodal: Bool = {
+            if case .multimodalMessages = input.content { return true }
+            return false
+        }()
+        Task {
+            await logger.log(
+                "[Loopback] request url=\(baseURL)\(endpoint) mode=\(modeLabel) request_mode=\(requestMode) template=\(templateLabel) qwen35=\(isQwen35Model) structured_multimodal=\(structuredMultimodal) images=\(imagePaths.count) bytes=\(approxBytes)"
+            )
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = Self.loopbackRequestTimeout
+        configuration.timeoutIntervalForResource = Self.loopbackResourceTimeout
+        configuration.waitsForConnectivity = false
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.connectionProxyDictionary = [AnyHashable: Any]()
+        let session = URLSession(configuration: configuration)
+        await loopbackSessionState.set(session)
+        defer {
+            Task { await self.loopbackSessionState.clearIfMatching(session) }
+            session.finishTasksAndInvalidate()
+        }
+
+        let decoder = JSONDecoder()
+        var out = ""
+        var bufferedNonSSEPayload = ""
+        var sawSSEPayload = false
+        var thinkOpen = false
+        var finishReason: String?
+        var sawReasoning = false
+        var sawContent = false
+        var reasoningArrivedBeforeContent = false
+
+        func emit(_ token: String) {
+            guard !token.isEmpty else { return }
+            out += token
+            onToken?(token)
+        }
+
+        func emitChoice(_ choice: LoopbackChatChunk.Choice) {
+            if let reason = choice.finishReason, !reason.isEmpty {
+                finishReason = reason
+            }
+
+            if let reasoning = choice.delta?.reasoningContent ?? choice.message?.reasoningContent,
+               !reasoning.isEmpty {
+                if !sawContent {
+                    reasoningArrivedBeforeContent = true
+                }
+                sawReasoning = true
+                if !thinkOpen {
+                    emit("<think>")
+                    thinkOpen = true
+                }
+                emit(reasoning)
+            }
+
+            if let contentChunk = choice.delta?.content ?? choice.message?.content ?? choice.text ?? choice.completion,
+               !contentChunk.isEmpty {
+                sawContent = true
+                if thinkOpen {
+                    emit("</think>")
+                    thinkOpen = false
+                }
+                emit(contentChunk)
+            }
+        }
+
+        func reportPromptProgress(_ progress: LoopbackChatChunk.PromptProgress?) {
+            guard
+                let progress,
+                let total = progress.total,
+                let processed = progress.processed,
+                total > 0
+            else { return }
+
+            let fraction = min(1.0, max(0.0, Double(processed) / Double(total)))
+            onPromptProgress?(fraction)
+        }
+
+        func decodeServerErrorMessage(from data: Data) -> String? {
+            if let envelope = try? decoder.decode(LoopbackErrorEnvelope.self, from: data),
+               let message = envelope.error?.message,
+               !message.isEmpty {
+                return message
+            }
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let error = json["error"] as? [String: Any],
+                   let message = error["message"] as? String,
+                   !message.isEmpty {
+                    return message
+                }
+                if let message = json["message"] as? String, !message.isEmpty {
+                    return message
+                }
+            }
+            return nil
+        }
+
+        func finalizeResponseLog() {
+            if thinkOpen {
+                emit("</think>")
+            }
+            let outCount = out.count
+            let reasonSuffix = finishReason.map { " finish_reason=\($0)" } ?? ""
+            let logMessage = "[Loopback] response ok chars=\(outCount) reasoning=\(sawReasoning) reasoning_first=\(reasoningArrivedBeforeContent)\(reasonSuffix)"
+            Task { [logMessage] in
+                await logger.log(logMessage)
+            }
+        }
+
+        func parseJSONBody(_ data: Data) throws {
+            // Try OAI chat/completion format first (has "choices" array)
+            if let chunk = try? decoder.decode(LoopbackChatChunk.self, from: data) {
+                reportPromptProgress(chunk.promptProgress)
+                for choice in chunk.choices {
+                    emitChoice(choice)
+                }
+                return
+            }
+            // Try raw /completion format (has "content" field directly)
+            if let raw = try? decoder.decode(LoopbackCompletionChunk.self, from: data),
+               let content = raw.content, !content.isEmpty {
+                emit(content)
+                if raw.stop == true {
+                    finishReason = "stop"
+                }
+                return
+            }
+            if let message = decodeServerErrorMessage(from: data) {
+                throw NSError(domain: "Noema", code: 2002, userInfo: [NSLocalizedDescriptionKey: "Server error: \(message)"])
+            }
+            let plain = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !plain.isEmpty {
+                emit(plain)
+            }
+        }
+
+        if forceNonStreaming {
+            let (data, resp) = try await session.data(for: req)
+            guard let http = resp as? HTTPURLResponse else {
+                throw NoemaLlamaError.generationFailed
+            }
+            guard (200...299).contains(http.statusCode) else {
+                let message = decodeServerErrorMessage(from: data) ?? String(decoding: data.prefix(4096), as: UTF8.self)
+                throw NSError(domain: "Noema", code: 2002, userInfo: [NSLocalizedDescriptionKey: "Server error: \(message)"])
+            }
+            try parseJSONBody(data)
+            finalizeResponseLog()
+            return out
+        }
+
+        do {
+            let (bytes, resp) = try await session.bytes(for: req)
+            guard let http = resp as? HTTPURLResponse else {
+                throw NoemaLlamaError.generationFailed
+            }
+            guard (200...299).contains(http.statusCode) else {
+                var buffer = Data()
+                var iterator = bytes.makeAsyncIterator()
+                while let byte = try await iterator.next() {
+                    buffer.append(byte)
+                    if buffer.count >= 4096 { break }
+                }
+                let message = decodeServerErrorMessage(from: buffer) ?? String(decoding: buffer, as: UTF8.self)
+                throw NSError(domain: "Noema", code: 2002, userInfo: [NSLocalizedDescriptionKey: "Server error: \(message)"])
+            }
+
+            for try await rawLine in bytes.lines {
+                try Task.checkCancellation()
+                let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !line.isEmpty else { continue }
+                guard line.hasPrefix("data:") else {
+                    bufferedNonSSEPayload.append(line)
+                    continue
+                }
+                let payload = line.dropFirst(5).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !payload.isEmpty else { continue }
+                sawSSEPayload = true
+                if payload == "[DONE]" { break }
+                guard let payloadData = payload.data(using: .utf8) else { continue }
+                // Try OAI chat format (choices array)
+                if let chunk = try? decoder.decode(LoopbackChatChunk.self, from: payloadData) {
+                    reportPromptProgress(chunk.promptProgress)
+                    for choice in chunk.choices {
+                        emitChoice(choice)
+                    }
+                    continue
+                }
+                // Try raw /completion format (content + stop)
+                if let raw = try? decoder.decode(LoopbackCompletionChunk.self, from: payloadData) {
+                    if raw.stop == true {
+                        finishReason = "stop"
+                        break
+                    }
+                    if let content = raw.content, !content.isEmpty {
+                        emit(content)
+                    }
+                    continue
+                }
+                if let message = decodeServerErrorMessage(from: payloadData) {
+                    throw NSError(domain: "Noema", code: 2002, userInfo: [NSLocalizedDescriptionKey: "Server error: \(message)"])
+                }
+            }
+
+            if !sawSSEPayload, !bufferedNonSSEPayload.isEmpty,
+               let data = bufferedNonSSEPayload.data(using: .utf8) {
+                try parseJSONBody(data)
+            }
+
+            finalizeResponseLog()
+            return out
+        } catch {
+            // Diagnostic logging for connection failures
+            let errNS = error as NSError
+            let errCode = errNS.code
+            let errDomain = errNS.domain
+            let errDesc = errNS.localizedDescription
+            let charsReceived = out.count
+            let mode = forceNonStreaming ? "json" : "sse"
+            let ep = endpoint
+            Task {
+                await logger.log(
+                    "[Loopback][Error] domain=\(errDomain) code=\(errCode) endpoint=\(ep) mode=\(mode) chars_received=\(charsReceived) description=\(errDesc)"
+                )
+            }
+
+            let retryCode: URLError.Code? = {
+                if let urlError = error as? URLError {
+                    return urlError.code
+                }
+                let nsError = error as NSError
+                guard nsError.domain == NSURLErrorDomain else { return nil }
+                return URLError.Code(rawValue: nsError.code)
+            }()
+
+            if allowRetry, let retryCode {
+                let isRetryableConnectionError =
+                    retryCode == .networkConnectionLost ||
+                    retryCode == .cannotConnectToHost ||
+                    retryCode == .cannotFindHost ||
+                    retryCode == .timedOut
+                if isRetryableConnectionError {
+                    let preRestartProbe = await waitForLoopbackReady(baseURL: baseURL, timeout: Self.loopbackRetryProbeTimeout)
+                    let preRestartStatus = preRestartProbe.statusCode.map(String.init) ?? "-1"
+                    Task {
+                        await logger.log(
+                            "[Loopback][Retry] code=\(retryCode.rawValue) pre_restart_ready=\(preRestartProbe.ready) status=\(preRestartStatus) elapsed_ms=\(preRestartProbe.elapsedMs) attempts=\(preRestartProbe.attempts) bridge_fallback=\(preRestartProbe.usedBridgeFallback)"
+                        )
+                    }
+
+                    if preRestartProbe.ready {
+                        Task {
+                            await logger.log(
+                                "[Loopback][Retry] decision=retry_non_stream_without_restart code=\(retryCode.rawValue)"
+                            )
+                        }
+                        return try await self.generateViaLoopbackServer(
+                            input: input,
+                            onToken: onToken,
+                            onPromptProgress: onPromptProgress,
+                            forceNonStreaming: true,
+                            allowRetry: false
+                        )
+                    }
+
+                    let mm = self.effectiveMMProj ?? ProjectorLocator.projectorPath(alongside: self.modelURL)
+                    LlamaServerBridge.stop()
+                    let restarted = Int(LlamaServerBridge.start(self.loopbackStartConfiguration(mmprojPath: mm)))
+                    if restarted > 0 {
+                        LoopbackVisionState.setEnabled(true)
+                        let restartedURL = URL(string: "http://127.0.0.1:\(restarted)")
+                        let postRestartProbe: LoopbackReadyProbeResult
+                        if let restartedURL {
+                            postRestartProbe = await waitForLoopbackReady(
+                                baseURL: restartedURL,
+                                timeout: Self.loopbackReadyProbeTimeout
+                            )
+                        } else {
+                            postRestartProbe = LoopbackReadyProbeResult(
+                                ready: false,
+                                statusCode: nil,
+                                attempts: 0,
+                                elapsedMs: 0,
+                                usedBridgeFallback: false
+                            )
+                        }
+                        let postStatus = postRestartProbe.statusCode.map(String.init) ?? "-1"
+                        Task {
+                            await logger.log(
+                                "[Loopback][Retry] decision=restart_and_retry code=\(retryCode.rawValue) restart_port=\(restarted) ready=\(postRestartProbe.ready) status=\(postStatus) elapsed_ms=\(postRestartProbe.elapsedMs) attempts=\(postRestartProbe.attempts) bridge_fallback=\(postRestartProbe.usedBridgeFallback)"
+                            )
+                        }
+                        guard postRestartProbe.ready else {
+                            throw loopbackStillLoadingError()
+                        }
+                    } else {
+                        Task { await logger.log("[Loopback][Retry] decision=restart_failed code=\(retryCode.rawValue)") }
+                        throw NSError(
+                            domain: "Noema",
+                            code: 2005,
+                            userInfo: [NSLocalizedDescriptionKey: "Loopback server restart failed while recovering from a connection reset."]
+                        )
+                    }
+                    return try await self.generateViaLoopbackServer(
+                        input: input,
+                        onToken: onToken,
+                        onPromptProgress: onPromptProgress,
+                        forceNonStreaming: true,
+                        allowRetry: false
+                    )
+                }
+            }
+            throw error
+        }
     }
 }

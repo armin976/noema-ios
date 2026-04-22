@@ -26,9 +26,19 @@
           "opacity-specializations" : [
             {
               "appearance" : "dark",
-              "value" : 1
+              "value" : 0
             }
           ]
+        },
+        {
+          "blend-mode-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : "darken"
+            }
+          ],
+          "image-name" : "NOEMALOGO_recolored.png",
+          "name" : "NOEMALOGO_recolored"
         }
       ],
       "lighting" : "individual",

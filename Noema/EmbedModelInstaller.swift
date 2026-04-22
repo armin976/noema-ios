@@ -50,6 +50,7 @@ final class EmbedModelInstaller: ObservableObject {
             UserDefaults.standard.set(true, forKey: "hasInstalledEmbedModel:\(EmbeddingModel.modelURL.path)")
             state = .ready
             progress = 1
+            Haptics.success()
             notifyAvailabilityChanged(true)
         } catch {
             state = .failed(error.localizedDescription)

@@ -1,7 +1,6 @@
 // NetworkKillSwitch.swift
 import Foundation
 
-/// - Localhost traffic is also blocked to ensure zero network activity.
 final class LockIsolated<Value>: @unchecked Sendable {
     private var value: Value
     private let lock = NSLock()
@@ -26,9 +25,7 @@ final class LockIsolated<Value>: @unchecked Sendable {
 /// URLProtocol that denies all HTTP/HTTPS requests when the kill switch is enabled.
 final class NetworkBlockedURLProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool {
-        guard NetworkKillSwitch.isEnabled else { return false }
-        guard let scheme = request.url?.scheme?.lowercased() else { return false }
-        return scheme == "http" || scheme == "https"
+        NetworkKillSwitch.shouldBlock(request: request)
     }
 
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -43,12 +40,48 @@ final class NetworkBlockedURLProtocol: URLProtocol {
 }
 enum NetworkKillSwitch {
     private static let enabledState = LockIsolated(false)
+    private static let allowedLoopbackHosts: Set<String> = ["localhost", "127.0.0.1", "::1"]
 
     /// Weakly-held set of URLSession instances to cancel when the switch is enabled
     private static let trackedSessions = LockIsolated(NSHashTable<AnyObject>.weakObjects())
 
     static var isEnabled: Bool {
         enabledState.withValue { $0 }
+    }
+
+    static func isLoopback(url: URL?) -> Bool {
+        guard let scheme = url?.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              var host = url?.host?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !host.isEmpty else {
+            return false
+        }
+
+        host = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        if let withoutZone = host.split(separator: "%", maxSplits: 1).first {
+            host = String(withoutZone)
+        }
+        if allowedLoopbackHosts.contains(host) {
+            return true
+        }
+        if host.hasPrefix("::ffff:") {
+            let mapped = String(host.dropFirst("::ffff:".count))
+            return mapped == "127.0.0.1"
+        }
+        return false
+    }
+
+    static func shouldBlock(url: URL?) -> Bool {
+        guard isEnabled else { return false }
+        guard let scheme = url?.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            return false
+        }
+        return !isLoopback(url: url)
+    }
+
+    static func shouldBlock(request: URLRequest) -> Bool {
+        shouldBlock(url: request.url)
     }
 
     /// Register a session to be cancelled if off-grid is turned on while it's active.
@@ -67,16 +100,23 @@ enum NetworkKillSwitch {
 
             // Cancel tasks on shared session
             URLSession.shared.getAllTasks { tasks in
-                tasks.forEach { $0.cancel() }
+                tasks
+                    .filter { shouldBlock(url: $0.currentRequest?.url ?? $0.originalRequest?.url) }
+                    .forEach { $0.cancel() }
             }
 
             // Cancel tasks on tracked sessions
             let sessions = trackedSessions.withValue { $0.allObjects.compactMap { $0 as? URLSession } }
             for session in sessions {
                 session.getAllTasks { tasks in
-                    tasks.forEach { $0.cancel() }
+                    let blockedTasks = tasks.filter {
+                        shouldBlock(url: $0.currentRequest?.url ?? $0.originalRequest?.url)
+                    }
+                    blockedTasks.forEach { $0.cancel() }
+                    if !blockedTasks.isEmpty, blockedTasks.count == tasks.count {
+                        session.invalidateAndCancel()
+                    }
                 }
-                session.invalidateAndCancel()
             }
 
             // Cancel inflight hub requests

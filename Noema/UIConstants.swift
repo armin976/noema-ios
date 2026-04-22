@@ -44,6 +44,26 @@ struct UIConstants {
     static var widePadding: CGFloat {
         isPadInterface ? 48 : 32 // Significantly increased for margins
     }
+
+    static func adaptiveComposerCornerRadius(
+        currentHeight: CGFloat,
+        collapsedHeight: CGFloat,
+        expandedHeight: CGFloat,
+        expandedRadius: CGFloat
+    ) -> CGFloat {
+        let minHeight = Swift.min(collapsedHeight, expandedHeight)
+        let maxHeight = Swift.max(collapsedHeight, expandedHeight)
+        let clampedHeight = currentHeight.clamped(to: minHeight...maxHeight)
+        let progress = (clampedHeight - collapsedHeight) / Swift.max(expandedHeight - collapsedHeight, 1)
+        let collapsedRadius = collapsedHeight / 2
+        return collapsedRadius + ((expandedRadius - collapsedRadius) * progress)
+    }
+}
+
+private extension CGFloat {
+    func clamped(to range: ClosedRange<CGFloat>) -> CGFloat {
+        Swift.min(Swift.max(self, range.lowerBound), range.upperBound)
+    }
 }
 
 extension View {

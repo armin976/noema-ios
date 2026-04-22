@@ -2,23 +2,9 @@
 #import <Foundation/Foundation.h>
 #import <stdint.h>
 
-// Make XCFramework C API visible to Swift when available
-#if __has_include(<llama/llama.h>)
-#import <llama/llama.h>
-#elif __has_include(<LlamaFramework/llama.h>)
-#import <LlamaFramework/llama.h>
-#elif __has_include("llama.h")
+// Use the embedded llama.cpp sources from NoemaLLamaServer (no XCFramework).
 #import "llama.h"
-#endif
-
-// Expose ggml backend when available so Objective-C++ files can rely on it
-#if __has_include(<ggml/ggml-backend.h>)
-#import <ggml/ggml-backend.h>
-#elif __has_include(<ggml-backend.h>)
-#import <ggml-backend.h>
-#elif __has_include("ggml-backend.h")
 #import "ggml-backend.h"
-#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -46,18 +32,12 @@ int gguf_moe_scan(const char *path, struct gguf_moe_scan_result *out_result);
 #endif
 
 // Expose minimal Objective-C++ bridges to Swift
-#if __has_include("LlamaRunner.h")
-#import "LlamaRunner.h"
-#endif
 #if __has_include("LlamaEmbedder.h")
 #import "LlamaEmbedder.h"
-#endif
-#if __has_include("LlamaVisionShims.h")
-#import "LlamaVisionShims.h"
 #endif
 #if __has_include("LlamaBackendManager.h")
 #import "LlamaBackendManager.h"
 #endif
-#if __has_include("LlamaSwiftBatchHelpers.h")
-#import "LlamaSwiftBatchHelpers.h"
+#if __has_include("EmbeddedPythonBridge.h")
+#import "EmbeddedPythonBridge.h"
 #endif

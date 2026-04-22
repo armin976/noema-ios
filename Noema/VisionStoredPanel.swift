@@ -28,6 +28,7 @@ struct VisionStoredPanel: View {
     @State private var datasetToIndex: LocalDataset?
     @State private var showOffloadWarning = false
     @State private var pendingLoad: (LocalModel, ModelSettings)?
+    @State private var datasetPendingDeletion: LocalDataset?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
@@ -142,8 +143,36 @@ struct VisionStoredPanel: View {
             if DeviceGPUInfo.supportsGPUOffload {
                 Text(LocalizedStringKey("This model doesn't support GPU offload and generation speed will be significantly slower. Consider switching to an MLX model."))
             } else {
-                Text(LocalizedStringKey("This model doesn't support GPU offload and generation speed will be significantly slower. Fastest option on this device: use an SLM (Leap) model."))
+                Text(LocalizedStringKey("This model doesn't support GPU offload and generation speed will be significantly slower. Fastest option on this device: use an ET model."))
             }
+        }
+        .alert(
+            datasetDeleteConfirmationTitle,
+            isPresented: Binding(
+                get: { datasetPendingDeletion != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        datasetPendingDeletion = nil
+                    }
+                }
+            )
+        ) {
+            Button(LocalizedStringKey("Delete"), role: .destructive) {
+                guard let dataset = datasetPendingDeletion else { return }
+                datasetPendingDeletion = nil
+                try? datasetManager.delete(dataset)
+                if selectedDataset?.datasetID == dataset.datasetID {
+                    selectedDataset = nil
+                }
+                if importedDataset?.datasetID == dataset.datasetID {
+                    importedDataset = nil
+                }
+            }
+            Button(LocalizedStringKey("Cancel"), role: .cancel) {
+                datasetPendingDeletion = nil
+            }
+        } message: {
+            Text(LocalizedStringKey("This will remove the dataset and its embeddings from this device."))
         }
         .confirmationDialog(LocalizedStringKey("Start indexing now?"), isPresented: $askStartIndexing, titleVisibility: .visible) {
             Button(LocalizedStringKey("Start")) {
@@ -198,6 +227,27 @@ struct VisionStoredPanel: View {
         return "\(models) models • \(datasets) datasets • \(remotes) remotes"
     }
 
+    private var afmHiddenNotice: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Apple Foundation Model is hidden. You can re-enable it in Settings.")
+                .font(.body)
+                .foregroundStyle(.primary)
+            Button {
+                tabRouter.dismissAFMHiddenNotice()
+                tabRouter.selection = .settings
+            } label: {
+                Label("Open Settings", systemImage: "gearshape")
+            }
+            .buttonStyle(.bordered)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(.ultraThinMaterial)
+        )
+    }
+
     private var modelsSection: some View {
         sectionContainer {
             HStack(alignment: .firstTextBaseline) {
@@ -206,6 +256,9 @@ struct VisionStoredPanel: View {
                 Spacer()
             }
         } content: {
+            if tabRouter.isAFMHiddenNoticeVisible {
+                afmHiddenNotice
+            }
             if modelManager.downloadedModels.isEmpty {
                 emptyLibraryPrompt
             } else {
@@ -216,12 +269,14 @@ struct VisionStoredPanel: View {
                                 Button("Open Settings") {
                                     selectedModel = model
                                 }
-                                Button("Delete", role: .destructive) {
-                                    Task { @MainActor in
-                                        if modelManager.loadedModel?.id == model.id {
-                                            await vm.unload()
+                                if model.format != .afm {
+                                    Button("Delete", role: .destructive) {
+                                        Task { @MainActor in
+                                            if modelManager.loadedModel?.id == model.id {
+                                                await vm.unload()
+                                            }
+                                            modelManager.delete(model)
                                         }
-                                        modelManager.delete(model)
                                     }
                                 }
                             }
@@ -302,15 +357,18 @@ struct VisionStoredPanel: View {
                                     selectedDataset = dataset
                                 }
                                 Button("Delete", role: .destructive) {
-                                    Task { @MainActor in
-                                        try? datasetManager.delete(dataset)
-                                    }
+                                    datasetPendingDeletion = dataset
                                 }
                             }
                     }
                 }
             }
         }
+    }
+
+    private var datasetDeleteConfirmationTitle: String {
+        guard let dataset = datasetPendingDeletion else { return String(localized: "Delete") }
+        return String.localizedStringWithFormat(String(localized: "Delete %@?"), dataset.name)
     }
 
     @ViewBuilder
@@ -455,22 +513,24 @@ struct VisionStoredPanel: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Model settings")
 
-                Button(role: .destructive) {
-                    Task { @MainActor in
-                        if modelManager.loadedModel?.id == model.id {
-                            await vm.unload()
+                if model.format != .afm {
+                    Button(role: .destructive) {
+                        Task { @MainActor in
+                            if modelManager.loadedModel?.id == model.id {
+                                await vm.unload()
+                            }
+                            modelManager.delete(model)
                         }
-                        modelManager.delete(model)
+                    } label: {
+                        IconCircle(
+                            systemImage: "trash",
+                            foreground: .red,
+                            background: Color.red.opacity(0.15)
+                        )
                     }
-                } label: {
-                    IconCircle(
-                        systemImage: "trash",
-                        foreground: .red,
-                        background: Color.red.opacity(0.15)
-                    )
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Delete model")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Delete model")
             }
         }
         .padding(24)
@@ -563,9 +623,9 @@ struct VisionStoredPanel: View {
 
     private func modelChips(for model: LocalModel) -> [ModelChip] {
         var chips: [ModelChip] = []
-        let isSLM = model.format == .slm
+        let hidesArchitectureAndMoEChips = model.format == .et || model.format == .ane || model.format == .afm
 
-        if !isSLM {
+        if !model.quant.isEmpty && model.format != .ane {
             let quantLabel = QuantExtractor.shortLabel(from: model.quant, format: model.format)
             chips.append(
                 ModelChip(
@@ -575,14 +635,23 @@ struct VisionStoredPanel: View {
                 )
             )
         }
+        if let source = model.slmSourceFormatLabel {
+            chips.append(
+                ModelChip(
+                    text: source,
+                    background: .fill(Color.secondary.opacity(0.15)),
+                    foreground: .secondary
+                )
+            )
+        }
         chips.append(
             ModelChip(
-                text: model.format.rawValue.uppercased(),
+                text: model.format.displayName,
                 background: .gradient(model.format.tagGradient),
                 foreground: .white
             )
         )
-        if !isSLM {
+        if !hidesArchitectureAndMoEChips {
             if !model.architectureFamily.isEmpty {
                 chips.append(
                     ModelChip(
@@ -750,15 +819,22 @@ struct VisionStoredPanel: View {
     }
 
     private func allowedUTTypes() -> [UTType] {
-        var types: [UTType] = [.pdf, .plainText, .rtf, .html, .epub, .commaSeparatedText]
+        var types: [UTType] = [.pdf, .plainText, .epub, .commaSeparatedText]
+        types.append(.json)
         if let markdown = UTType(filenameExtension: "md") {
             types.append(markdown)
+        }
+        if let jsonl = UTType(filenameExtension: "jsonl") {
+            types.append(jsonl)
+        }
+        if let tsv = UTType(filenameExtension: "tsv") {
+            types.append(tsv)
         }
         return types
     }
 
     private func allowedExtensions() -> Set<String> {
-        ["pdf", "txt", "rtf", "html", "htm", "epub", "csv", "md"]
+        ["pdf", "txt", "epub", "csv", "md", "json", "jsonl", "tsv"]
     }
 
     private func suggestName(from urls: [URL]) -> String? {
@@ -794,7 +870,7 @@ struct VisionStoredPanel: View {
         }
         loadingModelID = model.id
         Task { @MainActor in
-            let settings = resolvedSettings
+            let settings = modelManager.normalizeLocalSettings(resolvedSettings, for: model)
             await vm.unload()
             try? await Task.sleep(nanoseconds: 200_000_000)
 
@@ -803,7 +879,17 @@ struct VisionStoredPanel: View {
                 let sizeBytes = Int64(model.sizeGB * 1_073_741_824.0)
                 let ctx = Int(settings.contextLength)
                 let layerHint: Int? = model.totalLayers > 0 ? model.totalLayers : nil
-                if !ModelRAMAdvisor.fitsInRAM(format: model.format, sizeBytes: sizeBytes, contextLength: ctx, layerCount: layerHint, moeInfo: model.moeInfo) {
+                let kvCacheEstimate = ModelRAMAdvisor.GGUFKVCacheEstimate.resolved(from: settings)
+                if !ModelRAMAdvisor.fitsInRAM(
+                    format: model.format,
+                    sizeBytes: sizeBytes,
+                    contextLength: ctx,
+                    layerCount: layerHint,
+                    moeInfo: model.moeInfo,
+                    kvCacheEstimate: kvCacheEstimate
+                ) {
+                    AppSoundPlayer.play(.error)
+                    Haptics.error()
                     vm.loadError = "Model likely exceeds memory budget. Lower context size or use a smaller quant/model."
                     loadingModelID = nil
                     return
@@ -821,8 +907,11 @@ struct VisionStoredPanel: View {
                 }
             case .mlx:
                 loadURL = resolveMLXURL(from: loadURL, model: model)
-            case .slm, .apple:
+            case .et, .ane:
                 break
+            case .afm:
+                loadURL = InstalledModelsStore.baseDir(for: .afm, modelID: model.modelID)
+                try? FileManager.default.createDirectory(at: loadURL, withIntermediateDirectories: true)
             }
 
             let success = await vm.load(url: loadURL, settings: settings, format: model.format)

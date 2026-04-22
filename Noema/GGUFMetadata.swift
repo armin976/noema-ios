@@ -328,9 +328,10 @@ enum GGUFMetadata {
             let hidden = scan.hidden_size > 0 ? Int(scan.hidden_size) : nil
             let feedForward = scan.feed_forward_size > 0 ? Int(scan.feed_forward_size) : nil
             let vocab = scan.vocab_size > 0 ? Int(scan.vocab_size) : nil
+            let isMoE = scan.is_moe != 0 || scan.expert_count > 0 || scan.expert_used_count > 0 || scan.moe_layer_count > 0
 
             return MoEInfo(
-                isMoE: scan.is_moe != 0,
+                isMoE: isMoE,
                 expertCount: expertCount,
                 defaultUsed: defaultUsed,
                 moeLayerCount: moeLayers,
@@ -457,12 +458,25 @@ enum GGUFMetadata {
 
         func isExpertCountKey(_ key: String) -> Bool {
             let lower = key.lowercased()
-            return lower.hasSuffix("expert_count") || lower.contains("num_experts")
+            return lower.hasSuffix("expert_count") ||
+                lower.contains("num_experts") ||
+                lower.contains("n_expert")
         }
 
         func isExpertUsedCountKey(_ key: String) -> Bool {
             let lower = key.lowercased()
-            return lower.hasSuffix("expert_used_count") || lower.contains("active_experts")
+            return lower.hasSuffix("expert_used_count") ||
+                lower.contains("active_experts") ||
+                lower.contains("experts_per_token") ||
+                lower.contains("n_expert_used")
+        }
+
+        func isMoEIndicatorKey(_ key: String) -> Bool {
+            let lower = key.lowercased()
+            return lower.contains("expert_") ||
+                lower.contains("experts_per_") ||
+                lower.contains("num_experts") ||
+                lower.contains("n_expert")
         }
 
         func skipValue(ofType type: UInt32) -> Bool {
@@ -505,8 +519,9 @@ enum GGUFMetadata {
         }
 
         func parseBlockIndex(from name: String) -> Int {
-            guard name.hasPrefix("blk.") else { return -1 }
-            let rest = name.dropFirst(4)
+            let prefixes = ["blk.", "layers."]
+            guard let prefix = prefixes.first(where: { name.hasPrefix($0) }) else { return -1 }
+            let rest = name.dropFirst(prefix.count)
             var digits = ""
             for ch in rest {
                 if ch.isNumber {
@@ -516,6 +531,21 @@ enum GGUFMetadata {
                 }
             }
             return Int(digits) ?? -1
+        }
+
+        func isMoETensorName(_ name: String) -> Bool {
+            let suffixes = [
+                ".ffn_gate_inp.weight",
+                ".ffn_gate_inp_shexp.weight",
+                ".ffn_gate_exps.weight",
+                ".ffn_up_exps.weight",
+                ".ffn_down_exps.weight",
+                ".ffn_norm_exps.weight",
+                ".ffn_gate_chexps.weight",
+                ".ffn_up_chexps.weight",
+                ".ffn_down_chexps.weight"
+            ]
+            return suffixes.contains { name.hasSuffix($0) }
         }
 
         guard let magic = readString(len: 4), magic == "GGUF" else { return nil }
@@ -586,6 +616,15 @@ enum GGUFMetadata {
                         defaultUsed = value
                         consumed = true
                     }
+                } else if isMoEIndicatorKey(key) {
+                    // Some GGUF converters omit standard expert count keys but include other MoE-specific
+                    // metadata such as expert grouping or gating parameters.
+                    if type == 8 {
+                        isMoE = true
+                    } else if let value = readIntOrArrayMax(for: type), value > 0 {
+                        isMoE = true
+                        consumed = true
+                    }
                 }
             }
 
@@ -594,7 +633,7 @@ enum GGUFMetadata {
             }
         }
 
-        var moeLayers = 0
+        var moeBlockIndices = Set<Int>()
         for _ in 0..<tensorCount {
             guard let nameLen = readU64().map(Int.init), let name = readString(len: nameLen) else { return nil }
             guard let dimCount = readU32().map(Int.init) else { return nil }
@@ -609,11 +648,12 @@ enum GGUFMetadata {
                 maxBlockIndex = blockIndex
             }
 
-            if name.hasSuffix(".ffn_gate_inp.weight") {
-                moeLayers += 1
+            if blockIndex >= 0 && isMoETensorName(name) {
+                moeBlockIndices.insert(blockIndex)
             }
         }
 
+        let moeLayers = moeBlockIndices.count
         if moeLayers > 0 {
             moeLayerCount = moeLayers
             isMoE = true

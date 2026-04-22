@@ -22,6 +22,11 @@ Noema is an offline-first iOS and iPadOS assistant that combines on-device large
 
 Bridging code in `LlamaRunner.mm` connects Swift to llama.cpp/llava/clip implementations, negotiates KV cache quantization, and exposes compatibility shims for varying llama.cpp builds so on-device GGUF execution works across Apple toolchains.【F:Noema/LlamaRunner.mm†L1-L200】
 
+### Inference backend policy
+- GGUF must always load through the compiled llama.cpp path (`NoemaLlamaClient` / `LlamaRunner`).
+- Leap SDK must not be used for GGUF loading.
+- Leap SDK is allowed only for ExecuTorch `.bundle` (SLM) loading flows.
+
 ### Dataset ingestion and retrieval
 `DatasetManager` discovers, selects, and tracks local datasets on disk, coalescing progress updates, resuming indexing pipelines, coordinating with the download controller to fetch embedding models, and cleaning up embeddings when users delete a dataset.【F:Noema/DatasetManager.swift†L6-L195】
 
@@ -44,3 +49,6 @@ RelayKit’s CloudKit bridge allows the app or companion services to write and p
 ## Additional assets
 - Xcode project files (`Noema.xcodeproj`, `Info.plist` variants) configure iOS, visionOS, and widget targets plus entitlements required for local networking, downloads, and potential relay services.
 - `Makefile` and documentation markdown files at the root assist with building, packaging, or referencing third-party APIs when extending the app.
+
+## Linting
+- For small UI fixes, there is no need to run a build through xcode,

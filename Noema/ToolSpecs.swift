@@ -74,12 +74,12 @@ public struct ToolChatMessage: Codable {
     }
 }
 
-public struct ToolCall: Codable {
+public struct ToolCall: Codable, Sendable {
     public let id: String
     public let type = "function"
     public let function: ToolFunction
     
-    public struct ToolFunction: Codable {
+    public struct ToolFunction: Codable, Sendable {
         public let name: String
         public let arguments: String // JSON string
     }

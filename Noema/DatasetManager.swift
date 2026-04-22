@@ -17,7 +17,6 @@ final class DatasetManager: ObservableObject {
     /// Download controller used to fetch the embedding model when missing.
     weak var downloadController: DownloadController?
     private var indexingTasks: [String: Task<Void, Never>] = [:]
-    private var startupAutoIndexDone = false
     // Throttle and coalesce frequent status updates to avoid UI flicker
     private var lastStatusByID: [String: DatasetProcessingStatus] = [:]
     private var lastStatusUpdateAt: [String: Date] = [:]
@@ -32,13 +31,17 @@ final class DatasetManager: ObservableObject {
 
         // Only publish if stage changed or progress advanced by at least 1% or enough time elapsed
         let stageChanged = last?.stage != status.stage
+        let transitionedToCompleted = (last?.stage != .completed) && (status.stage == .completed)
         let progressDelta = Swift.abs((last?.progress ?? -1.0) - status.progress)
         let timeElapsed = now.timeIntervalSince(lastTime)
         if stageChanged || progressDelta >= 0.01 || timeElapsed >= minInterval {
             processingStatus[id] = status
             lastStatusByID[id] = status
             lastStatusUpdateAt[id] = now
-            if status.stage == .failed, status.message == "Stopped" {
+            if transitionedToCompleted {
+                Haptics.success()
+            }
+            if status.stage == .failed, status.message == String(localized: "Stopped", locale: LocalizationManager.preferredLocale()) {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
                     self?.processingStatus[id] = nil
                     self?.lastStatusByID[id] = nil
@@ -51,18 +54,11 @@ final class DatasetManager: ObservableObject {
     init() {
         // Persist dataset selection across launches; only clear when the user disables it.
         reloadFromDisk()
-        // Run a single auto-index scan on first app launch only
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            guard let self else { return }
-            if !self.startupAutoIndexDone {
-                self.autoIndexNewDatasets()
-                self.startupAutoIndexDone = true
-            }
-        }
-        // Restore any persisted indexing dataset ID so we can resume processing if app was closed.
+        // If the app was terminated mid-index, don't resume automatically on next launch.
+        // Treat termination as the user choosing to embed later from the dataset settings.
         if !persistedIndexingDatasetID.isEmpty {
-            // Automatically resume or restart the indexing pipeline on launch.
-            ensureIndexedForID(persistedIndexingDatasetID)
+            Task { await logger.log("[DatasetManager] Clearing persisted indexing ID on launch: \(persistedIndexingDatasetID)") }
+            persistedIndexingDatasetID = ""
         }
     }
 
@@ -84,37 +80,40 @@ final class DatasetManager: ObservableObject {
                             var isDir2: ObjCBool = false
                             if fm.fileExists(atPath: dir.path, isDirectory: &isDir2), isDir2.boolValue {
                                 let size = (try? directorySize(at: dir)) ?? 0
-                                // Convert bytes to megabytes for display
                                 let sizeMB = Double(size) / 1_048_576.0
                                 let attrs = try? fm.attributesOfItem(atPath: dir.path)
                                 let created = attrs?[.creationDate] as? Date ?? Date()
                                 let id = owner.lastPathComponent + "/" + dir.lastPathComponent
-                                // Consider dataset fully indexed only when embeddings are present
-                                let indexed = fm.fileExists(atPath: dir.appendingPathComponent("vectors.json").path)
+                                let hasValidIndex = DatasetIndexIO.hasValidIndex(at: dir)
+                                let hasIndexArtifacts = DatasetIndexIO.hasIndexArtifacts(at: dir)
                                 let sourceName: String = {
                                     let ownerName = owner.lastPathComponent
                                     if ownerName == "OTL" { return "Open Textbook Library" }
                                     if ownerName == "Imported" { return "Imported" }
                                     return "Hugging Face"
                                 }()
-                                // Prefer a human-readable title persisted during download when available
                                 let displayName: String = {
-                                    let titleURL = dir.appendingPathComponent("title.txt")
-                                    if let title = try? String(contentsOf: titleURL).trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+                                    if let title = DatasetTextReader.readString(from: DatasetIndexIO.titleURL(for: dir))?
+                                        .trimmingCharacters(in: .whitespacesAndNewlines),
+                                       !title.isEmpty {
                                         return title
                                     }
                                     return dir.lastPathComponent
                                 }()
-                                var ds = LocalDataset(datasetID: id,
-                                                      name: displayName,
-                                                      url: dir,
-                                                      sizeMB: sizeMB,
-                                                      source: sourceName,
-                                                      downloadDate: created,
-                                                      lastUsedDate: nil,
-                                                      isSelected: selectedDatasetID == id,
-                                                      isIndexed: indexed)
-                                found.append(ds)
+                                found.append(
+                                    LocalDataset(
+                                        datasetID: id,
+                                        name: displayName,
+                                        url: dir,
+                                        sizeMB: sizeMB,
+                                        source: sourceName,
+                                        downloadDate: created,
+                                        lastUsedDate: nil,
+                                        isSelected: selectedDatasetID == id,
+                                        isIndexed: hasValidIndex,
+                                        requiresReindex: hasIndexArtifacts && !hasValidIndex
+                                    )
+                                )
                             }
                         }
                     }
@@ -130,7 +129,12 @@ final class DatasetManager: ObservableObject {
                 computedStatus[ds.datasetID] = existing
             } else if ds.isIndexed {
                 if !embedded.contains(ds.datasetID) { markEmbedded(ds.datasetID) }
-                computedStatus[ds.datasetID] = DatasetProcessingStatus(stage: .completed, progress: 1.0, message: "Ready", etaSeconds: 0)
+                computedStatus[ds.datasetID] = DatasetProcessingStatus(
+                    stage: .completed,
+                    progress: 1.0,
+                    message: String(localized: "Ready for use", locale: LocalizationManager.preferredLocale()),
+                    etaSeconds: 0
+                )
             }
         }
         DispatchQueue.main.async { [weak self] in
@@ -148,7 +152,8 @@ final class DatasetManager: ObservableObject {
             }
         }
 
-        // Do not auto-index here; it should only happen once at startup
+        // Do not auto-index here; indexing is started explicitly after download
+        // or via a user action in dataset settings.
     }
 
     private func directorySize(at url: URL) throws -> Int64 {
@@ -180,10 +185,16 @@ final class DatasetManager: ObservableObject {
 
     func cancelProcessingForID(_ id: String) {
         Task { await logger.log("[DatasetManager] Cancelling processing for: \(id)") }
+        let hadTask = indexingTasks[id] != nil
         indexingTasks[id]?.cancel()
         indexingTasks[id] = nil
         if indexingDatasetID == id { indexingDatasetID = nil }
         if persistedIndexingDatasetID == id { persistedIndexingDatasetID = "" }
+        if !hadTask {
+            processingStatus[id] = nil
+            lastStatusByID[id] = nil
+            lastStatusUpdateAt[id] = nil
+        }
         // Keep the last known status so the pipeline can publish a final "Stopped" state.
         // It will be cleared after the final update is processed.
     }
@@ -211,6 +222,21 @@ final class DatasetManager: ObservableObject {
             ensureIndexed(ds)
         } else {
             Task { await logger.log("[DatasetManager] ❌ Dataset not found for ID: \(id)") }
+        }
+    }
+
+    /// Called after a dataset download completes to ensure it appears in Stored immediately and, if desired,
+    /// kick off the pre-embedding indexing pipeline.
+    func handleDatasetDownloadCompleted(datasetID: String) {
+        Task { await logger.log("[DatasetManager] Dataset download completed: \(datasetID)") }
+        reloadFromDisk()
+        // `reloadFromDisk()` publishes on the next runloop tick; enqueue indexing after that publish so
+        // the dataset is visible in Stored before the indexing banner appears.
+        DispatchQueue.main.async { [weak self] in
+            // Give one more turn of the runloop so AppModelManager's `downloadedDatasets` mirror updates too.
+            DispatchQueue.main.async { [weak self] in
+                self?.ensureIndexedForID(datasetID)
+            }
         }
     }
     
@@ -255,7 +281,12 @@ final class DatasetManager: ObservableObject {
             await EmbeddingModel.shared.ensureModel()
             if !(await EmbeddingModel.shared.isModelAvailable()) {
                 await MainActor.run {
-                    self.processingStatus[ds.datasetID] = DatasetProcessingStatus(stage: .embedding, progress: 0.0, message: "Downloading embedding model…", etaSeconds: nil)
+                    self.processingStatus[ds.datasetID] = DatasetProcessingStatus(
+                        stage: .embedding,
+                        progress: 0.0,
+                        message: String(localized: "Downloading embedding model…", locale: LocalizationManager.preferredLocale()),
+                        etaSeconds: nil
+                    )
                 }
                 let installTask = Task { @MainActor in
                     let installer = EmbedModelInstaller()
@@ -280,8 +311,10 @@ final class DatasetManager: ObservableObject {
             }
             
             await MainActor.run {
-                // Only clear when actually completed; if paused awaiting confirmation, keep visible
-                let stage = self.processingStatus[ds.datasetID]?.stage
+                // Keep the banner only while paused at the confirmation gate.
+                let status = self.processingStatus[ds.datasetID]
+                let stage = status?.stage
+                let awaitingEmbeddingConfirmation = (stage == .embedding && (status?.progress ?? 1.0) <= 0.0001)
                 if stage == .completed {
                     Task { await logger.log("[DatasetManager] Indexing completed for: \(ds.datasetID)") }
                     self.indexingDatasetID = nil
@@ -290,6 +323,13 @@ final class DatasetManager: ObservableObject {
                     // Milestone: dataset embedded successfully (enables RAG). Do not prompt yet;
                     // we’ll prompt after a successful chat turn or other milestone.
                     ReviewPrompter.shared.noteDatasetEmbedded()
+                } else if stage == .failed {
+                    self.indexingDatasetID = nil
+                    self.persistedIndexingDatasetID = ""
+                } else if !awaitingEmbeddingConfirmation {
+                    // Defensive cleanup for unexpected terminal states (e.g. cancellation).
+                    self.indexingDatasetID = nil
+                    self.persistedIndexingDatasetID = ""
                 }
                 self.indexingTasks[ds.datasetID] = nil
             }
@@ -316,7 +356,15 @@ final class DatasetManager: ObservableObject {
             await EmbeddingModel.shared.ensureModel()
             if !(await EmbeddingModel.shared.isModelAvailable()) {
                 await MainActor.run {
-                    self.updateProcessingStatus(DatasetProcessingStatus(stage: .embedding, progress: 0.0, message: "Downloading embedding model…", etaSeconds: nil), for: ds.datasetID)
+                    self.updateProcessingStatus(
+                        DatasetProcessingStatus(
+                            stage: .embedding,
+                            progress: 0.0,
+                            message: String(localized: "Downloading embedding model…", locale: LocalizationManager.preferredLocale()),
+                            etaSeconds: nil
+                        ),
+                        for: ds.datasetID
+                    )
                 }
                 let installer = EmbedModelInstaller()
                 // Stream installer progress into the dataset status so the UI reflects download progress
@@ -326,7 +374,15 @@ final class DatasetManager: ObservableObject {
                         case .downloading, .verifying, .installing:
                             // Map installer progress directly to the status progress for clear feedback
                             let p = max(0.0, min(1.0, installer.progress))
-                            self.updateProcessingStatus(DatasetProcessingStatus(stage: .embedding, progress: p, message: "Downloading embedding model…", etaSeconds: nil), for: ds.datasetID)
+                            self.updateProcessingStatus(
+                                DatasetProcessingStatus(
+                                    stage: .embedding,
+                                    progress: p,
+                                    message: String(localized: "Downloading embedding model…", locale: LocalizationManager.preferredLocale()),
+                                    etaSeconds: nil
+                                ),
+                                for: ds.datasetID
+                            )
                         default:
                             break
                         }
@@ -339,9 +395,18 @@ final class DatasetManager: ObservableObject {
                 switch installer.state {
                 case .failed(let msg):
                     await MainActor.run {
-                        self.processingStatus[ds.datasetID] = DatasetProcessingStatus(stage: .failed, progress: 0.0, message: "Failed to download embedding model: \(msg)", etaSeconds: nil)
+                        self.processingStatus[ds.datasetID] = DatasetProcessingStatus(
+                            stage: .failed,
+                            progress: 0.0,
+                            message: String.localizedStringWithFormat(
+                                String(localized: "Failed to download embedding model: %@", locale: LocalizationManager.preferredLocale()),
+                                msg
+                            ),
+                            etaSeconds: nil
+                        )
                         self.indexingDatasetID = nil
                         self.persistedIndexingDatasetID = ""
+                        self.indexingTasks[ds.datasetID] = nil
                     }
                     return
                 default:
@@ -368,6 +433,9 @@ final class DatasetManager: ObservableObject {
                     self.indexingDatasetID = nil
                     self.persistedIndexingDatasetID = ""
                     self.reloadFromDisk()
+                } else {
+                    self.indexingDatasetID = nil
+                    self.persistedIndexingDatasetID = ""
                 }
                 self.indexingTasks[ds.datasetID] = nil
             }
@@ -389,7 +457,12 @@ final class DatasetManager: ObservableObject {
             await EmbeddingModel.shared.ensureModel()
             if !(await EmbeddingModel.shared.isModelAvailable()) {
                 await MainActor.run {
-                    self.processingStatus[dataset.datasetID] = DatasetProcessingStatus(stage: .embedding, progress: 0.0, message: "Downloading embedding model…", etaSeconds: nil)
+                    self.processingStatus[dataset.datasetID] = DatasetProcessingStatus(
+                        stage: .embedding,
+                        progress: 0.0,
+                        message: String(localized: "Downloading embedding model…", locale: LocalizationManager.preferredLocale()),
+                        etaSeconds: nil
+                    )
                 }
                 let installTask = Task { @MainActor in
                     let installer = EmbedModelInstaller()
@@ -401,8 +474,22 @@ final class DatasetManager: ObservableObject {
                 Task { @MainActor in self.updateProcessingStatus(status, for: dataset.datasetID) }
             }
             await MainActor.run {
+                let status = self.processingStatus[dataset.datasetID]
+                let stage = status?.stage
+                let awaitingEmbeddingConfirmation = (stage == .embedding && (status?.progress ?? 1.0) <= 0.0001)
+                if stage == .completed {
+                    self.indexingDatasetID = nil
+                    self.persistedIndexingDatasetID = ""
+                    self.reloadFromDisk()
+                    ReviewPrompter.shared.noteDatasetEmbedded()
+                } else if stage == .failed {
+                    self.indexingDatasetID = nil
+                    self.persistedIndexingDatasetID = ""
+                } else if !awaitingEmbeddingConfirmation {
+                    self.indexingDatasetID = nil
+                    self.persistedIndexingDatasetID = ""
+                }
                 self.indexingTasks[dataset.datasetID] = nil
-                self.persistedIndexingDatasetID = ""
             }
         }
         indexingTasks[dataset.datasetID] = t
@@ -410,11 +497,16 @@ final class DatasetManager: ObservableObject {
 
     private func stageName(_ s: DatasetProcessingStage) -> String {
         switch s {
-        case .extracting: return "Extracting"
-        case .compressing: return "Compressing"
-        case .embedding: return "Embedding / Warming Up"
-        case .completed: return "Ready"
-        case .failed: return "Failed"
+        case .extracting:
+            return String(localized: "Extracting", locale: LocalizationManager.preferredLocale())
+        case .compressing:
+            return String(localized: "Compressing", locale: LocalizationManager.preferredLocale())
+        case .embedding:
+            return String(localized: "Embedding", locale: LocalizationManager.preferredLocale())
+        case .completed:
+            return String(localized: "Ready", locale: LocalizationManager.preferredLocale())
+        case .failed:
+            return String(localized: "Failed", locale: LocalizationManager.preferredLocale())
         }
     }
     
@@ -431,7 +523,7 @@ final class DatasetManager: ObservableObject {
     @discardableResult
     func importDocuments(from urls: [URL], suggestedName: String?) async -> LocalDataset? {
         // Filter allowed extensions
-        let allowedExts: Set<String> = ["pdf", "epub", "txt", "rtf", "html", "htm", "csv", "md"]
+        let allowedExts: Set<String> = ["pdf", "epub", "txt", "md", "json", "jsonl", "csv", "tsv"]
         let picked = urls.filter { allowedExts.contains($0.pathExtension.lowercased()) }
         guard !picked.isEmpty else { return nil }
 
@@ -460,14 +552,15 @@ final class DatasetManager: ObservableObject {
             }
 
             var didCopy = false
+            var usedRelativePaths = Set<String>()
             for url in picked {
                 let scoped = url.startAccessingSecurityScopedResource()
                 defer { if scoped { url.stopAccessingSecurityScopedResource() } }
                 do {
-                    let dest = destDir.appendingPathComponent(url.lastPathComponent)
-                    if fm.fileExists(atPath: dest.path) {
-                        try fm.removeItem(at: dest)
-                    }
+                    let relativePath = DatasetPathing.uniqueRelativePath(url.lastPathComponent, existing: usedRelativePaths)
+                    usedRelativePaths.insert(relativePath)
+                    let dest = DatasetPathing.destinationURL(for: relativePath, in: destDir)
+                    try fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
                     try fm.copyItem(at: url, to: dest)
                     didCopy = true
                 } catch {
@@ -475,8 +568,7 @@ final class DatasetManager: ObservableObject {
                 }
             }
 
-            // Persist human-readable title for display
-            let titleURL = destDir.appendingPathComponent("title.txt")
+            let titleURL = DatasetIndexIO.titleURL(for: destDir)
             try? defaultName.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8)?.write(to: titleURL)
             return didCopy
         }.value
@@ -534,6 +626,7 @@ final class DatasetManager: ObservableObject {
 struct DatasetRow: View {
     let dataset: LocalDataset
     let indexing: Bool
+    var deleteAction: (() -> Void)? = nil
     @EnvironmentObject var datasetManager: DatasetManager
     @EnvironmentObject var modelManager: AppModelManager
     @Environment(\.locale) private var locale
@@ -561,10 +654,8 @@ struct DatasetRow: View {
         .padding(.vertical, 8)
         #if os(macOS)
         .overlay(alignment: .topTrailing) {
-            if isHovered {
-                Button {
-                    try? datasetManager.delete(dataset)
-                } label: {
+            if isHovered, let deleteAction {
+                Button(action: deleteAction) {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.secondary)
                         .font(.system(size: 16))
@@ -631,11 +722,16 @@ struct DatasetRow: View {
 
     private func stageLabel(_ s: DatasetProcessingStage) -> String {
         switch s {
-        case .extracting: return "Extracting"
-        case .compressing: return "Compressing"
-        case .embedding: return "Embedding / Warming Up"
-        case .completed: return "Ready"
-        case .failed: return "Failed"
+        case .extracting:
+            return String(localized: "Extracting", locale: locale)
+        case .compressing:
+            return String(localized: "Compressing", locale: locale)
+        case .embedding:
+            return String(localized: "Embedding", locale: locale)
+        case .completed:
+            return String(localized: "Ready", locale: locale)
+        case .failed:
+            return String(localized: "Failed", locale: locale)
         }
     }
 }

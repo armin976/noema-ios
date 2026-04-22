@@ -36,3 +36,10 @@ func localizedFileSizeString(bytes: Int64, locale: Locale) -> String {
 
     return formatter.string(from: Measurement(value: value, unit: unit))
 }
+
+func localizedDatasetFileSizeString(bytes: Int64, locale: Locale) -> String {
+    guard bytes > 0 else {
+        return String(localized: "Size unavailable", locale: locale)
+    }
+    return localizedFileSizeString(bytes: bytes, locale: locale)
+}

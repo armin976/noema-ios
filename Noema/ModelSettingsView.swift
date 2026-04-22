@@ -11,6 +11,7 @@ struct ModelSettingsView: View {
     let model: LocalModel
     @EnvironmentObject var modelManager: AppModelManager
     @EnvironmentObject var vm: ChatVM
+    @EnvironmentObject var tabRouter: TabRouter
     @EnvironmentObject var walkthrough: GuidedWalkthroughManager
     @AppStorage("isAdvancedMode") private var isAdvancedMode = false
     @State private var settings = ModelSettings()
@@ -22,6 +23,7 @@ struct ModelSettingsView: View {
     @State private var usingDefaultGPULayers = false
     @State private var isFavourite = false
     @State private var showFavouriteLimitAlert = false
+    @State private var cachedBenchmarkFitsRAM: Bool = true
     @State private var benchmarking = false
     @State private var benchmarkResult: ModelBenchmarkResult?
     @State private var benchmarkError: String?
@@ -39,7 +41,8 @@ struct ModelSettingsView: View {
     @State private var mmprojFilePath: String? = nil
     @State private var mmprojChecked: Bool = false
     @State private var filesStatusLoaded: Bool = false
-    @State private var highlightAnchors: [GuidedWalkthroughManager.HighlightID: Anchor<CGRect>] = [:]
+    @State private var supportedMaxContextLength: Int? = nil
+    @State private var isArgmaxANEMLLModel = false
 
     private var availableKCacheQuants: [CacheQuant] {
         CacheQuant.allCases.filter { $0 != .iq4_nl }
@@ -71,6 +74,8 @@ struct ModelSettingsView: View {
         switch model.format {
         case .mlx:
             return false
+        case .afm:
+            return false
         default:
             return true
         }
@@ -85,6 +90,14 @@ struct ModelSettingsView: View {
         // RAM estimates scale upward when more experts are selected.
         info.defaultUsed = resolvedActiveExperts(for: info)
         return info
+    }
+
+    private var contextLengthSliderUpperBound: Int {
+        max(512, supportedMaxContextLength ?? 262_144)
+    }
+
+    private var contextLengthSliderRange: ClosedRange<Double> {
+        512...Double(contextLengthSliderUpperBound)
     }
 
     private func fallbackActiveExperts(for info: MoEInfo) -> Int {
@@ -104,6 +117,21 @@ struct ModelSettingsView: View {
         let fallback = fallbackActiveExperts(for: info)
         let selected = settings.moeActiveExperts ?? fallback
         return min(max(1, selected), total)
+    }
+
+    private func refreshArgmaxCapability(for model: LocalModel) async {
+        guard model.format == .ane else {
+            isArgmaxANEMLLModel = false
+            return
+        }
+
+        let modelURL = model.url
+        let isArgmax = await Task.detached(priority: .utility) {
+            ANEMLLCapabilityLookup.argmaxInModel(modelURL: modelURL)
+        }.value
+
+        guard !Task.isCancelled, model.id == resolvedModel.id else { return }
+        isArgmaxANEMLLModel = isArgmax
     }
 
     private func updateMoESettingsIfNeeded(with info: MoEInfo?) {
@@ -139,18 +167,14 @@ struct ModelSettingsView: View {
 
     private var mainContent: some View {
         settingsContainer
-            .onPreferenceChange(GuidedHighlightPreferenceKey.self) { anchors in
-                highlightAnchors = anchors
-            }
-            .overlay {
-                ModelSettingsWalkthroughOverlay(anchors: highlightAnchors)
+            .overlayPreferenceValue(GuidedHighlightPreferenceKey.self) { anchors in
+                ModelSettingsWalkthroughOverlay(anchors: anchors)
                     .environmentObject(walkthrough)
             }
 #if canImport(UIKit) && !os(visionOS)
             .scrollDismissesKeyboard(.interactively)
 #endif
             .interactiveDismissDisabled(benchmarking)
-            .onTapGesture { hideKeyboard() }
             .navigationTitle(model.name)
         #if !os(macOS)
             .toolbar {
@@ -169,6 +193,7 @@ struct ModelSettingsView: View {
 #endif
                         // Save only; do not load. Close sheet.
                         modelManager.updateSettings(settings, for: model)
+                        vm.syncActiveLocalModelPromptSettingsIfNeeded(model: model, settings: settings)
                         close()
                     }) {
                         Text("Save")
@@ -184,6 +209,7 @@ struct ModelSettingsView: View {
 #endif
                         // Persist settings and trigger load
                         modelManager.updateSettings(settings, for: model)
+                        vm.syncActiveLocalModelPromptSettingsIfNeeded(model: model, settings: settings)
                         loadAction(settings)
                         close()
                     }) {
@@ -198,6 +224,7 @@ struct ModelSettingsView: View {
             .onAppear {
                 usingDefaultGPULayers = modelManager.modelSettings[model.url.path] == nil
                 settings = modelManager.settings(for: model)
+                supportedMaxContextLength = ModelSettings.supportedMaxContextLength(for: model)
                 if settings.kCacheQuant == .iq4_nl {
                     settings.kCacheQuant = .f16
                 }
@@ -224,6 +251,7 @@ struct ModelSettingsView: View {
                 }
                 updateMoESettingsIfNeeded(with: resolvedMoEInfo)
                 refreshFileStatuses()
+                recomputeBenchmarkFitsRAM()
             }
             .onReceive(modelManager.$downloadedModels) { models in
                 if let current = models.first(where: { $0.id == model.id }) {
@@ -231,13 +259,21 @@ struct ModelSettingsView: View {
                     updateMoESettingsIfNeeded(with: current.moeInfo)
                 }
             }
+            .task(id: resolvedModel.url.path) {
+                await refreshArgmaxCapability(for: resolvedModel)
+            }
             .onDisappear {
                 benchmarkTask?.cancel()
                 benchmarkTask = nil
                 benchmarkTaskID = nil
                 benchmarking = false
             }
-            .onChange(of: layerCount) { _ in updateGPULayers() }
+            .onChange(of: layerCount) { _ in updateGPULayers(); recomputeBenchmarkFitsRAM() }
+            .onChange(of: settings.contextLength) { _ in recomputeBenchmarkFitsRAM() }
+            .onChange(of: settings.kCacheQuant) { _ in recomputeBenchmarkFitsRAM() }
+            .onChange(of: settings.vCacheQuant) { _ in recomputeBenchmarkFitsRAM() }
+            .onChange(of: settings.flashAttention) { _ in recomputeBenchmarkFitsRAM() }
+            .onChange(of: settings.moeActiveExperts) { _ in recomputeBenchmarkFitsRAM() }
             .onChange(of: settings.gpuLayers) { _ in usingDefaultGPULayers = false }
             .alert("K Cache Quantization", isPresented: $showKInfo) {
                 Button("OK", role: .cancel) {}
@@ -333,7 +369,7 @@ private struct ModelFormatTagView: View {
     let format: ModelFormat
 
     var body: some View {
-        Text(format.rawValue.uppercased())
+        Text(format.displayName)
             .font(FontTheme.caption.weight(.semibold))
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
@@ -364,8 +400,16 @@ private struct ModelFormatTagView: View {
                                 ggufSettingsContent
                             }
                         } else {
-                            MacSettingsBlock(title: model.format.rawValue, iconName: "slider.horizontal.2.square") {
-                                mlxSettingsContent
+                            MacSettingsBlock(title: model.format.displayName, iconName: "slider.horizontal.2.square") {
+                                if model.format == .et {
+                                    etSettingsContent
+                                } else if model.format == .ane {
+                                    aneSettingsContent
+                                } else if model.format == .afm {
+                                    afmSettingsContent
+                                } else {
+                                    mlxSettingsContent
+                                }
                             }
                         }
 
@@ -421,6 +465,7 @@ private struct ModelFormatTagView: View {
 
                     Button(action: {
                         modelManager.updateSettings(settings, for: model)
+                        vm.syncActiveLocalModelPromptSettingsIfNeeded(model: model, settings: settings)
                         close()
                     }) {
                         Text("Save")
@@ -432,6 +477,7 @@ private struct ModelFormatTagView: View {
 
                     Button(action: {
                         modelManager.updateSettings(settings, for: model)
+                        vm.syncActiveLocalModelPromptSettingsIfNeeded(model: model, settings: settings)
                         loadAction(settings)
                         close()
                     }) {
@@ -455,14 +501,14 @@ private struct ModelFormatTagView: View {
 
     @ViewBuilder
     private var settingsSections: some View {
-        Section(header: Text(model.format.rawValue)) {
+        Section(header: Text(model.format.displayName)) {
             generalSettingsContent
         }
 
         if model.format == .gguf {
             ggufSettings
         } else {
-            mlxSettings
+            nonGGUFSettings
         }
 
         if isAdvancedMode {
@@ -487,27 +533,42 @@ private struct ModelFormatTagView: View {
 
     @ViewBuilder
     private var generalSettingsContent: some View {
-        if model.format == .slm {
-            Text("Context Length: 4096 tokens")
-        } else {
-            VStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Context Length")
-                        .font(FontTheme.subheadline)
-                        .foregroundStyle(AppTheme.text)
-                    Slider(value: $settings.contextLength, in: 512...32768, step: 256)
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(model.format == .afm ? "Fixed Context Length" : "Context Length")
+                    .font(FontTheme.subheadline)
+                    .foregroundStyle(AppTheme.text)
+                if model.format == .gguf || model.format == .mlx || model.format == .et {
+                    Slider(value: $settings.contextLength, in: contextLengthSliderRange, step: 256)
                         .guideHighlight(.modelSettingsContext)
+                } else {
+                    HStack {
+                        Text("\(Int(settings.contextLength)) tokens")
+                            .monospacedDigit()
+                        Spacer()
+                    }
+                    .padding(.vertical, 8)
                 }
+            }
 
+            if model.format == .ane {
+                Text("Derived from model title")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if model.format == .afm {
+                Text("Apple Foundation Models only support a 4096-token context in Noema.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
                 Text("\(Int(settings.contextLength)) tokens")
+            }
 
-                ramEstimateView()
+            ramEstimateView()
 
-                if settings.contextLength > 8192 {
-                    Text("High context lengths use more memory")
-                        .font(.caption)
-                        .foregroundColor(.red)
-                }
+            if (model.format == .gguf || model.format == .mlx || model.format == .et) && settings.contextLength > 8192 {
+                Text("High context lengths use more memory")
+                    .font(.caption)
+                    .foregroundColor(.red)
             }
         }
 
@@ -527,6 +588,63 @@ private struct ModelFormatTagView: View {
                 }
             }
         ))
+
+        systemPromptSettingsContent
+    }
+
+    @ViewBuilder
+    private var systemPromptSettingsContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(LocalizedStringKey("System Prompt"))
+                .font(FontTheme.subheadline)
+                .foregroundStyle(AppTheme.text)
+
+            Picker(LocalizedStringKey("System Prompt"), selection: $settings.systemPromptMode) {
+                Text(LocalizedStringKey("Use Global Default")).tag(SystemPromptMode.inheritGlobal)
+                Text(LocalizedStringKey("Use Model Prompt")).tag(SystemPromptMode.override)
+                Text(LocalizedStringKey("Exclude Global Default")).tag(SystemPromptMode.excludeGlobal)
+            }
+
+            if settings.systemPromptMode == .override {
+                TextEditor(text: systemPromptOverrideBinding)
+                    .font(FontTheme.body)
+                    .frame(minHeight: 140)
+#if os(iOS)
+                    .scrollContentBackground(.hidden)
+#endif
+                    .padding(10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(AppTheme.cardFill)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(AppTheme.cardStroke, lineWidth: 1)
+                    )
+            }
+
+            Text(systemPromptModeDescription)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var systemPromptOverrideBinding: Binding<String> {
+        Binding(
+            get: { settings.systemPromptOverride ?? "" },
+            set: { settings.systemPromptOverride = $0 }
+        )
+    }
+
+    private var systemPromptModeDescription: LocalizedStringKey {
+        switch settings.systemPromptMode {
+        case .inheritGlobal:
+            return LocalizedStringKey("Uses the default system prompt from Settings for this model.")
+        case .override:
+            return LocalizedStringKey("Use a model-specific prompt instead of the shared Settings prompt.")
+        case .excludeGlobal:
+            return LocalizedStringKey("Skip the editable Settings prompt for this model while keeping Noema's built-in system guidance.")
+        }
     }
 
     @ViewBuilder
@@ -536,16 +654,29 @@ private struct ModelFormatTagView: View {
             Haptics.impact(.light)
 #endif
             settings = ModelSettings.default(for: model.format)
+            settings = settings.normalizedForLocalModel(model)
             if model.format == .gguf { settings.gpuLayers = -1 }
             updateMoESettingsIfNeeded(with: resolvedMoEInfo)
         }
         .disabled(vm.loading)
 
-        Button("Delete Model", role: .destructive) {
+        if model.format == .afm {
+            Button("Hide Model", role: .destructive) {
 #if canImport(UIKit) && !os(visionOS)
-            Haptics.impact(.medium)
+                Haptics.impact(.medium)
 #endif
-            showDeleteConfirm = true
+                modelManager.updateSettings(settings, for: model)
+                modelManager.hide(model)
+                tabRouter.showAFMHiddenNotice()
+                close()
+            }
+        } else {
+            Button("Delete Model", role: .destructive) {
+#if canImport(UIKit) && !os(visionOS)
+                Haptics.impact(.medium)
+#endif
+                showDeleteConfirm = true
+            }
         }
     }
 
@@ -627,13 +758,15 @@ private struct ModelFormatTagView: View {
     private func ramEstimateView() -> some View {
         let sizeBytes = Int64(model.sizeGB * 1_073_741_824.0)
         let ctx = Int(settings.contextLength)
+        let kvCacheEstimate = ModelRAMAdvisor.GGUFKVCacheEstimate.resolved(from: settings)
         let locale = LocalizationManager.preferredLocale()
         let (estimate, budget) = ModelRAMAdvisor.estimateAndBudget(
             format: model.format,
             sizeBytes: sizeBytes,
             contextLength: ctx,
             layerCount: (layerCount > 0 ? layerCount : nil),
-            moeInfo: effectiveMoEInfo
+            moeInfo: effectiveMoEInfo,
+            kvCacheEstimate: kvCacheEstimate
         )
         let estStr = ByteCountFormatter.string(fromByteCount: estimate, countStyle: .memory)
         let budStr = budget.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .memory) } ?? "--"
@@ -641,7 +774,9 @@ private struct ModelFormatTagView: View {
             format: model.format,
             sizeBytes: sizeBytes,
             layerCount: (layerCount > 0 ? layerCount : nil),
-            moeInfo: effectiveMoEInfo
+            moeInfo: effectiveMoEInfo,
+            upperBound: supportedMaxContextLength,
+            kvCacheEstimate: kvCacheEstimate
         )
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
@@ -740,6 +875,8 @@ private struct ModelFormatTagView: View {
                 Toggle("Offload KV Cache to GPU", isOn: $settings.kvCacheOffload)
             }
             Toggle("Use mmap()", isOn: $settings.useMmap)
+            Toggle("Skip llama.cpp Warmup", isOn: $settings.disableWarmup)
+                .help("Skips llama.cpp's empty-run warmup. Model load finishes sooner, but the first request may take longer.")
             HStack {
                 Text("Seed")
                 TextField("Random", text: Binding(
@@ -892,105 +1029,128 @@ private struct ModelFormatTagView: View {
 
     @ViewBuilder
     private var samplingSectionContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(LocalizedStringKey("Temperature"))
-                    .font(.subheadline.weight(.semibold))
-                Slider(value: $settings.temperature, in: 0...2, step: 0.05)
-            }
-            HStack {
-                Text(String(format: "%.2f", settings.temperature))
-                    .font(.footnote.monospacedDigit())
-                Spacer()
-                Text(LocalizedStringKey("Low = focused. High = varied."))
+        if isArgmaxANEMLLModel {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                Text(LocalizedStringKey("Sampling unavailable for Argmax models"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-        }
-
-        VStack(alignment: .leading, spacing: 8) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(LocalizedStringKey("Top-p"))
-                    .font(.subheadline.weight(.semibold))
-                Slider(value: $settings.topP, in: 0...1, step: 0.01)
+        } else if model.format == .et {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(LocalizedStringKey("Temperature"))
+                        .font(.subheadline.weight(.semibold))
+                    Slider(value: $settings.temperature, in: 0...2, step: 0.05)
+                }
+                Text(String(format: "%.2f", settings.temperature))
+                    .font(.footnote.monospacedDigit())
+                Text(LocalizedStringKey("Top-k, top-p, and repetition penalties are not available for ET runtime in this build."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            Text(String(format: "%.2f", settings.topP))
-                .font(.footnote.monospacedDigit())
-        }
+        } else {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(LocalizedStringKey("Temperature"))
+                        .font(.subheadline.weight(.semibold))
+                    Slider(value: $settings.temperature, in: 0...2, step: 0.05)
+                }
+                HStack {
+                    Text(String(format: "%.2f", settings.temperature))
+                        .font(.footnote.monospacedDigit())
+                    Spacer()
+                    Text(LocalizedStringKey("Low = focused. High = varied."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
 
-        Stepper(value: $settings.topK, in: 1...2048, step: 1) {
-            Text(
-                String.localizedStringWithFormat(
-                    String(localized: "Top-k: %@"),
-                    NumberFormatter.localizedString(from: NSNumber(value: settings.topK), number: .decimal)
-                )
-            )
-        }
-
-#if os(macOS)
-        if supportsMinP {
             VStack(alignment: .leading, spacing: 8) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(LocalizedStringKey("Min-p"))
+                    Text(LocalizedStringKey("Top-p"))
                         .font(.subheadline.weight(.semibold))
-                    Slider(value: $settings.minP, in: 0...1, step: 0.01)
+                    Slider(value: $settings.topP, in: 0...1, step: 0.01)
                 }
-                Text(String(format: "%.2f", settings.minP))
+                Text(String(format: "%.2f", settings.topP))
                     .font(.footnote.monospacedDigit())
             }
-        }
 
-        VStack(alignment: .leading, spacing: 12) {
-            Stepper(
-                value: Binding(
-                    get: { Double(settings.repetitionPenalty) },
-                    set: { settings.repetitionPenalty = Float($0) }
-                ),
-                in: 0.8...2.0,
-                step: 0.05
-            ) {
-                let formatted = String(format: "%.2f", Double(settings.repetitionPenalty))
-                Text(String.localizedStringWithFormat(String(localized: "Repetition penalty: %@"), formatted))
-            }
-            Stepper(value: $settings.repeatLastN, in: 0...4096, step: 16) {
+            Stepper(value: $settings.topK, in: 1...2048, step: 1) {
                 Text(
                     String.localizedStringWithFormat(
-                        String(localized: "Repeat last N tokens: %@"),
-                        NumberFormatter.localizedString(from: NSNumber(value: settings.repeatLastN), number: .decimal)
+                        String(localized: "Top-k: %@"),
+                        NumberFormatter.localizedString(from: NSNumber(value: settings.topK), number: .decimal)
                     )
                 )
             }
-            if supportsPresencePenalty {
-                Stepper(
-                    value: Binding(
-                        get: { Double(settings.presencePenalty) },
-                        set: { settings.presencePenalty = Float($0) }
-                    ),
-                    in: -2.0...2.0,
-                    step: 0.1
-                ) {
-                    let formatted = String(format: "%.1f", Double(settings.presencePenalty))
-                    Text(String.localizedStringWithFormat(String(localized: "Presence penalty: %@"), formatted))
+
+#if os(macOS)
+            if supportsMinP {
+                VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(LocalizedStringKey("Min-p"))
+                            .font(.subheadline.weight(.semibold))
+                        Slider(value: $settings.minP, in: 0...1, step: 0.01)
+                    }
+                    Text(String(format: "%.2f", settings.minP))
+                        .font(.footnote.monospacedDigit())
                 }
             }
-            if supportsFrequencyPenalty {
+
+            VStack(alignment: .leading, spacing: 12) {
                 Stepper(
                     value: Binding(
-                        get: { Double(settings.frequencyPenalty) },
-                        set: { settings.frequencyPenalty = Float($0) }
+                        get: { Double(settings.repetitionPenalty) },
+                        set: { settings.repetitionPenalty = Float($0) }
                     ),
-                    in: -2.0...2.0,
-                    step: 0.1
+                    in: 0.8...2.0,
+                    step: 0.05
                 ) {
-                    let formatted = String(format: "%.1f", Double(settings.frequencyPenalty))
-                    Text(String.localizedStringWithFormat(String(localized: "Frequency penalty: %@"), formatted))
+                    let formatted = String(format: "%.2f", Double(settings.repetitionPenalty))
+                    Text(String.localizedStringWithFormat(String(localized: "Repetition penalty: %@"), formatted))
                 }
+                Stepper(value: $settings.repeatLastN, in: 0...4096, step: 16) {
+                    Text(
+                        String.localizedStringWithFormat(
+                            String(localized: "Repeat last N tokens: %@"),
+                            NumberFormatter.localizedString(from: NSNumber(value: settings.repeatLastN), number: .decimal)
+                        )
+                    )
+                }
+                if supportsPresencePenalty {
+                    Stepper(
+                        value: Binding(
+                            get: { Double(settings.presencePenalty) },
+                            set: { settings.presencePenalty = Float($0) }
+                        ),
+                        in: -2.0...2.0,
+                        step: 0.1
+                    ) {
+                        let formatted = String(format: "%.1f", Double(settings.presencePenalty))
+                        Text(String.localizedStringWithFormat(String(localized: "Presence penalty: %@"), formatted))
+                    }
+                }
+                if supportsFrequencyPenalty {
+                    Stepper(
+                        value: Binding(
+                            get: { Double(settings.frequencyPenalty) },
+                            set: { settings.frequencyPenalty = Float($0) }
+                        ),
+                        in: -2.0...2.0,
+                        step: 0.1
+                    ) {
+                        let formatted = String(format: "%.1f", Double(settings.frequencyPenalty))
+                        Text(String.localizedStringWithFormat(String(localized: "Frequency penalty: %@"), formatted))
+                    }
+                }
+                Text(LocalizedStringKey("Smooth loops and repeated phrases by tuning repetition controls."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            Text(LocalizedStringKey("Smooth loops and repeated phrases by tuning repetition controls."))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
 #endif
+        }
     }
 
 #if os(macOS)
@@ -1060,9 +1220,17 @@ private struct ModelFormatTagView: View {
 #endif
 
     @ViewBuilder
-    private var mlxSettings: some View {
-        Section("MLX") {
-            mlxSettingsContent
+    private var nonGGUFSettings: some View {
+        Section(model.format.displayName) {
+            if model.format == .et {
+                etSettingsContent
+            } else if model.format == .ane {
+                aneSettingsContent
+            } else if model.format == .afm {
+                afmSettingsContent
+            } else {
+                mlxSettingsContent
+            }
         }
     }
 
@@ -1097,6 +1265,101 @@ private struct ModelFormatTagView: View {
     }
 
     @ViewBuilder
+    private var etSettingsContent: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("ExecuTorch backend selection is automatic in this build. The runtime uses the delegates embedded in the model program.")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+
+        if let moeInfo = resolvedMoEInfo {
+            moeSettings(for: moeInfo)
+        }
+
+        if isAdvancedMode {
+            HStack {
+                Text("Seed")
+                TextField("Random", text: Binding(
+                    get: { settings.seed.map(String.init) ?? "" },
+                    set: { newVal in
+                        let digits = newVal.filter { $0.isNumber }
+                        if let val = Int(digits) { settings.seed = val } else { settings.seed = nil }
+                    }
+                ))
+                .platformKeyboardType(.numberPad)
+            }
+            TextField("Tokenizer Path (tokenizer.json)", text: Binding(
+                get: { settings.tokenizerPath ?? "" },
+                set: { settings.tokenizerPath = $0.isEmpty ? nil : $0 }
+            ))
+            .platformAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .font(.caption)
+        }
+    }
+
+    @ViewBuilder
+    private var aneSettingsContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Select which Apple processing units Core ML can use for this model.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Picker(
+                "Processing Unit Configuration",
+                selection: Binding(
+                    get: { settings.resolvedProcessingUnitConfiguration },
+                    set: { settings.processingUnitConfiguration = $0 }
+                )
+            ) {
+                ForEach(ProcessingUnitConfiguration.allCases) { config in
+                    Text(config.displayName).tag(config)
+                }
+            }
+            .pickerStyle(.menu)
+        }
+
+        if isAdvancedMode {
+            TextField("Tokenizer Path (tokenizer.json)", text: Binding(
+                get: { settings.tokenizerPath ?? "" },
+                set: { settings.tokenizerPath = $0.isEmpty ? nil : $0 }
+            ))
+            .platformAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .font(.caption)
+        }
+    }
+
+    @ViewBuilder
+    private var afmSettingsContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Guardrails")
+                    .font(.subheadline.weight(.semibold))
+
+                Picker("Guardrails", selection: $settings.afmGuardrails) {
+                    ForEach(AFMGuardrailsMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Default keeps Apple's built-in input and output guardrails enabled.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Permissive Content Transformations is for transforming sensitive source material that is appropriate for your app.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("This setting only affects string generation. Guided generation still uses the default guardrails.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
     private var benchmarkSection: some View {
         Section("Benchmark") {
             benchmarkSectionContent
@@ -1105,7 +1368,7 @@ private struct ModelFormatTagView: View {
 
     @ViewBuilder
     private var benchmarkSectionContent: some View {
-        if model.format == .apple {
+        if model.format == .ane {
             Text("Benchmarking is not available for this model format.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -1115,7 +1378,7 @@ private struct ModelFormatTagView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                let fitsRAM = benchmarkFitsRAM
+                let fitsRAM = cachedBenchmarkFitsRAM
                 let ramGuardActive = !fitsRAM && !benchmarking
                 Button {
                     runBenchmark()
@@ -1254,7 +1517,7 @@ private struct BenchmarkSummaryCard: View {
             }
             badges.append(OptimizationDescriptor(id: "kvoffload", title: String(localized: "KV Offload"), value: result.kvCacheOffloadActive ? gpuText : cpuText, icon: "externaldrive.connected.to.line.below", isActive: result.kvCacheOffloadActive))
             return badges
-        case .mlx, .slm, .apple:
+        case .mlx, .et, .ane, .afm:
             return []
         }
     }
@@ -1265,8 +1528,8 @@ private struct BenchmarkSummaryCard: View {
             .font(.subheadline)
             .foregroundStyle(.secondary)
         if optimizationBadges.isEmpty {
-            Text(format == .slm
-                 ? String(localized: "Leap SLM models manage runtime optimizations automatically.")
+            Text((format == .et || format == .afm)
+                 ? String(localized: "This format manages runtime optimizations automatically.")
                  : String(localized: "This format doesn't expose tunable runtime optimizations."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -1636,22 +1899,24 @@ private struct ModelSettingsWalkthroughOverlay: View {
 }
 
 private extension ModelSettingsView {
-    var benchmarkFitsRAM: Bool {
-        guard model.format != .apple else { return false }
+    func recomputeBenchmarkFitsRAM() {
+        guard model.format != .ane else { cachedBenchmarkFitsRAM = false; return }
         let sizeBytes = Int64(model.sizeGB * 1_073_741_824.0)
         let context = Int(settings.contextLength)
         let layerHint: Int? = layerCount > 0 ? layerCount : nil
-        return ModelRAMAdvisor.fitsInRAM(
+        let kvCacheEstimate = ModelRAMAdvisor.GGUFKVCacheEstimate.resolved(from: settings)
+        cachedBenchmarkFitsRAM = ModelRAMAdvisor.fitsInRAM(
             format: model.format,
             sizeBytes: sizeBytes,
             contextLength: context,
             layerCount: layerHint,
-            moeInfo: effectiveMoEInfo
+            moeInfo: effectiveMoEInfo,
+            kvCacheEstimate: kvCacheEstimate
         )
     }
 
     func runBenchmark() {
-        guard !benchmarking, model.format != .apple else { return }
+        guard !benchmarking, model.format != .ane else { return }
 #if canImport(UIKit) && !os(visionOS)
         Haptics.impact(.light)
 #endif

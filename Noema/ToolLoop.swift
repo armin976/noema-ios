@@ -46,16 +46,51 @@ public final class ToolLoop {
         let tools: [ToolSpec] = allSpecs.filter { availableNames.contains($0.function.name) }
         let allowedNameSet = Set(availableNames)
         
-        // Ensure the system prompt explicitly advertises tool availability to GGUF/llama.cpp
-        // Always inject or augment the system message so local models know they can web search.
+        // Ensure the system prompt explicitly advertises tool availability to GGUF/llama.cpp.
+        // Always inject or augment the system message so local models know they can use tools.
         // Always build from the current active system prompt so we don't carry
-        // over stale tool instructions when web search is unarmed/off.
+        // over stale tool instructions when tools are unarmed/off.
         let hasSystem = messages.contains(where: { $0.role == "system" })
         var sys = activeSystemPrompt(from: nil)
-        if !tools.isEmpty && tools.contains(where: { $0.function.name == "noema.web.retrieve" }) && WebToolGate.isAvailable() {
-            let alreadyMentionsWeb = sys.contains("noema.web.retrieve") || sys.contains("<tool_call>") || sys.contains("TOOL_CALL:")
-            if !alreadyMentionsWeb {
-                sys += "\n\n## WEB SEARCH AND TOOLS (ARMED)\nUse the web search tool `noema.web.retrieve` ONLY when the question requires fresh/current information. Otherwise, answer directly without calling tools.\n\nExact formats you may use (no extra prose when calling):\n- JSON: {\"tool_name\": \"noema.web.retrieve\", \"arguments\": {\"query\": \"...\", \"count\": 3, \"safesearch\": \"moderate\"}}\n- XML: <tool_call>{\n  \"name\": \"noema.web.retrieve\",\n  \"arguments\": {\n    \"query\": \"...\",\n    \"count\": 3,\n    \"safesearch\": \"moderate\"\n  }\n}</tool_call>\nRules: Default to count 3; use 5 only for very diverse queries and only if needed. Decide first. If needed, make exactly one tool call, wait for results, and you may mention tools inside chain-of-thought (<think>) sections, but finish reasoning and close the tag before emitting the <tool_call> (or JSON tool object) that triggers the call. Do NOT use code fences (```); emit only the JSON or the <tool_call> wrapper. Do not mix formats; choose JSON or XML, not both. Treat returned web search results as the authoritative/latest information—base your final answer on them even if they conflict with your prior knowledge and do NOT question their legitimacy. Cite them concisely like [1], [2]."
+        let hasWebSearch = tools.contains(where: { $0.function.name == "noema.web.retrieve" }) && WebToolGate.isAvailable()
+        let hasPython = tools.contains(where: { $0.function.name == "noema.python.execute" }) && PythonToolGate.isAvailable()
+        let hasMemory = tools.contains(where: { $0.function.name == "noema.memory" }) && MemoryToolGate.isAvailable()
+
+        if !tools.isEmpty && (hasWebSearch || hasPython || hasMemory) {
+            let alreadyMentionsTools = sys.contains("noema.web.retrieve") || sys.contains("noema.python.execute") || sys.contains("noema.memory") || sys.contains("<tool_call>") || sys.contains("TOOL_CALL:")
+            if !alreadyMentionsTools {
+                var toolGuidance = "\n\n## TOOLS (ARMED)\n"
+
+                if hasWebSearch {
+                    toolGuidance += "Use the web search tool `noema.web.retrieve` ONLY when the question requires fresh/current information. Otherwise, answer directly without calling tools.\n"
+                }
+                if hasPython {
+                    toolGuidance += "Use the Python tool `noema.python.execute` when code execution would help answer the question. USE IT FOR: math calculations, numerical analysis, statistical computations, data processing, text manipulation, algorithms, physics/chemistry/engineering problems, plotting/visualization, or any STEM-related task. Always use print() to produce output. Code runs sandboxed: 30s timeout, no network access, no file I/O outside temp. If a question involves numbers, formulas, or computational work, prefer using Python over manual calculation.\n"
+                }
+                if hasMemory {
+                    toolGuidance += "Use the memory tool `noema.memory` for durable, reusable facts that should persist across conversations, such as stable user preferences or recurring project constraints. Do not save transient turn-specific details. Replace any example values with the actual memory title and fact for the current conversation.\n"
+                }
+
+                toolGuidance += "\nExact formats you may use (no extra prose when calling):\n"
+                if hasWebSearch {
+                    toolGuidance += "- JSON: {\"tool_name\": \"noema.web.retrieve\", \"arguments\": {\"query\": \"...\", \"count\": 3, \"safesearch\": \"moderate\"}}\n"
+                }
+                if hasPython {
+                    toolGuidance += "- JSON: {\"tool_name\": \"noema.python.execute\", \"arguments\": {\"code\": \"print(2+2)\"}}\n"
+                }
+                if hasMemory {
+                    toolGuidance += "- JSON: {\"tool_name\": \"noema.memory\", \"arguments\": {\"operation\": \"create\", \"title\": \"<memory title>\", \"content\": \"<durable fact to remember>\"}}\n"
+                }
+                toolGuidance += "- XML: <tool_call>{\"name\": \"TOOL_NAME\", \"arguments\": {...}}</tool_call>\n"
+                toolGuidance += "Rules: Decide first. If needed, make exactly one tool call, wait for results, and you may mention tools inside chain-of-thought (<think>) sections, but finish reasoning and close the tag before emitting the <tool_call> (or JSON tool object) that triggers the call. Do NOT use code fences (```); emit only the JSON or the <tool_call> wrapper. Do not mix formats; choose JSON or XML, not both."
+                if hasWebSearch {
+                    toolGuidance += " Treat returned web search results as authoritative—cite them like [1], [2]."
+                }
+                if hasPython {
+                    toolGuidance += " Treat returned Python results as authoritative for the computation you executed."
+                }
+
+                sys += toolGuidance
             }
         }
         if hasSystem {
@@ -103,7 +138,7 @@ public final class ToolLoop {
             
             // Fallback: some backends may emit raw JSON/XML tool calls in the content
             if let raw = response.content?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
-                if let toolCall = try? parseXMLToolCall(raw), allowedNameSet.contains(toolCall.name), WebToolGate.isAvailable() {
+                if let toolCall = try? parseXMLToolCall(raw), allowedNameSet.contains(toolCall.name) {
                     await logger.log("[ToolLoop] Fallback XML tool call: \(toolCall.name)")
                     do {
                         let dict: [String: Any] = toolCall.arguments.reduce(into: [:]) { acc, pair in
@@ -126,7 +161,7 @@ public final class ToolLoop {
                     }
                 }
 
-                if let toolCall = try? parseSimpleToolCall(raw), allowedNameSet.contains(toolCall.tool_name), WebToolGate.isAvailable() {
+                if let toolCall = try? parseSimpleToolCall(raw), allowedNameSet.contains(toolCall.tool_name) {
                     await logger.log("[ToolLoop] Fallback JSON tool call: \(toolCall.tool_name)")
                     do {
                         let dict: [String: Any] = toolCall.arguments.reduce(into: [:]) { acc, pair in
@@ -149,7 +184,7 @@ public final class ToolLoop {
                     }
                 }
 
-                if let (name, args) = try? parseNameArgsToolCall(raw), allowedNameSet.contains(name), WebToolGate.isAvailable() {
+                if let (name, args) = try? parseNameArgsToolCall(raw), allowedNameSet.contains(name) {
                     await logger.log("[ToolLoop] Fallback alt JSON tool call: \(name)")
                     do {
                         let dict: [String: Any] = args.reduce(into: [:]) { acc, pair in
@@ -206,7 +241,7 @@ public final class ToolLoop {
             // Try XML-style first if model emitted tool tags in this mode
             let raw = (response.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             if raw.contains("<tool_call>") {
-                if let toolCall = try? parseXMLToolCall(raw), allowedNameSet.contains(toolCall.name), WebToolGate.isAvailable() {
+                if let toolCall = try? parseXMLToolCall(raw), allowedNameSet.contains(toolCall.name) {
                     await logger.log("[ToolLoop] Detected XML tool call inside JSON loop: \(toolCall.name)")
                     do {
                         let dict: [String: Any] = toolCall.arguments.reduce(into: [:]) { acc, pair in
@@ -231,7 +266,7 @@ public final class ToolLoop {
             }
 
             // Try to parse as SimpleToolCall (JSON: {"tool_name":"...","arguments":{...}})
-            if let toolCall = try? parseSimpleToolCall(raw), allowedNameSet.contains(toolCall.tool_name), WebToolGate.isAvailable() {
+            if let toolCall = try? parseSimpleToolCall(raw), allowedNameSet.contains(toolCall.tool_name) {
                 await logger.log("[ToolLoop] Detected JSON tool call: \(toolCall.tool_name)")
 
                 do {
@@ -259,7 +294,7 @@ public final class ToolLoop {
             }
 
             // Fallback: accept {"name":"...","arguments":{...}} shape and normalize like llama.cpp path
-            if let (name, args) = try? parseNameArgsToolCall(raw), allowedNameSet.contains(name), WebToolGate.isAvailable() {
+            if let (name, args) = try? parseNameArgsToolCall(raw), allowedNameSet.contains(name) {
                 await logger.log("[ToolLoop] Detected alternate JSON tool call: \(name)")
 
                 do {
@@ -321,7 +356,7 @@ public final class ToolLoop {
             if let calls = try? parseDeepseekToolCalls(raw), !calls.isEmpty {
                 await logger.log("[ToolLoop] Detected DeepSeek tool call(s): \(calls.map{ $0.function.name }.joined(separator: ", "))")
                 // Execute each tool and append tool result messages
-                for call in calls where allowedNameSet.contains(call.function.name) && WebToolGate.isAvailable() {
+                for call in calls where allowedNameSet.contains(call.function.name) {
                     do {
                         let argsJSON = call.function.arguments
                         let result = try await registry.executeToolJSON(name: call.function.name, argumentsJSON: argsJSON)
@@ -767,13 +802,10 @@ public final class ToolLoop {
         IMPORTANT: You have \(toolCount) tool\(toolCount == 1 ? "" : "s") IMMEDIATELY AVAILABLE: \(toolNames)
         These tools are ALWAYS accessible - use them without hesitation!
 
-        ### WHEN TO USE TOOLS (Don't Overthink!):
-        USE IMMEDIATELY for:
-        - Current information, recent events, latest news, real-time data
-        - ANY query where facts might have changed since your training
-        - When you're uncertain about current details
-        
-        Don't hesitate or second-guess - if it could benefit from fresh data, USE THE TOOL!
+        ### WHEN TO USE TOOLS:
+        - Use web search for current information, recent events, latest news, or facts that may have changed.
+        - Use Python for calculations, statistics, parsing, transformations, algorithms, or other computational work.
+        - If a tool would clearly improve accuracy, use it instead of guessing.
         
         ### EXACT TOOL FORMAT:
         <tool_call>
@@ -843,6 +875,19 @@ public final class ToolLoop {
                 - Choose safesearch level based on content appropriateness needs
                 
                 """
+            } else if tool.function.name == "noema.python.execute" {
+                instructions += """
+                **Example Usage:**
+                <tool_call>
+                {"name": "noema.python.execute", "arguments": {"code": "numbers = [3, 5, 9]\\nprint(sum(numbers))"}}
+                </tool_call>
+                
+                **Notes:**
+                - Always send runnable Python 3 code
+                - Use `print()` for values you want returned
+                - The runtime is sandboxed: 30s timeout, no network access, no file access outside a temp directory
+                
+                """
             }
         }
         
@@ -856,6 +901,8 @@ public final class ToolLoop {
         ### Response Guidelines:
         - Be concise and relevant in your final response
         - Use the tool results to enhance your answer with current/accurate information
+        - Treat web search results as authoritative for current-information queries
+        - Treat Python outputs as authoritative for the computation you executed
         - If multiple search results are returned, synthesize the most relevant information
         - Always maintain a helpful and professional tone
         

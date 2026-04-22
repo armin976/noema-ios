@@ -1,5 +1,6 @@
 // PromptBuilder.swift
 import Foundation
+import NoemaPackages
 
 /// Builds prompts for different model templates and families.
 struct PromptBuilder {
@@ -8,6 +9,7 @@ struct PromptBuilder {
         case llama3
         case inst
         case chatml
+        case qwen35
         case chatmlWithStartOfText // Liquid LFM: requires <|startoftext|> prefix
         case gemmaTurn
         case phi
@@ -159,6 +161,9 @@ struct PromptBuilder {
     static func detect(template: String?, family: ModelKind) -> TemplateKind {
         // If a template string is provided (e.g., curated ChatML), honor it first.
         if let t = template?.lowercased() {
+            if t.contains("<tool_call>") && t.contains("<function=") && t.contains("<parameter=") && t.contains("enable_thinking") {
+                return .qwen35
+            }
             if t.contains("<|begin_of_text|>") { return .llama3 }
             if t.contains("<start_of_turn>") { return .gemmaTurn }
             // Prefer LFM-style when template explicitly uses <|startoftext|> token
@@ -282,10 +287,27 @@ struct PromptBuilder {
             // Start assistant for next turn
             p += "<|im_start|>assistant\n"
             return (p, ["<|im_end|>", "<|im_start|>user", "<|endoftext|>"], maxTokens)
+        case .qwen35:
+            var p = ""
+            if !systemText.isEmpty {
+                p += "<|im_start|>system\n" + systemText + "\n<|im_end|>\n"
+            }
+            for m in msgs {
+                let role = m.role.lowercased()
+                if role == "🧑‍💻".lowercased() || role == "user" {
+                    p += "<|im_start|>user\n" + m.text + "\n<|im_end|>\n"
+                } else if role == "🤖".lowercased() || role == "assistant" {
+                    p += "<|im_start|>assistant\n" + m.text + "\n<|im_end|>\n"
+                } else if role == "tool" {
+                    p += "<|im_start|>user\n<tool_response>\n" + m.text + "\n</tool_response><|im_end|>\n"
+                }
+            }
+            p += "<|im_start|>assistant\n<think>\n"
+            return (p, ["<|im_end|>", "<|im_start|>user", "<|endoftext|>"], maxTokens)
         case .chatmlWithStartOfText:
             // Liquid LFM variant: prefix with <|startoftext|> and default Liquid system prompt when none provided
             var p = "<|startoftext|>"
-            let defaultLiquidSystem = "You are a helpful assistant trained by Liquid AI."
+            let defaultLiquidSystem = "You are a helpful assistant trained by ExecuTorch."
             let sys = systemText.isEmpty ? defaultLiquidSystem : systemText
             p += "<|im_start|>system\n" + sys + "\n<|im_end|>\n"
             for m in msgs {
@@ -530,9 +552,24 @@ struct PromptBuilder {
             }
             p += "<|im_start|>assistant\n"
             return (p, ["<|im_end|>", "<|im_start|>user", "<|endoftext|>"], maxTokens)
+        case .qwen35:
+            var p = ""
+            if !systemText.isEmpty { p += "<|im_start|>system\n" + systemText + "\n<|im_end|>\n" }
+            for m in msgs {
+                let role = m.role.lowercased()
+                if role == "🧑‍💻".lowercased() || role == "user" {
+                    p += "<|im_start|>user\n" + m.text + "\n<|im_end|>\n"
+                } else if role == "🤖".lowercased() || role == "assistant" {
+                    p += "<|im_start|>assistant\n" + m.text + "\n<|im_end|>\n"
+                } else if role == "tool" {
+                    p += "<|im_start|>user\n<tool_response>\n" + m.text + "\n</tool_response><|im_end|>\n"
+                }
+            }
+            p += "<|im_start|>assistant\n<think>\n"
+            return (p, ["<|im_end|>", "<|im_start|>user", "<|endoftext|>"], maxTokens)
         case .chatmlWithStartOfText:
             var p = "<|startoftext|>"
-            let defaultLiquidSystem = "You are a helpful assistant trained by Liquid AI."
+            let defaultLiquidSystem = "You are a helpful assistant trained by ExecuTorch."
             let sys = systemText.isEmpty ? defaultLiquidSystem : systemText
             p += "<|im_start|>system\n" + sys + "\n<|im_end|>\n"
             for m in msgs {

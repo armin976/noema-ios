@@ -17,7 +17,8 @@ struct ModernProgressView: View {
                     .fill(Color.gray.opacity(0.2))
                     .frame(height: height)
                 
-                // Progress fill
+                // Progress fill – use a short linear animation instead of spring
+                // to avoid continuous 60fps rendering that causes scroll jank.
                 RoundedRectangle(cornerRadius: height / 2)
                     .fill(
                         LinearGradient(
@@ -27,7 +28,7 @@ struct ModernProgressView: View {
                         )
                     )
                     .frame(width: geometry.size.width * animatedValue, height: height)
-                    .animation(.spring(response: 0.5, dampingFraction: 0.8, blendDuration: 0), value: animatedValue)
+                    .animation(.linear(duration: 0.2), value: animatedValue)
                 
                 // Shimmer effect
                 if animatedValue > 0 && animatedValue < 1 {
@@ -100,18 +101,31 @@ struct ModernDownloadProgressView: View {
     
     var body: some View {
         VStack(spacing: 8) {
-            HStack {
+            HStack(spacing: 6) {
                 if showPercentage {
                     Text("\(Int(progress * 100))%")
                         .font(.caption)
                         .fontWeight(.medium)
                         .monospacedDigit()
+                        .lineLimit(1)
+                        .frame(width: 40, alignment: .leading)
                 }
                 
-                Spacer()
-                
-                if let speed = speed, speed > 0 {
-                    Text(Self.formattedSpeedText(speed))
+                Spacer(minLength: 6)
+
+                ZStack(alignment: .trailing) {
+                    Text(Self.speedWidthTemplate)
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .hidden()
+
+                    Text(speedText)
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .foregroundStyle(.secondary)
                 }
             }
             
@@ -120,7 +134,82 @@ struct ModernDownloadProgressView: View {
     }
 }
 
+struct ProcessingPromptCardView: View {
+    let progress: Double
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var clampedProgress: Double {
+        min(1.0, max(0.0, progress))
+    }
+
+    private var surfaceColor: Color {
+        colorScheme == .dark ? Color(white: 0.15) : Color(white: 0.97)
+    }
+
+    private var surfaceBorderColor: Color {
+        Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.10)
+    }
+
+    private var secondaryColor: Color {
+        colorScheme == .dark ? Color.white.opacity(0.68) : Color.black.opacity(0.58)
+    }
+
+    private var primaryTextColor: Color {
+        colorScheme == .dark ? Color.white.opacity(0.92) : Color.black.opacity(0.82)
+    }
+
+    private var shadowColor: Color {
+        colorScheme == .dark ? Color.black.opacity(0.1) : Color.black.opacity(0.04)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                HStack(spacing: 6) {
+                    Image(systemName: "slider.horizontal.below.rectangle")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(secondaryColor)
+                    Text(LocalizedStringKey("Processing Prompt"))
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(primaryTextColor)
+                }
+
+                Spacer()
+
+                Text("\(Int(clampedProgress * 100))%")
+                    .font(.caption2.weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(secondaryColor)
+            }
+
+            ModernProgressView(
+                value: clampedProgress,
+                tint: .accentColor,
+                height: 3
+            )
+            .frame(height: 3)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(surfaceColor)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(surfaceBorderColor, lineWidth: 0.6)
+        )
+        .shadow(color: shadowColor, radius: 8, x: 0, y: 4)
+    }
+}
+
 private extension ModernDownloadProgressView {
+    static let speedWidthTemplate = "999.9 MB/s"
+
+    var speedText: String {
+        guard let speed, speed > 0 else { return "" }
+        return Self.formattedSpeedText(speed)
+    }
+
     static func formattedSpeedText(_ bytesPerSecond: Double) -> String {
         // Convert to KB/s or MB/s for display
         let kbps = bytesPerSecond / 1_024.0

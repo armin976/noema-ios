@@ -42,6 +42,7 @@ enum ModelVisionDetector {
 
 enum ProjectorLocator {
     private static let projectorKeywords = ["mmproj", "projector", "image_proj"]
+    private static let projectorExtensions: Set<String> = ["gguf", "mmproj"]
 
     static func hasProjectorFile(alongside modelURL: URL) -> Bool {
         let directory = modelURL.deletingLastPathComponent()
@@ -73,9 +74,30 @@ enum ProjectorLocator {
     }
 
     private static func isProjectorFile(_ url: URL) -> Bool {
-        guard url.pathExtension.lowercased() == "gguf" else { return false }
+        guard projectorExtensions.contains(url.pathExtension.lowercased()) else { return false }
         let lowercased = url.lastPathComponent.lowercased()
         return projectorKeywords.contains { lowercased.contains($0) }
+    }
+
+    private static func projectorCandidates(in directory: URL) -> [URL] {
+        guard let contents = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
+            return []
+        }
+
+        var candidates = contents.filter { isProjectorFile($0) }
+
+        // Also scan one level deep (some model repos nest projectors under a subfolder).
+        for entry in contents {
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: entry.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                continue
+            }
+            if let subcontents = try? FileManager.default.contentsOfDirectory(at: entry, includingPropertiesForKeys: nil) {
+                candidates.append(contentsOf: subcontents.filter { isProjectorFile($0) })
+            }
+        }
+
+        return candidates
     }
 
     /// Returns the absolute path to a projector `.gguf` if we can resolve one next to the model.
@@ -102,10 +124,7 @@ enum ProjectorLocator {
         }
 
         // Fallback: scan directory for projector-like gguf files
-        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else {
-            return nil
-        }
-        let candidates = files.filter { isProjectorFile($0) }
+        let candidates = projectorCandidates(in: dir)
         if candidates.isEmpty { return nil }
         // Prefer F16/F32 names if available
         if let hi = candidates.first(where: { name in

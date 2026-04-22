@@ -3,9 +3,6 @@ import SwiftUI
 #if canImport(UIKit)
 import UIKit
 #endif
-#if canImport(LeapSDK)
-import LeapSDK
-#endif
 
 // Represents a locally available language model
 struct LocalModel: Identifiable, Hashable {
@@ -16,6 +13,7 @@ struct LocalModel: Identifiable, Hashable {
     /// Path to the model file on disk
     let url: URL
     let quant: String
+    var parameterCountLabel: String? = nil
     let architecture: String
     let architectureFamily: String
     let format: ModelFormat
@@ -199,7 +197,8 @@ struct ModelListView: View {
                 ForEach(sortedModels, id: \.id) { model in
                     let row = ModelRow(
                         model: model,
-                        isLoading: loadingModelID == model.id
+                        isLoading: loadingModelID == model.id,
+                        settingsAction: { selectedModel = model }
                     ) {
                         if manualParams {
                             selectedModel = model
@@ -221,18 +220,13 @@ struct ModelListView: View {
             }
             Section(header: Text(LocalizedStringKey("Your Datasets"))) {
                 ForEach(modelManager.downloadedDatasets) { ds in
-                    let disabledForSLM = vm.isSLMModel
-                    let isDisabled = disabledForSLM
                     DatasetRow(dataset: ds, indexing: datasetManager.indexingDatasetID == ds.datasetID)
                         .contentShape(Rectangle())
                         .onTapGesture {
-                            guard !isDisabled else { return }
                             guard datasetManager.indexingDatasetID != ds.datasetID, ds.isIndexed else { return }
                             let isActive = modelManager.activeDataset?.datasetID == ds.datasetID
                             vm.setDatasetForActiveSession(isActive ? nil : ds)
                         }
-                        .opacity(isDisabled ? 0.5 : 1.0)
-                        .allowsHitTesting(!isDisabled)
                 }
             }
 
@@ -292,7 +286,7 @@ struct ModelListView: View {
             if DeviceGPUInfo.supportsGPUOffload {
                 Text(LocalizedStringKey("This model doesn't support GPU offload and generation speed will be significantly slower. Consider switching to an MLX model."))
             } else {
-                Text(LocalizedStringKey("This model doesn't support GPU offload and generation speed will be significantly slower. Fastest option on this device: use an SLM (Leap) model."))
+                Text(LocalizedStringKey("This model doesn't support GPU offload and generation speed will be significantly slower. Fastest option on this device: use an ET model."))
             }
         }
     }
@@ -326,39 +320,41 @@ struct ModelListView: View {
         }
         loadingModelID = model.id
         Task { @MainActor in
-            if model.format == .slm {
-#if canImport(LeapSDK)
-                do {
-                    LeapBundleDownloader.sanitizeBundleIfNeeded(at: model.url)
-                    let runner = try await Leap.load(url: model.url)
-                    vm.activate(runner: runner, url: model.url)
-                    // Persist default settings for SLM so they are remembered
-                    modelManager.updateSettings(ModelSettings.default(for: .slm), for: model)
+            if model.format == .et {
+                var effectiveSettings = modelManager.normalizeLocalSettings(settings, for: model)
+                effectiveSettings.contextLength = max(1, effectiveSettings.contextLength)
+                let success = await vm.load(url: model.url, settings: effectiveSettings, format: .et, forceReload: true)
+                if success {
+                    modelManager.updateSettings(effectiveSettings, for: model)
                     modelManager.markModelUsed(model)
                     tabRouter.selection = .chat
-                } catch {
-                    vm.loadError = error.localizedDescription
+                } else {
                     modelManager.loadedModel = nil
                 }
                 loadingModelID = nil
-#else
-                let locale = LocalizationManager.preferredLocale()
-                vm.loadError = String(localized: "SLM models are not supported on this platform.", locale: locale)
-                modelManager.loadedModel = nil
-                loadingModelID = nil
-#endif
             } else {
                 // Unload current model before checking RAM so available memory is accurate
                 await vm.unload()
                 try? await Task.sleep(nanoseconds: 200_000_000)
 
+                let normalizedSettings = modelManager.normalizeLocalSettings(settings, for: model)
                 // RAM safety gate unless bypassed
                 let bypass = UserDefaults.standard.bool(forKey: "bypassRAMCheck")
                 if !bypass {
                     let sizeBytes = Int64(model.sizeGB * 1_073_741_824.0)
-                    let ctx = Int(settings.contextLength)
+                    let ctx = Int(normalizedSettings.contextLength)
                     let layerHint: Int? = model.totalLayers > 0 ? model.totalLayers : nil
-                    if !ModelRAMAdvisor.fitsInRAM(format: model.format, sizeBytes: sizeBytes, contextLength: ctx, layerCount: layerHint, moeInfo: model.moeInfo) {
+                    let kvCacheEstimate = ModelRAMAdvisor.GGUFKVCacheEstimate.resolved(from: normalizedSettings)
+                    if !ModelRAMAdvisor.fitsInRAM(
+                        format: model.format,
+                        sizeBytes: sizeBytes,
+                        contextLength: ctx,
+                        layerCount: layerHint,
+                        moeInfo: model.moeInfo,
+                        kvCacheEstimate: kvCacheEstimate
+                    ) {
+                        AppSoundPlayer.play(.error)
+                        Haptics.error()
                         let locale = LocalizationManager.preferredLocale()
                         vm.loadError = String(localized: "Model likely exceeds memory budget. Lower context or choose a smaller quant.", locale: locale)
                         loadingModelID = nil
@@ -424,10 +420,13 @@ struct ModelListView: View {
                         return
                     }
                 }
-                case .slm:
+                case .et:
                     break
-                case .apple:
+                case .ane:
                     break
+                case .afm:
+                    loadURL = InstalledModelsStore.baseDir(for: .afm, modelID: model.modelID)
+                    try? FileManager.default.createDirectory(at: loadURL, withIntermediateDirectories: true)
                 }
 
 #if DEBUG
@@ -436,7 +435,7 @@ struct ModelListView: View {
                 print("[ModelListView] load url \(loadURL.path) \(dbgDir.boolValue ? "dir" : "file")")
 #endif
 
-                var clamped = settings
+                var clamped = normalizedSettings
                 clamped.contextLength = max(1, clamped.contextLength)
                 if model.format == .gguf {
                     // Only clamp GPU layers when we actually know totalLayers for this model.
@@ -451,8 +450,6 @@ struct ModelListView: View {
                 if success {
                     // Persist settings used for this successful load
                     modelManager.updateSettings(clamped, for: model)
-                    // Also ensure durable store updated immediately after load
-                    ModelSettingsStore.save(settings: clamped, forModelID: model.modelID, quantLabel: model.quant)
                     modelManager.markModelUsed(model)
                     tabRouter.selection = .chat
                 } else {
@@ -478,16 +475,25 @@ struct ModelDetailView: View {
     var body: some View {
         List {
             Section(header: Text(model.name)) {
-                Label(model.architecture, systemImage: "cpu")
-                Label(model.format.rawValue, systemImage: "doc")
-                if model.format != .slm {
+                if model.format != .ane && model.format != .afm {
+                    Label(model.architecture, systemImage: "cpu")
+                }
+                Label(model.format.displayName, systemImage: "doc")
+                if let parameterCountLabel = model.parameterCountLabel, !parameterCountLabel.isEmpty {
+                    Label(parameterCountLabel, systemImage: "sum")
+                }
+                if !model.quant.isEmpty && model.format != .ane {
                     Label("Quant: \(model.quant)", systemImage: "dial.max")
                 }
-                Label(String(format: "Size: %.1f GB", model.sizeGB), systemImage: "externaldrive")
+                if model.format != .afm {
+                    Label(String(format: "Size: %.1f GB", model.sizeGB), systemImage: "externaldrive")
+                }
             }
             Section(LocalizedStringKey("Actions")) {
-                Button(LocalizedStringKey("Delete")) {
-                    showDeleteConfirm = true
+                if model.format != .afm {
+                    Button(LocalizedStringKey("Delete")) {
+                        showDeleteConfirm = true
+                    }
                 }
 
                 Button(model.isFavourite ? LocalizedStringKey("Unmark Favorite") : LocalizedStringKey("Mark as Favorite")) {
@@ -532,8 +538,11 @@ extension LocalModel {
                 }
             }
             let name: String
-            if item.format == .slm {
-                name = LeapCatalogService.name(for: item.modelID) ?? item.modelID
+            if item.format == .et {
+                let baseName = LeapCatalogService.name(for: item.modelID) ?? item.modelID
+                name = baseName
+            } else if item.format == .afm {
+                name = AppleFoundationModelRegistry.modelName
             } else if item.format == .mlx {
                 name = Self.friendlyMLXName(for: item.modelID, quantLabel: item.quantLabel)
             } else {
@@ -546,6 +555,7 @@ extension LocalModel {
                 name: name,
                 url: finalURL,
                 quant: item.quantLabel,
+                parameterCountLabel: item.parameterCountLabel,
                 architecture: architectureLabels.display,
                 architectureFamily: architectureLabels.family,
                 format: item.format,
@@ -563,6 +573,21 @@ extension LocalModel {
         }
     }
 
+}
+
+extension LocalModel {
+    /// Distinguishes ET artifact source so UI can label ExecuTorch vs GGUF-backed installs.
+    var slmSourceFormatLabel: String? {
+        guard format == .et else { return nil }
+        let ext = url.pathExtension.lowercased()
+        if ext == "bundle" { return "EXECUTORCH" }
+        if ext == "gguf" { return "GGUF" }
+        let lowerPath = url.path.lowercased()
+        if lowerPath.contains(".bundle/") || lowerPath.hasSuffix(".bundle") {
+            return "EXECUTORCH"
+        }
+        return nil
+    }
 }
 
 private extension LocalModel {
@@ -616,7 +641,12 @@ extension LocalModel {
                 scanSource = "mlx-metadata"
                 rawArchitecture = trimmedFamily.isEmpty ? nil : trimmedFamily
             }
-        case .slm, .apple:
+        case .afm:
+            family = "afm"
+            display = "Apple Foundation"
+            scanSource = "afm-system"
+            rawArchitecture = "afm"
+        case .et, .ane:
             break
         }
 

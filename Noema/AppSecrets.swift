@@ -7,6 +7,7 @@ import Foundation
 enum AppSecrets {
     enum Key: String {
         case searxngURL = "SearXNGURL"
+        case searxngAPIKey = "SearXNGAPIKey"
     }
 
     private static let secrets: [String: String]? = {
@@ -33,6 +34,8 @@ enum AppSecrets {
         switch key {
         case .searxngURL:
             return env["SEARXNG_URL"]
+        case .searxngAPIKey:
+            return env["NOEMA_SEARCH_KEY"]
         }
     }
 
@@ -71,7 +74,7 @@ enum AppSecrets {
     }
 
     private static var defaultSearXNGURL: URL {
-        URL(string: "https://search.noemaai.com/search")!
+        URL(string: "https://search.noemaai.com/v1/search")!
     }
 
     static var searxngSearchURL: URL {
@@ -80,5 +83,11 @@ enum AppSecrets {
 
     static var optionalSearXNGURL: URL? {
         url(for: .searxngURL)
+    }
+
+    /// API key for the keyed `/v1/search` tier. Set via Secrets.plist key
+    /// `SearXNGAPIKey` or env var `NOEMA_SEARCH_KEY`.
+    static var searxngAPIKey: String? {
+        string(for: .searxngAPIKey)
     }
 }

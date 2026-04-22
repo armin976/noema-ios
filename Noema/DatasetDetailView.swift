@@ -19,13 +19,11 @@ struct DatasetDetailView: View, Identifiable {
         downloadController.datasetItems.first { $0.detail.id == detail.id }
     }
     
-    private var totalPDFSize: Int64 {
-        detail.files
-            .filter { $0.downloadURL.pathExtension.lowercased() == "pdf" }
-            .reduce(0) { $0 + $1.sizeBytes }
+    private var totalSupportedSize: Int64 {
+        DatasetFileSupport.totalSupportedSize(files: detail.files)
     }
 
-    private var fileSizeFormatter: MeasurementFormatter {
+    private var speedFormatter: MeasurementFormatter {
         let f = MeasurementFormatter()
         f.locale = locale
         f.unitOptions = .naturalScale
@@ -119,13 +117,12 @@ struct DatasetDetailView: View, Identifiable {
         .sheet(isPresented: $showRecommendation) {
             DatasetRecommendationView(
                 datasetName: detail.displayName ?? detail.id,
-                totalSizeBytes: totalPDFSize
+                totalSizeBytes: totalSupportedSize
             )
         }
         #else
         NavigationStack {
             List {
-                let supportedFormatsList = "PDF, EPUB, TXT, MD, JSON, JSONL, CSV, TSV"
                 Section(header: Text(detail.displayName ?? detail.id)) {
                     if isOTL {
                         if let summary = detail.summary { Text(summary) }
@@ -160,7 +157,7 @@ struct DatasetDetailView: View, Identifiable {
             .sheet(isPresented: $showRecommendation) {
                 DatasetRecommendationView(
                     datasetName: detail.displayName ?? detail.id,
-                    totalSizeBytes: totalPDFSize
+                    totalSizeBytes: totalSupportedSize
                 )
             }
         }
@@ -169,14 +166,7 @@ struct DatasetDetailView: View, Identifiable {
 
     @ViewBuilder
     private var filesContent: some View {
-        let supported: Set<String> = ["pdf", "epub", "txt", "md", "json", "jsonl", "csv", "tsv"]
-        let hasUsable = detail.files.contains { f in
-            let ext = f.downloadURL.pathExtension.lowercased()
-            return supported.contains(ext)
-        }
-        let unsupportedExts: [String] = detail.files
-            .map { $0.downloadURL.pathExtension.lowercased() }
-            .filter { !$0.isEmpty && !supported.contains($0) }
+        let hasUsable = detail.files.contains { DatasetFileSupport.isSupported($0) }
         let hasOnlyUnsupported = !detail.files.isEmpty && !hasUsable
 
         if detail.files.isEmpty {
@@ -197,7 +187,7 @@ struct DatasetDetailView: View, Identifiable {
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Spacer()
-                        Text(fileSizeFormatter.string(from: Measurement(value: Double(f.sizeBytes), unit: UnitInformationStorage.bytes)))
+                        Text(localizedDatasetFileSizeString(bytes: f.sizeBytes, locale: locale))
                             .font(.callout)
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
@@ -239,11 +229,7 @@ struct DatasetDetailView: View, Identifiable {
 
     @ViewBuilder
     private var actionsContent: some View {
-        let supported: Set<String> = ["pdf", "epub", "txt", "md", "json", "jsonl", "csv", "tsv"]
-        let hasUsable = detail.files.contains { f in
-            let ext = f.downloadURL.pathExtension.lowercased()
-            return supported.contains(ext)
-        }
+        let hasUsable = detail.files.contains { DatasetFileSupport.isSupported($0) }
         
         if let item = activeItem {
             VStack(alignment: .leading, spacing: 12) {
@@ -263,7 +249,7 @@ struct DatasetDetailView: View, Identifiable {
                     let speedStr: String = {
                         if item.speed > 0 {
                             let measurement = Measurement(value: Double(item.speed), unit: UnitInformationStorage.bytes)
-                            return fileSizeFormatter.string(from: measurement) + "/s"
+                            return speedFormatter.string(from: measurement) + "/s"
                         } else { return "" }
                     }()
                     Text(speedStr.isEmpty ? "\(pct)%" : "\(pct)%  ·  \(speedStr)")
@@ -284,8 +270,7 @@ struct DatasetDetailView: View, Identifiable {
                 }
             }
         } else {
-            // Show recommendation button for OTL datasets with PDFs
-            if isOTL && totalPDFSize > 0 {
+            if isOTL && totalSupportedSize > 0 {
                 Button {
                     showRecommendation = true
                 } label: {

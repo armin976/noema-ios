@@ -11,7 +11,7 @@ public final class CloudKitRelay: @unchecked Sendable {
     private var provider: InferenceProvider = EchoProvider()
     private var subscriptionID = "conversation-updates"
     private var fallbackPollTask: Task<Void, Never>?
-    private let fallbackPollIntervalNanoseconds: UInt64 = 15_000_000_000 // 15 seconds
+    private let fallbackPollIntervalNanoseconds: UInt64 = 3_000_000_000 // 3 seconds
     private let pollGate = AsyncSemaphore(value: 1) // serialize CloudKit polls
     private var lastPollingErrorMessage: String?
     private var lastPollingErrorDate: Date?
@@ -49,6 +49,7 @@ public final class CloudKitRelay: @unchecked Sendable {
         record["lastUpdated"] = Date() as CKRecordValue
         record["needsResponse"] = NSNumber(value: env.needsResponse ? 1 : 0)
         record["status"] = env.status.rawValue as CKRecordValue
+        record["conversationIDString"] = env.conversationID.uuidString as CKRecordValue
         if let updatedAt = env.statusUpdatedAt {
             record["statusUpdatedAt"] = updatedAt as CKRecordValue
         } else {
@@ -65,14 +66,32 @@ public final class CloudKitRelay: @unchecked Sendable {
 
     public func fetchEnvelope(conversationID: UUID) async throws -> RelayEnvelope? {
         guard let db else { throw InferenceError.notConfigured }
-        let recordID = CKRecord.ID(recordName: conversationID.uuidString)
+        let uuidString = conversationID.uuidString
+        // Use CKQuery to bypass local CloudKit cache and always fetch from
+        // the server. The convenience db.record(for:) can return a stale
+        // cached record when another device (the Mac) updated it.
+        let predicate = NSPredicate(format: "conversationIDString == %@", uuidString)
+        let query = CKQuery(recordType: "Conversation", predicate: predicate)
         do {
+            let (matchResults, _) = try await db.records(matching: query)
+            if let (_, result) = matchResults.first {
+                let record = try result.get()
+                guard let data = record["conversationData"] as? Data else { return nil }
+                let envelope = try decoder.decode(RelayEnvelope.self, from: data)
+                log("Fetched envelope for conversation \(uuidString) status=\(envelope.status.rawValue) needsResponse=\(envelope.needsResponse) messages=\(envelope.messages.count)")
+                return envelope
+            }
+            // Query returned no results — the conversationIDString index may
+            // not be ready yet (first run). Fall back to a direct record fetch
+            // which may be cached but is better than returning nil.
+            let recordID = CKRecord.ID(recordName: uuidString)
             let record = try await db.record(for: recordID)
             guard let data = record["conversationData"] as? Data else { return nil }
-            log("Fetched envelope for conversation \(conversationID.uuidString)")
-            return try decoder.decode(RelayEnvelope.self, from: data)
+            let envelope = try decoder.decode(RelayEnvelope.self, from: data)
+            log("Fetched envelope (fallback) for conversation \(uuidString) status=\(envelope.status.rawValue) needsResponse=\(envelope.needsResponse) messages=\(envelope.messages.count)")
+            return envelope
         } catch let error as CKError where error.code == .unknownItem {
-            log("No envelope exists for conversation \(conversationID.uuidString)")
+            log("No envelope exists for conversation \(uuidString)")
             return nil
         }
     }
@@ -154,7 +173,15 @@ public final class CloudKitRelay: @unchecked Sendable {
                             await self.workers.acquire()
                             defer {
                                 Task { await self.workers.release() }
-                                Task { await self.inFlight.remove(key) }
+                                // Keep the key in-flight for 30 seconds after
+                                // processing completes.  CloudKit queries can
+                                // return stale needsResponse==1 results right
+                                // after a save; the cooldown prevents the Mac
+                                // from re-processing the same conversation.
+                                Task {
+                                    try? await Task.sleep(nanoseconds: 30_000_000_000)
+                                    await self.inFlight.remove(key)
+                                }
                             }
                             await self.process(record: record, database: db)
                         }
@@ -240,6 +267,7 @@ public final class CloudKitRelay: @unchecked Sendable {
                 updatedRecord["lastUpdated"] = Date() as CKRecordValue
                 updatedRecord["needsResponse"] = NSNumber(value: finalNeedsResponse ? 1 : 0)
                 updatedRecord["status"] = mergedEnvelope.status.rawValue as CKRecordValue
+                updatedRecord["conversationIDString"] = mergedEnvelope.conversationID.uuidString as CKRecordValue
                 if let updatedAt = mergedEnvelope.statusUpdatedAt {
                     updatedRecord["statusUpdatedAt"] = updatedAt as CKRecordValue
                 } else {
@@ -305,6 +333,7 @@ public final class CloudKitRelay: @unchecked Sendable {
             workingRecord["lastUpdated"] = Date() as CKRecordValue
             workingRecord["needsResponse"] = NSNumber(value: mutatedEnvelope.needsResponse ? 1 : 0)
             workingRecord["status"] = mutatedEnvelope.status.rawValue as CKRecordValue
+            workingRecord["conversationIDString"] = mutatedEnvelope.conversationID.uuidString as CKRecordValue
             if let updatedAt = mutatedEnvelope.statusUpdatedAt {
                 workingRecord["statusUpdatedAt"] = updatedAt as CKRecordValue
             } else {

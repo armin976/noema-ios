@@ -18,6 +18,9 @@ import AppKit
 /// active model supports vision input and honors the five-image cap.
 struct VisionAttachmentButton: View {
     @EnvironmentObject private var vm: ChatVM
+    @EnvironmentObject private var modelManager: AppModelManager
+    @EnvironmentObject private var datasetManager: DatasetManager
+    @ObservedObject private var settings = SettingsStore.shared
 #if os(macOS)
     @State private var isProcessingImport = false
 #else
@@ -28,17 +31,28 @@ struct VisionAttachmentButton: View {
     @State private var showCameraCapture = false
     @State private var recentAssets: [PHAsset] = []
     @State private var thumbnailCache: [String: UIImage] = [:]
+    @State private var recentAssetAttachmentURLs: [String: URL] = [:]
     @State private var isLoadingRecents = false
     @State private var photoAccessDenied = false
     @State private var cameraUnavailableAlert = false
 #endif
 #endif
     @State private var showDisabledReason = false
+    @State private var showWebSearchDisabledReason = false
+    @State private var showPythonDisabledReason = false
+    @AppStorage("hasSeenWebSearchNotice") private var hasSeenWebSearchNotice = false
+    @State private var showWebSearchNotice = false
+#if os(macOS) || os(visionOS)
+    @State private var showActionMenu = false
+#endif
 
 #if os(macOS)
-    private let size: CGFloat = 24
+    private let size: CGFloat = 15
 #else
     private let size: CGFloat = 28
+#endif
+#if os(iOS)
+    private let controlSize: CGFloat = 48
 #endif
 
 #if os(visionOS)
@@ -47,12 +61,46 @@ struct VisionAttachmentButton: View {
 #endif
 
     private let maxImages = 5
+    private let showWebSearchOption: Bool
+    private let showPythonOption: Bool
+    private let showPlusIcon: Bool
+    private let onModelRequiredTap: (() -> Void)?
+
+    init(
+        showWebSearchOption: Bool = false,
+        showPythonOption: Bool = false,
+        showPlusIcon: Bool = false,
+        onModelRequiredTap: (() -> Void)? = nil
+    ) {
+        self.showWebSearchOption = showWebSearchOption
+        self.showPythonOption = showPythonOption
+        self.showPlusIcon = showPlusIcon
+        self.onModelRequiredTap = onModelRequiredTap
+    }
 
     var body: some View {
         Group {
 #if os(macOS)
             Button(action: handleTap) {
                 buttonContent
+            }
+            .popover(isPresented: $showActionMenu, arrowEdge: .bottom) {
+                MacQuickActionPopover(
+                    showsPhotoAction: showPlusIcon,
+                    attachmentsDisabled: attachmentsDisabled,
+                    attachmentsDisabledReason: disabledReason,
+                    showsWebSearchAction: showWebSearchOption,
+                    webSearchArmed: settings.webSearchArmed,
+                    webSearchDisabled: webSearchDisabled,
+                    webSearchDisabledReason: webSearchDisabledReason,
+                    showsPythonAction: showPythonOption,
+                    pythonArmed: settings.pythonArmed,
+                    pythonDisabled: pythonDisabled,
+                    pythonDisabledReason: pythonDisabledReason,
+                    onPhotos: selectPhotosFromMacMenu,
+                    onWebSearch: selectWebSearchFromMacMenu,
+                    onPython: selectPythonFromMacMenu
+                )
             }
 #else
             Button(action: handleTap) {
@@ -71,11 +119,21 @@ struct VisionAttachmentButton: View {
 #if os(iOS)
             .sheet(isPresented: $showAttachmentTray) {
                 AttachmentTray(
+                    showsPhotoSection: UIConstants.showMultimodalUI && vm.supportsImageInput,
                     recentAssets: recentAssets,
                     thumbnails: thumbnailCache,
+                    selectedAssetIDs: Set(recentAssetAttachmentURLs.keys),
                     isLoading: isLoadingRecents,
                     remainingSlots: remainingSlots,
                     photoAccessGranted: !photoAccessDenied,
+                    showsWebSearchAction: showWebSearchOption,
+                    webSearchArmed: settings.webSearchArmed,
+                    webSearchDisabled: webSearchDisabled,
+                    webSearchDisabledReason: webSearchDisabledReason,
+                    showsPythonAction: showPythonOption,
+                    pythonArmed: settings.pythonArmed,
+                    pythonDisabled: pythonDisabled,
+                    pythonDisabledReason: pythonDisabledReason,
                     onCamera: {
                         showAttachmentTray = false
                         openCamera()
@@ -84,11 +142,21 @@ struct VisionAttachmentButton: View {
                         showAttachmentTray = false
                         showPicker = true
                     },
+                    onWebSearchTap: {
+                        showAttachmentTray = false
+                        toggleWebSearch()
+                    },
+                    onPythonTap: {
+                        showAttachmentTray = false
+                        togglePython()
+                    },
                     onAssetTap: { asset in
-                        Task { await handleRecentAssetTap(asset) }
+                        Task { @MainActor in
+                            await toggleRecentAssetSelection(asset)
+                        }
                     }
                 )
-                .presentationDetents([.height(200)])
+                .presentationDetents([.height(attachmentTrayHeight)])
                 .presentationDragIndicator(.hidden)
                 .presentationBackground(.ultraThinMaterial)
             }
@@ -105,15 +173,91 @@ struct VisionAttachmentButton: View {
 #endif
 #endif
         }
+#if os(visionOS)
+        .confirmationDialog("Actions", isPresented: $showActionMenu, titleVisibility: .hidden) {
+            if UIConstants.showMultimodalUI && vm.supportsImageInput {
+                Button("Add Photos") {
+                    showPicker = true
+                }
+                .disabled(attachmentsDisabled)
+            }
+            if showWebSearchOption {
+                if settings.webSearchArmed {
+                    Button("Disable Web Search") { toggleWebSearch() }
+                        .disabled(webSearchDisabled)
+                } else {
+                    Button("Enable Web Search") { toggleWebSearch() }
+                        .disabled(webSearchDisabled)
+                }
+            }
+            if showPythonOption {
+                if settings.pythonArmed {
+                    Button("Disable Python") { togglePython() }
+                        .disabled(pythonDisabled)
+                } else {
+                    Button("Enable Python") { togglePython() }
+                        .disabled(pythonDisabled)
+                }
+            }
+            Button("Cancel", role: .cancel) { }
+        }
+#endif
         .buttonStyle(.plain)
-        .accessibilityLabel(Text("Attach Photos"))
+        .accessibilityLabel(Text(accessibilityLabelText))
         .accessibilityHint(Text(accessibilityHintText))
+        .accessibilityIdentifier(accessibilityIdentifierText)
         .help(helpText)
         .alert("Vision Attachments Unavailable", isPresented: $showDisabledReason) {
             Button("OK", role: .cancel) { }
         } message: {
             Text(disabledReason)
         }
+        .alert("Web Search Unavailable", isPresented: $showWebSearchDisabledReason) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(webSearchDisabledReason)
+        }
+        .alert("Python Unavailable", isPresented: $showPythonDisabledReason) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(pythonDisabledReason)
+        }
+        .alert("Tool Calling", isPresented: $showWebSearchNotice) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("Tool calling isn't perfect. Although Noema implements many methods of detecting and instructing models to use tools, not all LLMs will follow instructions and some might not call them correctly or at all. Tool calling heavily depends on model pre-training and will get better as time passes.")
+        }
+        .onChangeCompat(of: datasetActive) { _, active in
+            if showWebSearchOption && active && settings.webSearchArmed { settings.webSearchArmed = false }
+            if showPythonOption && active && settings.pythonArmed { settings.pythonArmed = false }
+        }
+        .onChangeCompat(of: webSearchBlockedByModelFormat) { _, blocked in
+            if showWebSearchOption && blocked && settings.webSearchArmed { settings.webSearchArmed = false }
+        }
+        .onChangeCompat(of: isMLXModel) { _, isMLX in
+            if showPythonOption && isMLX && settings.pythonArmed { settings.pythonArmed = false }
+        }
+        .onChangeCompat(of: hasActiveChatModel) { _, active in
+            if showWebSearchOption && !active && settings.webSearchArmed { settings.webSearchArmed = false }
+            if showPythonOption && !active && settings.pythonArmed { settings.pythonArmed = false }
+        }
+        .onAppear {
+            if showWebSearchOption {
+                if datasetActive && settings.webSearchArmed { settings.webSearchArmed = false }
+                if webSearchBlockedByModelFormat && settings.webSearchArmed { settings.webSearchArmed = false }
+                if !hasActiveChatModel && settings.webSearchArmed { settings.webSearchArmed = false }
+            }
+            if showPythonOption {
+                if datasetActive && settings.pythonArmed { settings.pythonArmed = false }
+                if isMLXModel && settings.pythonArmed { settings.pythonArmed = false }
+                if !hasActiveChatModel && settings.pythonArmed { settings.pythonArmed = false }
+            }
+        }
+#if os(iOS)
+        .onChangeCompat(of: vm.pendingImageURLs) { _, urls in
+            pruneRecentAssetSelection(using: urls)
+        }
+#endif
 #if os(iOS)
         .alert("Photo Access Needed", isPresented: $photoAccessDenied) {
             Button("Cancel", role: .cancel) { }
@@ -137,7 +281,13 @@ struct VisionAttachmentButton: View {
 #if os(visionOS)
             .frame(width: visionButtonSize.width, height: visionButtonSize.height)
 #else
+#if os(iOS)
+            .frame(width: controlSize, height: controlSize)
+#elseif os(macOS)
+            .frame(width: 40, height: 40)
+#else
             .padding(10)
+#endif
 #endif
             .background(buttonBackground)
             .overlay(alignment: .topTrailing) {
@@ -150,6 +300,9 @@ struct VisionAttachmentButton: View {
     }
 
     private var iconName: String {
+        if showPlusIcon || showWebSearchOption || showPythonOption {
+            return "plus"
+        }
         if vm.pendingImageURLs.count > 0 {
             return "photo.stack.fill"
         }
@@ -160,35 +313,79 @@ struct VisionAttachmentButton: View {
         max(0, maxImages - vm.pendingImageURLs.count)
     }
 
-    private var isDisabled: Bool {
+#if os(iOS)
+    private var attachmentTrayHeight: CGFloat {
+        let hasPhotos = UIConstants.showMultimodalUI && vm.supportsImageInput
+        let toolRowCount = (showWebSearchOption ? 1 : 0) + (showPythonOption ? 1 : 0)
+        if hasPhotos {
+            return 200 + CGFloat(toolRowCount * 80)
+        } else {
+            return CGFloat(max(100, toolRowCount * 90 + 30))
+        }
+    }
+#endif
+
+    private var hasActiveChatModel: Bool { vm.hasActiveChatModel }
+
+    private var functionCallingSupport: Bool? {
+        UserDefaults.standard.object(forKey: "currentModelSupportsFunctionCalling") as? Bool
+    }
+
+    private var attachmentsDisabled: Bool {
         guard UIConstants.showMultimodalUI else { return true }
         if remainingSlots == 0 { return true }
         if !vm.supportsImageInput { return true }
-        if !vm.modelLoaded { return true }
+        if !hasActiveChatModel { return true }
         return false
+    }
+
+    private var isDisabled: Bool {
+        if showWebSearchOption || showPythonOption {
+            return attachmentsDisabled && webSearchDisabled && pythonDisabled
+        }
+        return attachmentsDisabled
     }
 
     private var foregroundColor: Color {
         if isDisabled { return .secondary }
-        return vm.pendingImageURLs.isEmpty ? .primary : Color.white
+        return hasActiveState ? .white : .primary
+    }
+
+    private var vividPlusMenuYellow: Color {
+        Color(red: 1.0, green: 0.82, blue: 0.04)
+    }
+
+    private var activeTintColor: Color {
+        if !vm.pendingImageURLs.isEmpty { return Color.visionAccent }
+        if showPlusIcon { return vividPlusMenuYellow }
+        return Color.accentColor
     }
 
     private var backgroundFill: Color {
         if isDisabled { return Color.gray.opacity(0.12) }
-        if vm.pendingImageURLs.isEmpty { return Color(.systemBackground).opacity(0.9) }
-        return Color.visionAccent
+        if hasActiveState {
+            return activeTintColor
+        }
+        return Color(.systemBackground).opacity(0.9)
     }
 
     private var borderColor: Color {
-        if vm.pendingImageURLs.isEmpty {
+        if !hasActiveState {
             return isDisabled ? Color.gray.opacity(0.2) : Color.gray.opacity(0.25)
         }
         return .clear
     }
 
     private var glowColor: Color {
-        if vm.pendingImageURLs.isEmpty { return .clear }
-        return Color.visionAccent.opacity(0.45)
+        if !hasActiveState { return .clear }
+        let glowOpacity: Double = (showPlusIcon && vm.pendingImageURLs.isEmpty) ? 0.62 : 0.45
+        return activeTintColor.opacity(glowOpacity)
+    }
+
+    private var hasActiveState: Bool {
+        !vm.pendingImageURLs.isEmpty
+            || (showWebSearchOption && settings.webSearchArmed)
+            || (showPythonOption && settings.pythonArmed)
     }
 
 #if os(visionOS)
@@ -205,48 +402,143 @@ struct VisionAttachmentButton: View {
 #else
     @ViewBuilder
     private var buttonBackground: some View {
-        Circle()
-            .fill(backgroundFill)
+#if os(iOS)
+        let shape = Circle()
+        let emphasizePlusMenuActive = showPlusIcon && hasActiveState && vm.pendingImageURLs.isEmpty
+        shape
+            .fill(Color.clear)
+            .glassifyIfAvailable(in: shape)
             .overlay(
-                Circle()
-                    .strokeBorder(borderColor, lineWidth: vm.pendingImageURLs.isEmpty ? 0.75 : 0)
+                shape.fill(
+                    hasActiveState
+                        ? backgroundFill.opacity(emphasizePlusMenuActive ? 0.48 : 0.28)
+                        : Color.white.opacity(isDisabled ? 0.04 : 0.10)
+                )
             )
-            .shadow(color: glowColor, radius: vm.pendingImageURLs.isEmpty ? 0 : 8)
+            .overlay(
+                shape.strokeBorder(
+                    emphasizePlusMenuActive
+                        ? vividPlusMenuYellow.opacity(0.82)
+                        : Color.white.opacity(isDisabled ? 0.14 : 0.32),
+                    lineWidth: emphasizePlusMenuActive ? 0.9 : 0.75
+                )
+            )
+            .shadow(
+                color: isDisabled ? .clear : glowColor,
+                radius: hasActiveState ? 10 : 6,
+                y: hasActiveState ? 5 : 3
+            )
+#else
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
+        shape
+            .fill(
+                hasActiveState
+                    ? activeTintColor.opacity(showPlusIcon ? 0.24 : 0.20)
+                    : Color.primary.opacity(isDisabled ? 0.035 : 0.055)
+            )
+            .overlay(
+                shape.strokeBorder(
+                    hasActiveState
+                        ? activeTintColor.opacity(showPlusIcon ? 0.52 : 0.36)
+                        : Color.primary.opacity(isDisabled ? 0.08 : 0.14),
+                    lineWidth: 0.8
+                )
+            )
+            .overlay(
+                shape
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(isDisabled ? 0.02 : 0.08),
+                                Color.white.opacity(0.0)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .allowsHitTesting(false)
+            )
+            .shadow(color: hasActiveState ? glowColor.opacity(0.7) : .clear, radius: 7, y: 3)
+#endif
     }
 #endif
 
     private var disabledReason: String {
         if !UIConstants.showMultimodalUI {
-            return "Vision features are disabled by configuration."
+            return String(localized: "Vision features are disabled by configuration.")
         }
-        if !vm.modelLoaded {
-            return "Load a model before attaching images."
+        if !hasActiveChatModel {
+            return String(localized: "Load a model before attaching images.")
         }
         if !vm.supportsImageInput {
-            return "The active model can't process images."
+            return String(localized: "The active model can't process images.")
         }
         if remainingSlots == 0 {
-            return "You've already attached the maximum of \(maxImages) images."
+            return String.localizedStringWithFormat(String(localized: "You've already attached the maximum of %d images."), maxImages)
         }
-        return "Vision attachments are currently unavailable."
+        return String(localized: "Vision attachments are currently unavailable.")
     }
 
     private var accessibilityHintText: String {
         if isDisabled {
-            return "Disabled: \(disabledReason)"
+            if showWebSearchOption || showPythonOption {
+                return String.localizedStringWithFormat(String(localized: "Disabled: %1$@ %2$@"), disabledReason, webSearchDisabledReason)
+            }
+            return String.localizedStringWithFormat(String(localized: "Disabled: %@"), disabledReason)
         }
-        return vm.pendingImageURLs.isEmpty ? "Add photos to your next message." : "Add more photos or review attached images."
+        if showWebSearchOption || showPythonOption {
+            return String(localized: "Open quick actions for tools and attachments.")
+        }
+        return vm.pendingImageURLs.isEmpty ? String(localized: "Add photos to your next message.") : String(localized: "Add more photos or review attached images.")
     }
 
     private var helpText: String {
-        if isDisabled { return disabledReason }
-        return "Attach up to \(maxImages) images (order preserved). No resizing needed — llama.cpp preprocesses images automatically."
+        if isDisabled {
+            if showWebSearchOption || showPythonOption {
+                return String.localizedStringWithFormat(String(localized: "%@ %@"), disabledReason, webSearchDisabledReason)
+            }
+            return disabledReason
+        }
+        if showWebSearchOption || showPythonOption {
+            return String(localized: "Open quick actions for tools and attachments.")
+        }
+        return String.localizedStringWithFormat(String(localized: "Attach up to %d images (order preserved). No resizing needed — llama.cpp preprocesses images automatically."), maxImages)
+    }
+
+    private var accessibilityLabelText: String {
+        (showWebSearchOption || showPythonOption) ? String(localized: "More actions") : String(localized: "Attach Photos")
+    }
+
+    private var accessibilityIdentifierText: String {
+        (showWebSearchOption || showPythonOption) ? "chat-more-actions-button" : "chat-attachment-button"
     }
 
     private func handleTap() {
         guard !isDisabled else {
-            showDisabledReason = true
+#if os(macOS)
+            if showWebSearchOption || showPythonOption {
+                showActionMenu = true
+                return
+            }
+#endif
+            if (showWebSearchOption || showPythonOption) && !hasActiveChatModel {
+                presentModelRequiredPopup()
+            } else {
+                showDisabledReason = true
+            }
             return
+        }
+        if showWebSearchOption || showPythonOption {
+#if os(macOS) || os(visionOS)
+            showActionMenu = true
+            return
+#elseif os(iOS)
+            if UIConstants.showMultimodalUI && vm.supportsImageInput {
+                Task { await loadRecentsIfNeeded() }
+            }
+            showAttachmentTray = true
+            return
+#endif
         }
 #if os(macOS)
         if !isProcessingImport {
@@ -261,7 +553,166 @@ struct VisionAttachmentButton: View {
 #endif
     }
 
+    private var datasetActive: Bool {
+        if modelManager.activeDataset != nil { return true }
+        if datasetManager.indexingDatasetID != nil { return true }
+        return false
+    }
+
+    private var isRemoteSession: Bool {
+        modelManager.activeRemoteSession != nil
+    }
+
+    private var isMLXModel: Bool {
+        vm.currentModelFormat == .some(.mlx) && !isRemoteSession
+    }
+
+    private var isAFMModel: Bool {
+        vm.currentModelFormat == .some(.afm) && !isRemoteSession
+    }
+
+    private var webSearchBlockedByModelFormat: Bool {
+        isMLXModel || isAFMModel
+    }
+
+    private var webSearchDisabled: Bool {
+        guard showWebSearchOption else { return true }
+        let offGrid = UserDefaults.standard.object(forKey: "offGrid") as? Bool ?? false
+        if webSearchBlockedByModelFormat { return true }
+        return !hasActiveChatModel || offGrid || !settings.webSearchEnabled || datasetActive || functionCallingSupport == false
+    }
+
+    private var webSearchDisabledReason: String {
+        if !hasActiveChatModel {
+            return String(localized: "Open Stored to choose a model to run locally or connect to a remote endpoint.")
+        }
+        if isMLXModel {
+            return String(localized: "Web Search is currently unreliable with MLX models due to MLX limitations.")
+        }
+        if isAFMModel {
+            return String(localized: "Web search is disabled for Apple Foundation Models because their context budget cannot reliably accommodate tool input.")
+        }
+        if functionCallingSupport == false {
+            return String(localized: "This model does not support function calling; web search requires it.")
+        }
+        if datasetActive {
+            return String(localized: "Web search can't be used while a dataset is active or indexing.")
+        }
+        let offGrid = UserDefaults.standard.object(forKey: "offGrid") as? Bool ?? false
+        if offGrid {
+            return String(localized: "Off‑Grid mode is on. Network features like web search are disabled.")
+        }
+        if !settings.webSearchEnabled {
+            return String(localized: "Web Search is turned off in Settings.")
+        }
+        return String(localized: "Web Search is currently unavailable.")
+    }
+
+    private var pythonDisabled: Bool {
+        guard showPythonOption else { return true }
+        if isMLXModel { return true }
+        return !hasActiveChatModel
+            || !settings.pythonEnabled
+            || datasetActive
+            || functionCallingSupport == false
+            || !PythonRuntime.status().isAvailable
+    }
+
+    private var pythonDisabledReason: String {
+        let runtimeStatus = PythonRuntime.status()
+        if !hasActiveChatModel {
+            return String(localized: "Open Stored to choose a model to run locally or connect to a remote endpoint.")
+        }
+        if isMLXModel {
+            return String(localized: "Python is currently unreliable with MLX models due to MLX limitations.")
+        }
+        if functionCallingSupport == false {
+            return String(localized: "This model does not support function calling; Python requires it.")
+        }
+        if datasetActive {
+            return String(localized: "Python can't be used while a dataset is active or indexing.")
+        }
+        if !settings.pythonEnabled {
+            return String(localized: "Python Code Execution is turned off in Settings.")
+        }
+        if runtimeStatus.isAvailable == false, let reason = runtimeStatus.reason, !reason.isEmpty {
+            return reason
+        }
+        return String(localized: "Python is currently unavailable.")
+    }
+
+    private func toggleWebSearch() {
+        guard hasActiveChatModel else {
+            presentModelRequiredPopup()
+            return
+        }
+        guard !webSearchDisabled else {
+            showWebSearchDisabledReason = true
+            return
+        }
+
+        let newValue = !settings.webSearchArmed
+        settings.webSearchArmed = newValue
+#if os(iOS)
+        Haptics.impact(.light)
+#endif
+        if newValue && !hasSeenWebSearchNotice {
+            hasSeenWebSearchNotice = true
+            showWebSearchNotice = true
+        }
+    }
+
+    private func togglePython() {
+        guard hasActiveChatModel else {
+            presentModelRequiredPopup()
+            return
+        }
+        guard !pythonDisabled else {
+            showPythonDisabledReason = true
+            return
+        }
+
+        let newValue = !settings.pythonArmed
+        settings.pythonArmed = newValue
+#if os(iOS)
+        Haptics.impact(.light)
+#endif
+        if newValue && !hasSeenWebSearchNotice {
+            hasSeenWebSearchNotice = true
+            showWebSearchNotice = true
+        }
+    }
+
+    private func presentModelRequiredPopup() {
+        if let onModelRequiredTap {
+            onModelRequiredTap()
+        } else {
+            showDisabledReason = true
+        }
+    }
+
 #if os(macOS)
+    private func selectPhotosFromMacMenu() {
+        showActionMenu = false
+        guard !attachmentsDisabled else {
+            showDisabledReason = true
+            return
+        }
+        guard !isProcessingImport else { return }
+        isProcessingImport = true
+        Task { await presentOpenPanel() }
+    }
+
+    private func selectWebSearchFromMacMenu() {
+        showActionMenu = false
+        toggleWebSearch()
+    }
+
+    private func selectPythonFromMacMenu() {
+        showActionMenu = false
+        togglePython()
+    }
+
     @MainActor
     private func presentOpenPanel() async {
         defer { isProcessingImport = false }
@@ -287,7 +738,6 @@ struct VisionAttachmentButton: View {
 #if os(iOS)
     @MainActor
     private func loadRecentsIfNeeded() async {
-        guard remainingSlots > 0 else { return }
         guard recentAssets.isEmpty else { return }
         let authorized = await requestPhotoAuthorization()
         if !authorized {
@@ -347,11 +797,23 @@ struct VisionAttachmentButton: View {
         isLoadingRecents = false
     }
 
-    private func handleRecentAssetTap(_ asset: PHAsset) async {
-        guard remainingSlots > 0 else { return }
+    private func toggleRecentAssetSelection(_ asset: PHAsset) async {
         let id = asset.localIdentifier
+        if let attachedURL = recentAssetAttachmentURLs[id] {
+            if let index = vm.pendingImageURLs.firstIndex(of: attachedURL) {
+                vm.removePendingImage(at: index)
+            }
+            recentAssetAttachmentURLs.removeValue(forKey: id)
+            return
+        }
+
+        guard remainingSlots > 0 else { return }
+        let previousURLs = Set(vm.pendingImageURLs)
         if let cached = thumbnailCache[id] {
             await vm.savePendingImage(cached)
+            if let addedURL = vm.pendingImageURLs.last(where: { !previousURLs.contains($0) }) {
+                recentAssetAttachmentURLs[id] = addedURL
+            }
             return
         }
 
@@ -367,7 +829,15 @@ struct VisionAttachmentButton: View {
         }
         if let selected {
             await vm.savePendingImage(selected)
+            if let addedURL = vm.pendingImageURLs.last(where: { !previousURLs.contains($0) }) {
+                recentAssetAttachmentURLs[id] = addedURL
+            }
         }
+    }
+
+    private func pruneRecentAssetSelection(using pendingURLs: [URL]) {
+        let active = Set(pendingURLs)
+        recentAssetAttachmentURLs = recentAssetAttachmentURLs.filter { active.contains($0.value) }
     }
 
     private func openCamera() {
@@ -390,9 +860,8 @@ struct VisionAttachmentButton: View {
             return
         }
         for item in items.prefix(allowance) {
-            if let data = try? await item.loadTransferable(type: Data.self),
-               let image = UIImage(data: data) {
-                await vm.savePendingImage(image)
+            if let data = try? await item.loadTransferable(type: Data.self) {
+                await vm.savePendingImageData(data)
             }
         }
         await MainActor.run { pickerItems.removeAll() }
@@ -417,58 +886,275 @@ private struct BadgeView: View {
     }
 }
 
+#if os(macOS)
+private struct MacQuickActionPopover: View {
+    let showsPhotoAction: Bool
+    let attachmentsDisabled: Bool
+    let attachmentsDisabledReason: String
+    let showsWebSearchAction: Bool
+    let webSearchArmed: Bool
+    let webSearchDisabled: Bool
+    let webSearchDisabledReason: String
+    let showsPythonAction: Bool
+    let pythonArmed: Bool
+    let pythonDisabled: Bool
+    let pythonDisabledReason: String
+    let onPhotos: () -> Void
+    let onWebSearch: () -> Void
+    let onPython: () -> Void
+
+    var body: some View {
+        VStack(spacing: 3) {
+            if showsPhotoAction {
+                MacQuickActionRow(
+                    icon: "photo.on.rectangle",
+                    title: String(localized: "Add Photos"),
+                    stateText: attachmentsDisabled ? String(localized: "Unavailable") : nil,
+                    isArmed: false,
+                    isUnavailable: attachmentsDisabled,
+                    unavailableReason: attachmentsDisabledReason,
+                    action: onPhotos
+                )
+            }
+
+            if showsWebSearchAction {
+                MacQuickActionRow(
+                    icon: "globe",
+                    title: String(localized: "Web Search"),
+                    stateText: webSearchDisabled ? String(localized: "Unavailable") : webSearchArmed ? String(localized: "Enabled") : String(localized: "Disabled"),
+                    isArmed: webSearchArmed,
+                    isUnavailable: webSearchDisabled,
+                    unavailableReason: webSearchDisabledReason,
+                    action: onWebSearch
+                )
+            }
+
+            if showsPythonAction {
+                MacQuickActionRow(
+                    icon: "chevron.left.forwardslash.chevron.right",
+                    title: String(localized: "Python"),
+                    stateText: pythonDisabled ? String(localized: "Unavailable") : pythonArmed ? String(localized: "Enabled") : String(localized: "Disabled"),
+                    isArmed: pythonArmed,
+                    isUnavailable: pythonDisabled,
+                    unavailableReason: pythonDisabledReason,
+                    action: onPython
+                )
+            }
+        }
+        .padding(6)
+        .frame(width: 224)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.8)
+        )
+        .padding(2)
+    }
+}
+
+private struct MacQuickActionRow: View {
+    let icon: String
+    let title: String
+    let stateText: String?
+    let isArmed: Bool
+    let isUnavailable: Bool
+    let unavailableReason: String
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 9) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 16, height: 16)
+                    .foregroundStyle(iconStyle)
+
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+
+                Spacer(minLength: 8)
+
+                if let stateText {
+                    Text(stateText)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .foregroundStyle(isUnavailable ? .secondary : .primary)
+            .padding(.horizontal, 9)
+            .frame(height: 32)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(isHovering ? Color.primary.opacity(0.08) : Color.clear)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .opacity(isUnavailable ? 0.56 : 1)
+        .help(isUnavailable ? unavailableReason : title)
+        .onHover { isHovering = $0 }
+        .accessibilityHint(isUnavailable ? Text(unavailableReason) : Text(""))
+    }
+
+    private var iconStyle: Color {
+        if isUnavailable { return .secondary }
+        if isArmed { return .accentColor }
+        return .primary
+    }
+}
+#endif
+
 #if os(iOS)
 private struct AttachmentTray: View {
+    let showsPhotoSection: Bool
     let recentAssets: [PHAsset]
     let thumbnails: [String: UIImage]
+    let selectedAssetIDs: Set<String>
     let isLoading: Bool
     let remainingSlots: Int
     let photoAccessGranted: Bool
+    let showsWebSearchAction: Bool
+    let webSearchArmed: Bool
+    let webSearchDisabled: Bool
+    let webSearchDisabledReason: String
+    let showsPythonAction: Bool
+    let pythonArmed: Bool
+    let pythonDisabled: Bool
+    let pythonDisabledReason: String
     let onCamera: () -> Void
     let onAllPhotos: () -> Void
+    let onWebSearchTap: () -> Void
+    let onPythonTap: () -> Void
     let onAssetTap: (PHAsset) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Spacer()
-                Button(action: onAllPhotos) {
-                    Text("All Photos")
-                        .font(.subheadline.weight(.semibold))
+            if showsPhotoSection {
+                HStack {
+                    Spacer()
+                    Button(action: onAllPhotos) {
+                        Text("All Photos")
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(remainingSlots == 0)
+                    .accessibilityIdentifier("chat-attachments-all-photos")
                 }
-                .buttonStyle(.plain)
-            }
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 14) {
-                    cameraTile
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 14) {
+                        cameraTile
 
-                    if isLoading {
-                        ForEach(0..<6, id: \.self) { _ in placeholderTile }
-                    } else if photoAccessGranted {
-                        if recentAssets.isEmpty {
-                            emptyTile
-                        } else {
-                            ForEach(recentAssets, id: \.localIdentifier) { asset in
-                                if let image = thumbnails[asset.localIdentifier] {
-                                    thumbnailTile(image: image) { onAssetTap(asset) }
-                                } else {
-                                    placeholderTile
-                                        .onTapGesture { onAssetTap(asset) }
+                        if isLoading {
+                            ForEach(0..<6, id: \.self) { _ in placeholderTile() }
+                        } else if photoAccessGranted {
+                            if recentAssets.isEmpty {
+                                emptyTile
+                            } else {
+                                ForEach(Array(recentAssets.enumerated()), id: \.element.localIdentifier) { index, asset in
+                                    let isSelected = selectedAssetIDs.contains(asset.localIdentifier)
+                                    if let image = thumbnails[asset.localIdentifier] {
+                                        thumbnailTile(
+                                            image: image,
+                                            index: index,
+                                            isSelected: isSelected
+                                        ) {
+                                            onAssetTap(asset)
+                                        }
+                                    } else {
+                                        thumbnailPlaceholderTile(
+                                            index: index,
+                                            isSelected: isSelected
+                                        ) {
+                                            onAssetTap(asset)
+                                        }
+                                    }
                                 }
                             }
+                        } else {
+                            permissionTile
                         }
-                    } else {
-                        permissionTile
                     }
+                    .padding(.horizontal, 6)
+                    .padding(.bottom, 6)
                 }
-                .padding(.horizontal, 6)
-                .padding(.bottom, 6)
+            }
+
+            if showsWebSearchAction {
+                if showsPhotoSection { Divider().padding(.top, 2) }
+
+                toolRow(
+                    icon: "globe",
+                    title: String(localized: "Web Search"),
+                    subtitle: webSearchDisabled ? webSearchDisabledReason : (webSearchArmed ? String(localized: "Enabled") : String(localized: "Disabled")),
+                    isArmed: webSearchArmed,
+                    isDisabled: webSearchDisabled,
+                    identifier: "chat-tool-web-search",
+                    action: onWebSearchTap
+                )
+            }
+
+            if showsPythonAction {
+                if showsPhotoSection || showsWebSearchAction { Divider().padding(.top, 2) }
+
+                toolRow(
+                    icon: "chevron.left.forwardslash.chevron.right",
+                    title: String(localized: "Python"),
+                    subtitle: pythonDisabled ? pythonDisabledReason : (pythonArmed ? String(localized: "Enabled") : String(localized: "Disabled")),
+                    isArmed: pythonArmed,
+                    isDisabled: pythonDisabled,
+                    identifier: "chat-tool-python",
+                    action: onPythonTap
+                )
             }
         }
         .padding(.vertical, 14)
         .padding(.horizontal, 14)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chat-attachment-tray")
+    }
+
+    private func toolRow(icon: String, title: String, subtitle: String, isArmed: Bool, isDisabled: Bool, identifier: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(isDisabled ? .secondary : .primary)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(isDisabled ? .secondary : .primary)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+
+                Spacer(minLength: 8)
+
+                if isArmed && !isDisabled {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color(.secondarySystemBackground).opacity(0.7))
+            )
+        }
+        .buttonStyle(.plain)
+        .opacity(isDisabled ? 0.75 : 1)
+        .accessibilityIdentifier(identifier)
     }
 
     private var cameraTile: some View {
@@ -487,27 +1173,88 @@ private struct AttachmentTray: View {
             .frame(width: 96, height: 96)
         }
         .buttonStyle(.plain)
+        .disabled(remainingSlots == 0)
+        .accessibilityLabel(Text("Take Photo"))
+        .accessibilityHint(Text("Opens the camera to attach a photo to your next message."))
+        .accessibilityIdentifier("chat-attachments-camera")
     }
 
-    private func thumbnailTile(image: UIImage, action: @escaping () -> Void) -> some View {
+    private func thumbnailTile(image: UIImage, index: Int, isSelected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(platformImage: image)
-                .resizable()
-                .scaledToFill()
-                .frame(width: 96, height: 96)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            ZStack(alignment: .topTrailing) {
+                Image(platformImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 96, height: 96)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .strokeBorder(
+                                isSelected ? Color.accentColor : Color.white.opacity(0.12),
+                                lineWidth: isSelected ? 2 : 0.8
+                            )
+                    )
+                if isSelected {
+                    selectionBadge
+                        .padding(6)
+                        .transition(.scale(scale: 0.85).combined(with: .opacity))
+                }
+            }
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(Text(String.localizedStringWithFormat(String(localized: "Recent photo %d"), index + 1)))
+        .accessibilityValue(isSelected ? Text("Selected") : Text(""))
+        .accessibilityHint(Text(isSelected ? "Removes this photo from your next message." : "Adds this photo to your next message."))
+        .accessibilityIdentifier("chat-attachment-recent-\(index + 1)")
     }
 
-    private var placeholderTile: some View {
+    private func placeholderTile(isSelected: Bool = false) -> some View {
         RoundedRectangle(cornerRadius: 18, style: .continuous)
             .fill(Color.secondary.opacity(0.14))
             .frame(width: 96, height: 96)
             .overlay(
-                ProgressView()
-                    .progressViewStyle(.circular)
+                ZStack(alignment: .topTrailing) {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                    if isSelected {
+                        selectionBadge
+                            .padding(6)
+                            .transition(.scale(scale: 0.85).combined(with: .opacity))
+                    }
+                }
             )
+            .accessibilityHidden(true)
+    }
+
+    private func thumbnailPlaceholderTile(index: Int, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.secondary.opacity(0.14))
+                .frame(width: 96, height: 96)
+                .overlay(
+                    ZStack(alignment: .topTrailing) {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                        if isSelected {
+                            selectionBadge
+                                .padding(6)
+                                .transition(.scale(scale: 0.85).combined(with: .opacity))
+                        }
+                    }
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text(String.localizedStringWithFormat(String(localized: "Recent photo %d"), index + 1)))
+        .accessibilityValue(isSelected ? Text("Selected") : Text(""))
+        .accessibilityHint(Text(isSelected ? "Removes this photo from your next message." : "Adds this photo to your next message."))
+        .accessibilityIdentifier("chat-attachment-recent-\(index + 1)")
+    }
+
+    private var selectionBadge: some View {
+        Image(systemName: "checkmark.circle.fill")
+            .font(.system(size: 20, weight: .semibold))
+            .foregroundStyle(.white, Color.accentColor)
+            .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
     }
 
     private var emptyTile: some View {
@@ -520,6 +1267,7 @@ private struct AttachmentTray: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 12)
             }
+            .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder
@@ -538,6 +1286,7 @@ private struct AttachmentTray: View {
                 }
                 .padding(.horizontal, 12)
             }
+            .accessibilityElement(children: .combine)
     }
 }
 

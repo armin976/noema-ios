@@ -236,6 +236,9 @@ struct MainView: View {
         tabRouter.selection == .chat ? 64 : 24
     }
     private var notificationsHorizontalPadding: CGFloat { max(detailHorizontalPadding, 24) }
+    private var notificationsTrailingPadding: CGFloat {
+        tabRouter.selection == .chat ? 88 : notificationsHorizontalPadding
+    }
 
     private var detailContainer: some View {
         ZStack(alignment: .topLeading) {
@@ -255,18 +258,18 @@ struct MainView: View {
             .animation(.spring(response: 0.36, dampingFraction: 0.85), value: macModalPresenter.isPresented)
             .allowsHitTesting(!macModalPresenter.isPresented)
 
-            // Non-interactive notifications so clicks pass through to toolbar/buttons
             VStack(spacing: 12) {
-                IndexingNotificationView(datasetManager: datasetManager)
-                    .environmentObject(chatVM)
-                ModelLoadingNotificationView(
+                TopNotificationStack(
+                    datasetManager: datasetManager,
                     modelManager: modelManager,
                     loadingTracker: chatVM.loadingProgressTracker
                 )
             }
             .padding(.top, notificationsTopPadding)
-            .padding(.horizontal, notificationsHorizontalPadding)
-            .allowsHitTesting(false)
+            .padding(.leading, notificationsHorizontalPadding)
+            .padding(.trailing, notificationsTrailingPadding)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .allowsHitTesting(true)
 
             DownloadOverlay()
                 .environmentObject(downloadController)

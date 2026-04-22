@@ -141,7 +141,7 @@ enum ModelBenchmarkService {
         }
 
         log("Starting benchmark for model=\(model.name) format=\(model.format) settings=[\(describe(settings: settingsSnapshot))]")
-        guard model.format != .apple else { throw ModelBenchmarkError.unsupportedFormat }
+        guard model.format != .ane else { throw ModelBenchmarkError.unsupportedFormat }
 
         try Task.checkCancellation()
 

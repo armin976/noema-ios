@@ -16,6 +16,11 @@ actor RemoteChatService {
     struct RequestOptions {
         var stops: [String] = []
         var temperature: Double?
+        var contextLength: Double?
+        var topP: Double?
+        var topK: Int?
+        var minP: Double?
+        var repeatPenalty: Double?
         var includeTools: Bool = false
     }
 
@@ -212,8 +217,26 @@ actor RemoteChatService {
         self.toolSpecs = specs
     }
 
-    func updateOptions(stops: [String], temperature: Double?, includeTools: Bool) {
-        options = RequestOptions(stops: stops, temperature: temperature, includeTools: includeTools)
+    func updateOptions(
+        stops: [String],
+        temperature: Double?,
+        contextLength: Double?,
+        topP: Double?,
+        topK: Int?,
+        minP: Double?,
+        repeatPenalty: Double?,
+        includeTools: Bool
+    ) {
+        options = RequestOptions(
+            stops: stops,
+            temperature: temperature,
+            contextLength: contextLength,
+            topP: topP,
+            topK: topK,
+            minP: minP,
+            repeatPenalty: repeatPenalty,
+            includeTools: includeTools
+        )
     }
 
 #if os(iOS) || os(visionOS)
@@ -517,6 +540,8 @@ actor RemoteChatService {
             sanitizedEntries = [(role: "user", text: text)]
         case .multimodal(let text, _):
             sanitizedEntries = [(role: "user", text: text)]
+        case .multimodalMessages(let messages, _):
+            sanitizedEntries = messages.map { ($0.role, $0.content) }
         }
 #if os(iOS) || os(visionOS)
         let rawEntries = relayFullHistory
@@ -573,6 +598,10 @@ actor RemoteChatService {
             // Do not surface transport medium (Ethernet/Wi‑Fi) as a label
             return ""
         }
+
+        // No Wi-Fi means no local network — skip the reachability probe that
+        // wastes ~7 seconds going through iCloud Private Relay on cellular.
+        if localSSID == nil { return nil }
 
         guard await isLANHostReachable() else { return nil }
         await logger.log("[RemoteChat] [LAN] Reachability probe succeeded for '\(backend.name)' (SSID unavailable, using empty token)")
@@ -730,6 +759,8 @@ actor RemoteChatService {
             let request = try buildRequest(prompt: prompt, kind: kind)
             await notifyTransport(.direct, streaming: true)
 #endif
+            let isLMStudioNativeV1Stream = backend.endpointType == .lmStudio
+                && (request.url?.path.lowercased().contains("/api/v1/chat") ?? false)
             let (bytes, response) = try await URLSession.shared.bytes(for: request)
             try Task.checkCancellation()
             guard let http = response as? HTTPURLResponse else {
@@ -753,15 +784,29 @@ actor RemoteChatService {
             var responseOutputActiveKey: [Int: String] = [:]
             var nextResponseAccumulatorID = 0
             var sawToolCallFinish = false
+            var activeLMStudioToolKey: String?
+            var streamedLMStudioMessageDelta = false
+            var streamedLMStudioReasoningDelta = false
+            var lmStudioReasoningOpen = false
 
             func registerItemID(_ id: String?, key: String) {
                 guard let id, !id.isEmpty else { return }
                 responseItemIndex[id] = key
             }
 
-            func emitToolCallUpdate(for key: String, force: Bool = false) {
+            func emitToolCallUpdate(
+                for key: String,
+                force: Bool = false,
+                requestStatus: String = "requesting",
+                error: String? = nil
+            ) {
                 guard let accumulator = accumulators[key],
-                      let jsonString = makeToolCallJSON(from: accumulator) else { return }
+                      let jsonString = makeToolCallJSON(
+                        from: accumulator,
+                        fallbackToolCallID: key,
+                        requestStatus: requestStatus,
+                        error: error
+                      ) else { return }
                 if !force, lastEmittedToolJSON[key] == jsonString { return }
                 lastEmittedToolJSON[key] = jsonString
                 logToolCallPayload(jsonString)
@@ -801,7 +846,11 @@ actor RemoteChatService {
                     }
                 }
                 accumulators[key] = accumulator
-                emitToolCallUpdate(for: key)
+                emitToolCallUpdate(
+                    for: key,
+                    force: replaceArguments,
+                    requestStatus: replaceArguments ? "ready" : "requesting"
+                )
             }
 
             func updateFunctionAccumulator(_ call: FunctionCallChunk, replaceArguments: Bool) {
@@ -816,7 +865,11 @@ actor RemoteChatService {
                     }
                 }
                 accumulators[key] = accumulator
-                emitToolCallUpdate(for: key)
+                emitToolCallUpdate(
+                    for: key,
+                    force: replaceArguments,
+                    requestStatus: replaceArguments ? "ready" : "requesting"
+                )
             }
 
             func intFromAny(_ value: Any?) -> Int? {
@@ -883,7 +936,7 @@ actor RemoteChatService {
                             accumulator.arguments = arguments
                         }
                         accumulators[key] = accumulator
-                        emitToolCallUpdate(for: key, force: true)
+                        emitToolCallUpdate(for: key, force: true, requestStatus: "requesting")
                     }
                 case "response.function_call_arguments.delta":
                     let defaultIndex = intFromAny(event["output_index"]) ?? 0
@@ -911,7 +964,7 @@ actor RemoteChatService {
                         accumulator.arguments.append(fragment)
                     }
                     accumulators[key] = accumulator
-                    emitToolCallUpdate(for: key)
+                    emitToolCallUpdate(for: key, requestStatus: "requesting")
                 case "response.function_call_arguments.done":
                     let defaultIndex = intFromAny(event["output_index"]) ?? 0
                     let key: String = {
@@ -937,7 +990,7 @@ actor RemoteChatService {
                         accumulator.arguments = arguments
                     }
                     accumulators[key] = accumulator
-                    emitToolCallUpdate(for: key, force: true)
+                    emitToolCallUpdate(for: key, force: true, requestStatus: "ready")
                     sawToolCallFinish = true
                 case "response.completed":
                     sawToolCallFinish = sawToolCallFinish || !accumulators.isEmpty
@@ -958,6 +1011,152 @@ actor RemoteChatService {
                 return nil
             }
 
+            func handleLMStudioStreamEvent(_ event: [String: Any]) -> Error? {
+                guard let type = event["type"] as? String else { return nil }
+                switch type {
+                case "reasoning.start":
+                    if !lmStudioReasoningOpen {
+                        lmStudioReasoningOpen = true
+                        continuation.yield("<think>")
+                    }
+                case "reasoning.delta":
+                    if let content = (event["content"] as? String) ?? (event["delta"] as? String),
+                       !content.isEmpty {
+                        streamedLMStudioReasoningDelta = true
+                        if !lmStudioReasoningOpen {
+                            lmStudioReasoningOpen = true
+                            continuation.yield("<think>")
+                        }
+                        continuation.yield(content)
+                    }
+                case "reasoning.end":
+                    if lmStudioReasoningOpen {
+                        lmStudioReasoningOpen = false
+                        continuation.yield("</think>")
+                    }
+                case "message.delta":
+                    if let content = (event["content"] as? String) ?? (event["delta"] as? String),
+                       !content.isEmpty {
+                        streamedLMStudioMessageDelta = true
+                        continuation.yield(content)
+                    }
+                case "tool_call.start":
+                    let key = activeLMStudioToolKey ?? newResponseAccumulatorKey()
+                    activeLMStudioToolKey = key
+                    var accumulator = accumulators[key, default: ToolCallAccumulator()]
+                    if let toolName = event["tool"] as? String, !toolName.isEmpty {
+                        accumulator.name = toolName
+                    }
+                    if let toolID = event["tool_call_id"] as? String, !toolID.isEmpty {
+                        accumulator.id = toolID
+                    }
+                    accumulators[key] = accumulator
+                    emitToolCallUpdate(for: key, force: true, requestStatus: "requesting")
+                case "tool_call.arguments":
+                    let key = activeLMStudioToolKey ?? newResponseAccumulatorKey()
+                    activeLMStudioToolKey = key
+                    var accumulator = accumulators[key, default: ToolCallAccumulator()]
+                    if let toolName = event["tool"] as? String, !toolName.isEmpty {
+                        accumulator.name = toolName
+                    }
+                    if let argumentsValue = event["arguments"],
+                       let arguments = stringFromJSONValue(argumentsValue) {
+                        accumulator.arguments = arguments
+                    }
+                    accumulators[key] = accumulator
+                    emitToolCallUpdate(for: key, force: true, requestStatus: "requesting")
+                case "tool_call.success":
+                    let key = activeLMStudioToolKey ?? newResponseAccumulatorKey()
+                    activeLMStudioToolKey = key
+                    var accumulator = accumulators[key, default: ToolCallAccumulator()]
+                    if let toolName = event["tool"] as? String, !toolName.isEmpty {
+                        accumulator.name = toolName
+                    }
+                    if let argumentsValue = event["arguments"],
+                       let arguments = stringFromJSONValue(argumentsValue) {
+                        accumulator.arguments = arguments
+                    }
+                    accumulators[key] = accumulator
+                    emitToolCallUpdate(for: key, force: true, requestStatus: "ready")
+                    sawToolCallFinish = true
+                case "tool_call.failure":
+                    let key = activeLMStudioToolKey ?? newResponseAccumulatorKey()
+                    activeLMStudioToolKey = key
+                    var accumulator = accumulators[key, default: ToolCallAccumulator()]
+                    if let toolName = event["tool"] as? String, !toolName.isEmpty {
+                        accumulator.name = toolName
+                    }
+                    if let toolID = event["tool_call_id"] as? String, !toolID.isEmpty {
+                        accumulator.id = toolID
+                    }
+                    accumulators[key] = accumulator
+                    let reason = (event["reason"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    emitToolCallUpdate(
+                        for: key,
+                        force: true,
+                        requestStatus: "failed",
+                        error: (reason?.isEmpty == false) ? reason : "Tool call failed"
+                    )
+                    if let reason, !reason.isEmpty {
+                        Task {
+                            await logger.log("[RemoteChat] [LMStudio] Tool call failure: \(reason)")
+                        }
+                    }
+                case "error":
+                    if let errorDict = event["error"] as? [String: Any] {
+                        let message = (errorDict["message"] as? String) ?? "Remote server error"
+                        let codeValue = errorDict["code"]
+                        let code: Int = {
+                            if let int = codeValue as? Int { return int }
+                            if let string = codeValue as? String, let parsed = Int(string) { return parsed }
+                            return -1
+                        }()
+                        return RemoteChatError.httpError(code, message)
+                    }
+                case "chat.end":
+                    if let result = event["result"] as? [String: Any],
+                       let output = result["output"] as? [[String: Any]] {
+                        for item in output {
+                            guard let itemType = item["type"] as? String else { continue }
+                            if itemType == "message" {
+                                if !streamedLMStudioMessageDelta,
+                                   let content = item["content"] as? String,
+                                   !content.isEmpty {
+                                    continuation.yield(content)
+                                }
+                            } else if itemType == "reasoning" {
+                                if !streamedLMStudioReasoningDelta,
+                                   let content = item["content"] as? String,
+                                   !content.isEmpty {
+                                    if !lmStudioReasoningOpen {
+                                        lmStudioReasoningOpen = true
+                                        continuation.yield("<think>")
+                                    }
+                                    continuation.yield(content)
+                                }
+                            } else if itemType == "tool_call" {
+                                let key = activeLMStudioToolKey ?? newResponseAccumulatorKey()
+                                activeLMStudioToolKey = key
+                                var accumulator = accumulators[key, default: ToolCallAccumulator()]
+                                if let toolName = item["tool"] as? String, !toolName.isEmpty {
+                                    accumulator.name = toolName
+                                }
+                                if let argumentsValue = item["arguments"],
+                                   let arguments = stringFromJSONValue(argumentsValue) {
+                                    accumulator.arguments = arguments
+                                }
+                                accumulators[key] = accumulator
+                                emitToolCallUpdate(for: key, force: true)
+                                sawToolCallFinish = true
+                            }
+                        }
+                    }
+                default:
+                    break
+                }
+                return nil
+            }
+
             for try await rawLine in bytes.lines {
                 try Task.checkCancellation()
                 let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -966,6 +1165,9 @@ actor RemoteChatService {
                 let payload = line.dropFirst(5).trimmingCharacters(in: .whitespacesAndNewlines)
                 if payload == "[DONE]" { break }
                 guard let data = payload.data(using: .utf8) else { continue }
+                if let streamError = Self.openRouterStreamError(from: data) {
+                    throw streamError
+                }
                 if let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                    let type = jsonObject["type"] as? String,
                    type.hasPrefix("response.") {
@@ -973,6 +1175,20 @@ actor RemoteChatService {
                         throw error
                     }
                     continue
+                }
+                if isLMStudioNativeV1Stream,
+                   let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let type = jsonObject["type"] as? String {
+                    let lmStudioPrefixes = [
+                        "chat.", "model_load.", "prompt_processing.",
+                        "reasoning.", "tool_call.", "message.", "error"
+                    ]
+                    if lmStudioPrefixes.contains(where: { type.hasPrefix($0) }) {
+                        if let error = handleLMStudioStreamEvent(jsonObject) {
+                            throw error
+                        }
+                        continue
+                    }
                 }
                 let chunk: ChatChunk
                 do {
@@ -994,7 +1210,6 @@ actor RemoteChatService {
                         }
                         if isChat, let fnCall = delta.functionCall {
                             updateFunctionAccumulator(fnCall, replaceArguments: false)
-                            sawToolCallFinish = true
                         }
                     }
                     if isChat, let messageToolCalls = choice.message?.toolCalls, !messageToolCalls.isEmpty {
@@ -1026,9 +1241,14 @@ actor RemoteChatService {
                 }
             }
 
+            if lmStudioReasoningOpen {
+                lmStudioReasoningOpen = false
+                continuation.yield("</think>")
+            }
+
             if isChat && (sawToolCallFinish || !accumulators.isEmpty) {
                 for (key, _) in accumulators.sorted(by: { $0.key < $1.key }) {
-                    emitToolCallUpdate(for: key, force: true)
+                    emitToolCallUpdate(for: key, force: true, requestStatus: "ready")
                 }
             }
 
@@ -1075,9 +1295,19 @@ actor RemoteChatService {
         var accumulators: [Int: ToolCallAccumulator] = [:]
         var lastEmittedToolJSON: [Int: String] = [:]
 
-        func emitToolCallUpdate(for index: Int, force: Bool = false) {
+        func emitToolCallUpdate(
+            for index: Int,
+            force: Bool = false,
+            requestStatus: String = "requesting",
+            error: String? = nil
+        ) {
             guard let accumulator = accumulators[index],
-                  let jsonString = makeToolCallJSON(from: accumulator) else { return }
+                  let jsonString = makeToolCallJSON(
+                    from: accumulator,
+                    fallbackToolCallID: "ollama:\(index)",
+                    requestStatus: requestStatus,
+                    error: error
+                  ) else { return }
             if !force, lastEmittedToolJSON[index] == jsonString { return }
             lastEmittedToolJSON[index] = jsonString
             logToolCallPayload(jsonString)
@@ -1098,15 +1328,19 @@ actor RemoteChatService {
             var accumulator = accumulators[idx, default: ToolCallAccumulator()]
             if let id = call.id, !id.isEmpty { accumulator.id = id }
             if let name = call.function?.name, !name.isEmpty { accumulator.name = name }
-            if let fragment = call.function?.arguments, !fragment.isEmpty {
-                if replaceArguments {
-                    accumulator.arguments = fragment
-                } else {
-                    accumulator.arguments.append(fragment)
+                if let fragment = call.function?.arguments, !fragment.isEmpty {
+                    if replaceArguments {
+                        accumulator.arguments = fragment
+                    } else {
+                        accumulator.arguments.append(fragment)
                 }
-            }
-            accumulators[idx] = accumulator
-            emitToolCallUpdate(for: idx, force: replaceArguments)
+                }
+                accumulators[idx] = accumulator
+            emitToolCallUpdate(
+                for: idx,
+                force: replaceArguments,
+                requestStatus: replaceArguments ? "ready" : "requesting"
+            )
         }
 
         for try await rawLine in bytes.lines {
@@ -1138,7 +1372,7 @@ actor RemoteChatService {
 
         if !accumulators.isEmpty {
             for (index, _) in accumulators.sorted(by: { $0.key < $1.key }) {
-                emitToolCallUpdate(for: index, force: true)
+                emitToolCallUpdate(for: index, force: true, requestStatus: "ready")
             }
         }
 
@@ -1217,10 +1451,6 @@ actor RemoteChatService {
     }
 
     private func buildRequest(prompt: String, kind: EndpointKind) throws -> URLRequest {
-        guard let url = backend.chatEndpointURL else {
-            throw RemoteChatError.invalidEndpoint
-        }
-
         let trimmedModel = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
         let modelValue: String = {
             if !trimmedModel.isEmpty { return trimmedModel }
@@ -1231,28 +1461,108 @@ actor RemoteChatService {
             throw RemoteChatError.missingModelIdentifier
         }
 
-        let allowTools = options.includeTools && kind == .chat && !toolSpecs.isEmpty
+        let wantsTools = options.includeTools && !toolSpecs.isEmpty
+        let lmStudioToolsFallback = backend.endpointType == .lmStudio && wantsTools
+        let url: URL
+        if lmStudioToolsFallback {
+            guard let fallbackURL = backend.absoluteURL(for: "/v1/chat/completions") else {
+                throw RemoteChatError.invalidEndpoint
+            }
+            Task {
+                await logger.log("[RemoteChat] [LMStudio] Tools enabled; routing request through OpenAI-compatible /v1/chat/completions fallback.")
+            }
+            url = fallbackURL
+        } else {
+            guard let endpointURL = backend.chatEndpointURL else {
+                throw RemoteChatError.invalidEndpoint
+            }
+            url = endpointURL
+        }
+        let requestKind: EndpointKind = lmStudioToolsFallback ? .chat : kind
+        let openRouterSupportedParameters = backend.isOpenRouter
+            ? supportedOpenRouterParameters(for: modelValue)
+            : nil
+        let allowTools = wantsTools
+            && requestKind == .chat
+            && openRouterAllowsParameter("tools",
+                                         supportedParameters: openRouterSupportedParameters,
+                                         defaultWhenUnknown: false)
 
         var body: [String: Any] = [
             "model": modelValue,
             "stream": true
         ]
 
-        switch kind {
-        case .chat:
-            body["messages"] = [["role": "user", "content": prompt]]
-            if allowTools {
-                body["tools"] = try toolsPayload(from: toolSpecs)
-                body["tool_choice"] = "auto"
+        if backend.endpointType == .lmStudio && !lmStudioToolsFallback {
+            body["input"] = prompt
+        } else {
+            switch requestKind {
+            case .chat:
+                body["messages"] = [["role": "user", "content": prompt]]
+                if allowTools {
+                    body["tools"] = try toolsPayload(from: toolSpecs)
+                    body["tool_choice"] = "auto"
+                }
+            case .completion:
+                body["prompt"] = prompt
             }
-        case .completion:
-            body["prompt"] = prompt
         }
-        if !options.stops.isEmpty {
+        if !options.stops.isEmpty &&
+            !(backend.endpointType == .lmStudio && !lmStudioToolsFallback) &&
+            openRouterAllowsParameter("stop",
+                                      supportedParameters: openRouterSupportedParameters,
+                                      defaultWhenUnknown: false) {
             body["stop"] = options.stops
         }
-        if let temperature = options.temperature {
+        if let temperature = options.temperature,
+           openRouterAllowsParameter("temperature",
+                                     supportedParameters: openRouterSupportedParameters,
+                                     defaultWhenUnknown: true) {
             body["temperature"] = temperature
+        }
+        if backend.endpointType == .lmStudio && !lmStudioToolsFallback {
+            // Context length is applied at LM Studio model load time to avoid spawning
+            // a second loaded instance when chat-time context differs from load config.
+            if let temperature = options.temperature {
+                body["temperature"] = lmStudioDecimal(temperature, lowerBound: 0.0, upperBound: 2.0)
+            }
+            if let topP = options.topP {
+                body["top_p"] = lmStudioDecimal(topP, lowerBound: 0.0, upperBound: 1.0)
+            }
+            if let topK = options.topK {
+                body["top_k"] = max(1, topK)
+            }
+            if let minP = options.minP {
+                body["min_p"] = lmStudioDecimal(minP, lowerBound: 0.0, upperBound: 1.0)
+            }
+            if let repeatPenalty = options.repeatPenalty {
+                body["repeat_penalty"] = lmStudioDecimal(repeatPenalty, lowerBound: 0.1, upperBound: 3.0)
+            }
+        } else if backend.isOpenRouter {
+            if let topP = options.topP,
+               openRouterAllowsParameter("top_p",
+                                         supportedParameters: openRouterSupportedParameters,
+                                         defaultWhenUnknown: true) {
+                body["top_p"] = topP
+            }
+            if let topK = options.topK,
+               openRouterAllowsParameter("top_k",
+                                         supportedParameters: openRouterSupportedParameters,
+                                         defaultWhenUnknown: false) {
+                body["top_k"] = max(1, topK)
+            }
+            if let minP = options.minP,
+               openRouterAllowsParameter("min_p",
+                                         supportedParameters: openRouterSupportedParameters,
+                                         defaultWhenUnknown: false) {
+                body["min_p"] = minP
+            }
+            if let repeatPenalty = options.repeatPenalty,
+               openRouterAllowsParameter("repetition_penalty",
+                                         supportedParameters: openRouterSupportedParameters,
+                                         defaultWhenUnknown: false) {
+                body["repetition_penalty"] = repeatPenalty
+            }
         }
 
         let data = try JSONSerialization.data(withJSONObject: body, options: [])
@@ -1262,10 +1572,64 @@ actor RemoteChatService {
         request.timeoutInterval = 60
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let auth = backend.authHeader, !auth.isEmpty {
+        if let auth = try backend.resolvedAuthorizationHeader(), !auth.isEmpty {
             request.setValue(auth, forHTTPHeaderField: "Authorization")
         }
+        for (key, value) in backend.openRouterAttributionHeaders {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
         return request
+    }
+
+    private func supportedOpenRouterParameters(for modelValue: String) -> Set<String>? {
+        guard backend.isOpenRouter else { return nil }
+        let normalizedModelID = normalizedOpenRouterParameter(modelValue)
+        guard !normalizedModelID.isEmpty else { return nil }
+        guard let model = backend.cachedModels.first(where: {
+            normalizedOpenRouterParameter($0.id) == normalizedModelID
+        }) else {
+            return nil
+        }
+        let params = Set(model.normalizedSupportedParameters)
+        return params.isEmpty ? nil : params
+    }
+
+    private func openRouterAllowsParameter(_ parameter: String,
+                                           supportedParameters: Set<String>?,
+                                           defaultWhenUnknown: Bool) -> Bool {
+        guard backend.isOpenRouter else { return true }
+        guard let supportedParameters else { return defaultWhenUnknown }
+        return supportedParameters.contains(normalizedOpenRouterParameter(parameter))
+    }
+
+    private func normalizedOpenRouterParameter(_ parameter: String) -> String {
+        parameter
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+    }
+
+    private func lmStudioDecimal(_ value: Double, lowerBound: Double, upperBound: Double, decimals: Int = 2) -> NSDecimalNumber {
+        let clamped = max(lowerBound, min(upperBound, value))
+        let factor = pow(10.0, Double(decimals))
+        let rounded = (clamped * factor).rounded() / factor
+        let format = "%.\(max(0, decimals))f"
+        let text = String(format: format, locale: Locale(identifier: "en_US_POSIX"), rounded)
+        return NSDecimalNumber(string: text)
+    }
+
+    static func openRouterStreamError(from data: Data) -> RemoteChatError? {
+        guard let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let errorDict = event["error"] as? [String: Any] else { return nil }
+        let message = (errorDict["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let codeValue = errorDict["code"]
+        let code: Int = {
+            if let int = codeValue as? Int { return int }
+            if let string = codeValue as? String, let parsed = Int(string) { return parsed }
+            return -1
+        }()
+        let resolvedMessage = message.isEmpty ? "Remote server error" : message
+        return .httpError(code, resolvedMessage)
     }
 
     private func buildOllamaRequest(prompt: String) throws -> URLRequest {
@@ -1312,8 +1676,11 @@ actor RemoteChatService {
         request.timeoutInterval = 120
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let auth = backend.authHeader, !auth.isEmpty {
+        if let auth = try backend.resolvedAuthorizationHeader(), !auth.isEmpty {
             request.setValue(auth, forHTTPHeaderField: "Authorization")
+        }
+        for (key, value) in backend.openRouterAttributionHeaders {
+            request.setValue(value, forHTTPHeaderField: key)
         }
         return request
     }
@@ -1322,6 +1689,10 @@ actor RemoteChatService {
         let tokens = bufferedToolTokens
         bufferedToolTokens.removeAll(keepingCapacity: false)
         return tokens
+    }
+
+    func buildChatRequestForTesting(prompt: String) throws -> URLRequest {
+        try buildRequest(prompt: prompt, kind: .chat)
     }
 
     private func logToolCallPayload(_ jsonString: String) {
@@ -1349,27 +1720,38 @@ actor RemoteChatService {
         return json
     }
 
-    private func makeToolCallJSON(from accumulator: ToolCallAccumulator) -> String? {
+    private func makeToolCallJSON(
+        from accumulator: ToolCallAccumulator,
+        fallbackToolCallID: String,
+        requestStatus: String,
+        error: String? = nil
+    ) -> String? {
         guard let name = accumulator.name, !name.isEmpty else { return nil }
         let argumentsString = accumulator.arguments.trimmingCharacters(in: .whitespacesAndNewlines)
         var argumentsObject: Any = [:]
         if let data = argumentsString.data(using: .utf8),
            let obj = try? JSONSerialization.jsonObject(with: data) {
             argumentsObject = obj
-        } else if !argumentsString.isEmpty {
-            argumentsObject = ["raw": argumentsString]
         }
+
+        let toolCallID = {
+            let trimmed = accumulator.id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? fallbackToolCallID : trimmed
+        }()
 
         var payload: [String: Any] = [
             "tool": name,
             "tool_name": name,
             "args": argumentsObject,
-            "arguments": argumentsObject
+            "arguments": argumentsObject,
+            "id": toolCallID,
+            "tool_call_id": toolCallID,
+            "request_status": requestStatus
         ]
 
-        if let id = accumulator.id, !id.isEmpty {
-            payload["id"] = id
-            payload["tool_call_id"] = id
+        if let error = error?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !error.isEmpty {
+            payload["error"] = error
         }
 
         guard JSONSerialization.isValidJSONObject(payload),

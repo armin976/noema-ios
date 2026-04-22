@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "RollingThought",
     platforms: [
-        .iOS(.v15),
+        .iOS(.v17),
         .visionOS(.v1),
         .macOS(.v12),
         .macCatalyst(.v13)

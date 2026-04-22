@@ -6,6 +6,13 @@ import Darwin
 import UIKit
 #endif
 
+protocol RelayHTTPServing: Actor {
+    func currentState() -> RelayHTTPServer.State
+    func start() async throws
+    func stop() async
+    func updateConfiguration(_ configuration: RelayServerConfiguration, restart: Bool) async throws
+}
+
 actor RelayHTTPServer {
     struct State: Equatable {
         var isRunning: Bool
@@ -276,6 +283,8 @@ actor RelayHTTPServer {
 #endif
     }
 }
+
+extension RelayHTTPServer: RelayHTTPServing {}
 
 fileprivate func makeMetadata(from request: HTTPRequest,
                               remoteDescription: String,
@@ -859,7 +868,7 @@ private struct OpenAIChatCompletionRequest: Decodable {
         RelayServerEngine.NormalizedParameters(temperature: temperature,
                                                topP: top_p,
                                                topK: top_k,
-                                               maxTokens: max_tokens,
+                                               maxTokens: nil,
                                                stop: stop?.values ?? [],
                                                presencePenalty: presence_penalty,
                                                frequencyPenalty: frequency_penalty,
@@ -908,7 +917,7 @@ private struct OpenAITextCompletionRequest: Decodable {
         RelayServerEngine.NormalizedParameters(temperature: temperature,
                                                topP: top_p,
                                                topK: top_k,
-                                               maxTokens: max_tokens,
+                                               maxTokens: nil,
                                                stop: stop?.values ?? [],
                                                presencePenalty: presence_penalty,
                                                frequencyPenalty: frequency_penalty,
@@ -956,7 +965,7 @@ private struct OpenAIResponsesRequest: Decodable {
         RelayServerEngine.NormalizedParameters(temperature: temperature,
                                                topP: top_p,
                                                topK: top_k,
-                                               maxTokens: max_tokens,
+                                               maxTokens: nil,
                                                stop: stop?.values ?? [],
                                                presencePenalty: presence_penalty,
                                                frequencyPenalty: frequency_penalty,

@@ -2,6 +2,7 @@
 import Foundation
 
 public final class HuggingFaceRegistry: ModelRegistry, @unchecked Sendable {
+    static let aneAuthor = "anemll"
 
     private let session: URLSession
     private let token: String?
@@ -29,7 +30,7 @@ public final class HuggingFaceRegistry: ModelRegistry, @unchecked Sendable {
     // MARK: - ModelRegistry
     public func curated() async throws -> [ModelRecord] { [] }
 
-    public func searchStream(query: String, page: Int, includeVisionModels: Bool = true, visionOnly: Bool = false) -> AsyncThrowingStream<ModelRecord, Error> {
+    public func searchStream(query: String, page: Int, format: ModelFormat? = nil, includeVisionModels: Bool = true, visionOnly: Bool = false) -> AsyncThrowingStream<ModelRecord, Error> {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return .init { $0.finish() } }
         let offset = page * 50
@@ -38,49 +39,48 @@ public final class HuggingFaceRegistry: ModelRegistry, @unchecked Sendable {
         // This helps match models named "gemma-3-4b" or "gemma3-4b"
         let searchQuery = trimmed
         
-        // Build URLs. When a specific pipeline is provided we use the
-        // `filter` query parameter. In "All" explore mode we must avoid
-        // adding any pipeline filter so the Hub searches across all tasks.
-        func makeURL(pipeline: String) -> URL {
+        let requiredAuthor = Self.requiredAuthor(for: format)
+
+        func makeURL(filters: [String], author: String? = nil) -> URL {
             var c = URLComponents(string: "https://huggingface.co/api/models")!
-            c.queryItems = [
+            var queryItems: [URLQueryItem] = [
                 URLQueryItem(name: "search", value: searchQuery),
-                URLQueryItem(name: "filter", value: pipeline),
                 URLQueryItem(name: "sort", value: "downloads"),
+                URLQueryItem(name: "direction", value: "-1"),
                 URLQueryItem(name: "limit", value: "50"),
                 URLQueryItem(name: "offset", value: String(offset)),
                 URLQueryItem(name: "cardData", value: "true")
             ]
+            if let author, !author.isEmpty {
+                queryItems.append(URLQueryItem(name: "author", value: author))
+            }
+            for filter in filters where !filter.isEmpty {
+                queryItems.append(URLQueryItem(name: "filter", value: filter))
+            }
+            c.queryItems = queryItems
             return c.url!
         }
 
-        func makeURLAllPipelines() -> URL {
-            var c = URLComponents(string: "https://huggingface.co/api/models")!
-            c.queryItems = [
-                URLQueryItem(name: "search", value: searchQuery),
-                URLQueryItem(name: "sort", value: "downloads"),
-                URLQueryItem(name: "limit", value: "50"),
-                URLQueryItem(name: "offset", value: String(offset)),
-                URLQueryItem(name: "cardData", value: "true")
-            ]
-            return c.url!
-        }
-        
-        let urlText = makeURL(pipeline: "text-generation")
-        let urlVLM = makeURL(pipeline: "image-text-to-text")
+        let pipelineFilter: String? = {
+            if visionOnly { return "image-text-to-text" }
+            if includeVisionModels { return nil }
+            return "text-generation"
+        }()
         
         // Determine which URLs to fetch based on parameters
         let urlsToFetch: [URL]
-        if visionOnly {
-            // Vision mode → explicitly filter to VLM pipeline
-            urlsToFetch = [urlVLM]
-        } else if includeVisionModels {
-            // Explore "All" mode → do NOT add a text-generation filter
-            // (and also avoid the VLM-specific filter). Query across all pipelines.
-            urlsToFetch = [makeURLAllPipelines()]
+        if format == .et {
+            var filters = ["executorch"]
+            if let pipelineFilter { filters.append(pipelineFilter) }
+            urlsToFetch = [makeURL(filters: filters)]
+        } else if format == .ane {
+            var filters = ["coreml"]
+            if let pipelineFilter { filters.append(pipelineFilter) }
+            urlsToFetch = [makeURL(filters: filters, author: requiredAuthor)]
         } else {
-            // Text mode → explicitly filter to text-generation pipeline
-            urlsToFetch = [urlText]
+            var filters: [String] = []
+            if let pipelineFilter { filters.append(pipelineFilter) }
+            urlsToFetch = [makeURL(filters: filters)]
         }
         
         return .init { continuation in
@@ -128,9 +128,25 @@ public final class HuggingFaceRegistry: ModelRegistry, @unchecked Sendable {
                         print("[registry] search \(trimmed) page \(page) → \(pageResults.count)")
                         for entry in pageResults {
                             if !seen.insert(entry.modelId).inserted { continue }
-                            let formats = Self.inferFormats(tags: entry.tags ?? [], id: entry.modelId, pipelineTag: entry.pipeline_tag)
+                            guard Self.matchesAuthorConstraint(
+                                format: format,
+                                modelID: entry.modelId,
+                                author: entry.author
+                            ) else { continue }
+                            let tags = entry.tags ?? []
+                            let forcedFormat: ModelFormat? = (format == .ane) ? .ane : nil
+                            let formats = Self.inferFormats(
+                                tags: tags,
+                                id: entry.modelId,
+                                pipelineTag: entry.pipeline_tag,
+                                forcedFormat: forcedFormat
+                            )
                             let effectiveFormats = formats
                             let owner = entry.modelId.split(separator: "/").first.map(String.init) ?? (entry.author ?? "")
+                            let recommendedETBackend = formats.contains(.et)
+                                ? ETBackendDetector.detect(tags: tags, modelName: entry.modelId)
+                                : nil
+                            let supportsVision = Self.inferSupportsVision(tags: tags, pipelineTag: entry.pipeline_tag)
                             let record = ModelRecord(
                                 id: entry.modelId,
                                 displayName: Self.prettyName(from: entry.modelId),
@@ -139,8 +155,10 @@ public final class HuggingFaceRegistry: ModelRegistry, @unchecked Sendable {
                                 hasInstallableQuant: true,
                                 formats: effectiveFormats,
                                 installed: false,
-                                tags: entry.tags,
-                                pipeline_tag: entry.pipeline_tag
+                                tags: tags,
+                                pipeline_tag: entry.pipeline_tag,
+                                recommendedETBackend: recommendedETBackend,
+                                supportsVision: supportsVision
                             )
                             continuation.yield(record)
                         }
@@ -159,28 +177,122 @@ public final class HuggingFaceRegistry: ModelRegistry, @unchecked Sendable {
         var comps = URLComponents(string: "https://huggingface.co/api/models/\(id)")!
         comps.queryItems = [URLQueryItem(name: "full", value: "1"), URLQueryItem(name: "cardData", value: "true")]
         let (data, _) = try await data(from: comps.url!)
-        struct Meta: Decodable { let modelId: String; let author: String?; let cardData: Card?; let siblings: [Sibling]?; struct Card: Decodable { let summary: String? }; struct Sibling: Decodable { let rfilename: String; let size: Int?; let lfs: LFS?; struct LFS: Decodable { let sha256: String?; let size: Int? } } }
+        struct Meta: Decodable {
+            let modelId: String
+            let author: String?
+            let tags: [String]?
+            let cardData: Card?
+            let siblings: [Sibling]?
+            let gguf: GGUF?
+
+            struct Card: Decodable {
+                let summary: String?
+            }
+
+            struct GGUF: Decodable {
+                let quantize_imatrix_file: String?
+            }
+
+            struct Sibling: Decodable {
+                let rfilename: String
+                let size: Int?
+                let lfs: LFS?
+
+                struct LFS: Decodable {
+                    let sha256: String?
+                    let size: Int?
+                }
+            }
+        }
         let meta = try JSONDecoder().decode(Meta.self, from: data)
-        let files = (meta.siblings ?? []).map { RepoFile(path: $0.rfilename, size: Int64($0.lfs?.size ?? $0.size ?? 0), sha256: $0.lfs?.sha256) }
+        let siblings = meta.siblings ?? []
+        let needsTreeSizeFallback = siblings.contains {
+            Int64($0.lfs?.size ?? $0.size ?? 0) <= 0
+        }
+        let treeMetadata = needsTreeSizeFallback ? (try? await fetchTreeMetadata(for: id)) : nil
+        let files = siblings.map { sibling in
+            let declaredSize = Int64(sibling.lfs?.size ?? sibling.size ?? 0)
+            let fallback = treeMetadata?[sibling.rfilename]
+            let effectiveSize = declaredSize > 0 ? declaredSize : max(fallback?.size ?? 0, 0)
+            let effectiveSHA = sibling.lfs?.sha256 ?? fallback?.sha256
+            return RepoFile(path: sibling.rfilename, size: effectiveSize, sha256: effectiveSHA)
+        }
         var quants = QuantExtractor.extract(from: files, repoID: id)
+
+        let importanceMatrix: QuantInfo.AuxiliaryFile? = {
+            func normalizedImatrixFileName(_ raw: String) -> String {
+                raw.lowercased().replacingOccurrences(of: "_file", with: "")
+            }
+
+            func likelyImatrixPathFromSiblings() -> String? {
+                let lowerTags = (meta.tags ?? []).map { $0.lowercased() }
+                guard lowerTags.contains(where: { $0.contains("imatrix") }) else { return nil }
+
+                let candidates = files
+                    .map(\.path)
+                    .filter { path in
+                        let lower = path.lowercased()
+                        return lower.contains("imatrix")
+                            && (lower.hasSuffix(".gguf") || lower.hasSuffix(".gguf_file"))
+                    }
+                guard !candidates.isEmpty else { return nil }
+
+                return candidates.sorted { lhs, rhs in
+                    let l = lhs.lowercased()
+                    let r = rhs.lowercased()
+                    let lExact = l.hasSuffix(".gguf")
+                    let rExact = r.hasSuffix(".gguf")
+                    if lExact != rExact { return lExact && !rExact }
+                    return lhs.count < rhs.count
+                }.first
+            }
+
+            let rawPath = meta.gguf?.quantize_imatrix_file?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let path = (rawPath?.isEmpty == false ? rawPath : nil) ?? likelyImatrixPathFromSiblings()
+            guard let path else { return nil }
+
+            let pathLower = path.lowercased()
+            let pathName = URL(fileURLWithPath: path).lastPathComponent
+            let match = files.first { file in
+                let lower = file.path.lowercased()
+                if lower == pathLower || lower == pathLower + "_file" { return true }
+                let siblingName = URL(fileURLWithPath: file.path).lastPathComponent
+                return normalizedImatrixFileName(siblingName) == normalizedImatrixFileName(pathName)
+            }
+
+            let escapedRepo = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+            let encodedPath = path
+                .split(separator: "/", omittingEmptySubsequences: false)
+                .map { comp in
+                    String(comp).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String(comp)
+                }
+                .joined(separator: "/")
+            guard let url = URL(string: "https://huggingface.co/\(escapedRepo)/resolve/main/\(encodedPath)?download=1") else {
+                return nil
+            }
+
+            return QuantInfo.AuxiliaryFile(
+                path: path,
+                sizeBytes: match?.size ?? 0,
+                sha256: match?.sha256,
+                downloadURL: url
+            )
+        }()
+
+        if let importanceMatrix {
+            for i in quants.indices where quants[i].format == .gguf && quants[i].isIQQuant {
+                quants[i] = quants[i].copying(importanceMatrix: .some(importanceMatrix))
+            }
+        }
+
         let cfgURL = URL(string: "https://huggingface.co/\(id)/raw/main/config.json")
         for i in quants.indices {
             if quants[i].sizeBytes == 0 {
-                if let size = try? await fetchSize(quants[i].downloadURL) {
-                    quants[i] = QuantInfo(label: quants[i].label,
-                                         format: quants[i].format,
-                                         sizeBytes: size,
-                                         downloadURL: quants[i].downloadURL,
-                                         sha256: quants[i].sha256,
-                                         configURL: cfgURL)
+                if let size = try? await resolveSize(for: quants[i]), size > 0 {
+                    quants[i] = quants[i].copying(sizeBytes: size, configURL: cfgURL)
                 }
             } else if quants[i].configURL == nil {
-                quants[i] = QuantInfo(label: quants[i].label,
-                                     format: quants[i].format,
-                                     sizeBytes: quants[i].sizeBytes,
-                                     downloadURL: quants[i].downloadURL,
-                                     sha256: quants[i].sha256,
-                                     configURL: cfgURL)
+                quants[i] = quants[i].copying(configURL: cfgURL)
             }
         }
         let prompt: String? = nil
@@ -191,6 +303,71 @@ public final class HuggingFaceRegistry: ModelRegistry, @unchecked Sendable {
     }
 
     // MARK: - helpers
+    private struct TreeFileMetadata: Sendable {
+        let size: Int64
+        let sha256: String?
+    }
+
+    private struct TreeEntry: Decodable {
+        let path: String
+        let type: String?
+        let size: Int?
+        let lfs: LFS?
+
+        struct LFS: Decodable {
+            let size: Int?
+            let sha256: String?
+            let oid: String?
+        }
+    }
+
+    private func fetchTreeMetadata(for repoID: String) async throws -> [String: TreeFileMetadata] {
+        var comps = URLComponents(string: "https://huggingface.co/api/models/\(repoID)/tree/main")!
+        comps.queryItems = [URLQueryItem(name: "recursive", value: "1")]
+        let (data, _) = try await data(from: comps.url!)
+        let entries = try JSONDecoder().decode([TreeEntry].self, from: data)
+
+        var metadataByPath: [String: TreeFileMetadata] = [:]
+        metadataByPath.reserveCapacity(entries.count)
+
+        for entry in entries {
+            if entry.type == "directory" { continue }
+            let size = Int64(entry.lfs?.size ?? entry.size ?? 0)
+            let sha256 = entry.lfs?.sha256 ?? entry.lfs?.oid
+            metadataByPath[entry.path] = TreeFileMetadata(size: size, sha256: sha256)
+        }
+
+        return metadataByPath
+    }
+
+    private func resolveSize(for quant: QuantInfo) async throws -> Int64 {
+        if quant.isMultipart {
+            var total: Int64 = 0
+            var hasAnyPartSize = false
+
+            for part in quant.allDownloadParts {
+                let knownSize = max(part.sizeBytes, 0)
+                if knownSize > 0 {
+                    total += knownSize
+                    hasAnyPartSize = true
+                    continue
+                }
+
+                let fetched = try await fetchSize(part.downloadURL)
+                if fetched > 0 {
+                    total += fetched
+                    hasAnyPartSize = true
+                }
+            }
+
+            if hasAnyPartSize {
+                return total
+            }
+        }
+
+        return try await fetchSize(quant.downloadURL)
+    }
+
     private func fetchRecord(id: String) async throws -> ModelRecord? {
         do {
             let details = try await details(for: id)
@@ -245,6 +422,20 @@ public final class HuggingFaceRegistry: ModelRegistry, @unchecked Sendable {
         return http.expectedContentLength > 0 ? http.expectedContentLength : 0
     }
 
+    static func requiredAuthor(for format: ModelFormat?) -> String? {
+        guard format == .ane else { return nil }
+        return aneAuthor
+    }
+
+    static func matchesAuthorConstraint(format: ModelFormat?, modelID: String, author: String?) -> Bool {
+        guard let requiredAuthor = requiredAuthor(for: format) else { return true }
+        let owner = modelID.split(separator: "/").first.map(String.init)
+        if owner?.caseInsensitiveCompare(requiredAuthor) == .orderedSame {
+            return true
+        }
+        return author?.caseInsensitiveCompare(requiredAuthor) == .orderedSame
+    }
+
     private static func prettyName(from id: String) -> String {
         let base = id.split(separator: "/").last.map(String.init) ?? id
         var cleaned = base.replacingOccurrences(of: "[-_]", with: " ", options: .regularExpression)
@@ -254,7 +445,12 @@ public final class HuggingFaceRegistry: ModelRegistry, @unchecked Sendable {
         return cleaned.split(separator: " ").map { $0.capitalized }.joined(separator: " ")
     }
 
-    private static func inferFormats(tags: [String], id: String, pipelineTag: String? = nil) -> Set<ModelFormat> {
+    private static func inferFormats(
+        tags: [String],
+        id: String,
+        pipelineTag: String? = nil,
+        forcedFormat: ModelFormat? = nil
+    ) -> Set<ModelFormat> {
         var result: Set<ModelFormat> = []
         let lowerTags = tags.map { $0.lowercased() }
         if lowerTags.contains(where: { $0.contains("gguf") || $0.contains("ggml") }) {
@@ -268,7 +464,32 @@ public final class HuggingFaceRegistry: ModelRegistry, @unchecked Sendable {
             || id.hasPrefix("lmstudio-community/") {
             result.insert(.mlx)
         }
+        if lowerTags.contains(where: { $0.contains("executorch") || $0.contains("pte") }) {
+            result.insert(.et)
+        }
+        if lowerTags.contains(where: {
+            $0.contains("coreml")
+                || $0.contains("core-ml")
+                || $0.contains("mlmodel")
+                || $0.contains("ane")
+        }) || id.lowercased().contains("coreml") {
+            result.insert(.ane)
+        }
+        if let forcedFormat {
+            result.insert(forcedFormat)
+        }
         return result
+    }
+
+    private static func inferSupportsVision(tags: [String], pipelineTag: String?) -> Bool {
+        let lowerTags = tags.map { $0.lowercased() }
+        if pipelineTag?.lowercased() == "image-text-to-text" { return true }
+        return lowerTags.contains(where: { tag in
+            tag.contains("vision")
+                || tag.contains("vlm")
+                || tag.contains("multimodal")
+                || tag.contains("image-text-to-text")
+        })
     }
 
 }

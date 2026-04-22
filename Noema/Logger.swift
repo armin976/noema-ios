@@ -4,6 +4,10 @@ import Foundation
 /// Simple async logger used to capture text messages in a file.
 /// Declared as an actor so calls from various tasks remain concurrency-safe.
 actor Logger {
+    struct ObserverToken: Hashable, Sendable {
+        fileprivate let id = UUID()
+    }
+
     /// Singleton instance used throughout the app.
     static let shared = Logger()
 
@@ -11,6 +15,7 @@ actor Logger {
     nonisolated let logFileURL: URL
 
     private var handle: FileHandle?
+    private var observers: [ObserverToken: @Sendable (String) -> Void] = [:]
 
     init() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -31,14 +36,17 @@ actor Logger {
         if let data = (message + "\n").data(using: .utf8) {
             handle?.write(data)
         }
+        for observer in observers.values {
+            observer(message)
+        }
         let maxConsoleChars = 10000
         if truncateConsole, message.count > maxConsoleChars {
             let preview = message.prefix(maxConsoleChars)
-            print(String(preview) + "… [truncated, len=\(message.count)]")
+            writeConsoleLine(String(preview) + "… [truncated, len=\(message.count)]")
             return
         }
         if message.count <= maxConsoleChars {
-            print(message)
+            writeConsoleLine(message)
             return
         }
         writeToConsoleInChunks(message, chunkSize: maxConsoleChars)
@@ -49,6 +57,16 @@ actor Logger {
         log(message, truncateConsole: false)
     }
 
+    func addObserver(_ observer: @escaping @Sendable (String) -> Void) -> ObserverToken {
+        let token = ObserverToken()
+        observers[token] = observer
+        return token
+    }
+
+    func removeObserver(_ token: ObserverToken) {
+        observers.removeValue(forKey: token)
+    }
+
     private func writeToConsoleInChunks(_ message: String, chunkSize: Int) {
         var start = message.startIndex
         var chunk = 1
@@ -57,16 +75,26 @@ actor Logger {
             let end = message.index(start, offsetBy: chunkSize, limitedBy: message.endIndex) ?? message.endIndex
             let slice = message[start..<end]
             if total > 1 {
-                print("[log chunk \(chunk)/\(total)] \(slice)")
+                writeConsoleLine("[log chunk \(chunk)/\(total)] \(slice)")
             } else {
-                print(String(slice))
+                writeConsoleLine(String(slice))
             }
             start = end
             chunk += 1
         }
         if total > 1 {
-            print("[log end len=\(message.count)]")
+            writeConsoleLine("[log end len=\(message.count)]")
         }
+    }
+
+    private func writeConsoleLine(_ message: String) {
+        guard let data = (message + "\n").data(using: .utf8) else { return }
+        do {
+            try FileHandle.standardError.write(contentsOf: data)
+        } catch {
+            fputs(message + "\n", stderr)
+        }
+        fflush(stderr)
     }
 }
 

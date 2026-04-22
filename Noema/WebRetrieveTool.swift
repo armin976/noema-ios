@@ -73,10 +73,22 @@ public struct WebRetrieveTool: Tool {
             #endif
 
             let message: String = {
-                if let localized = (error as? LocalizedError)?.errorDescription, !localized.isEmpty {
-                    return localized
+                let ns = error as NSError
+                let code = (error as? URLError)?.code ?? URLError.Code(rawValue: ns.code)
+                switch code {
+                case .timedOut:
+                    return "Web search timed out. Please try again."
+                case .notConnectedToInternet, .networkConnectionLost, .cannotConnectToHost, .cannotFindHost:
+                    return "Web search is unavailable right now. Check your internet connection and try again."
+                case .cancelled:
+                    return "Web search was cancelled."
+                default:
+                    if let localized = (error as? LocalizedError)?.errorDescription, !localized.isEmpty {
+                        return localized
+                    }
+                    let localized = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return localized.isEmpty ? "Web search failed. Please try again." : localized
                 }
-                return error.localizedDescription
             }()
 
             let errorPayload = ["error": message]

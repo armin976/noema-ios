@@ -18,9 +18,11 @@ struct RemoteBackendFormView: View {
     @State private var modelsPathEdited = false
     @State private var updatingDefaults = false
     @State private var lastEndpointType: RemoteBackend.EndpointType = .openAI
+    @State private var nameEdited = false
 
     private enum Field: Hashable {
         case name, baseURL, hostID, chatPath, modelsPath, auth
+        case openRouterAPIKey
         case customModel(Int)
     }
 
@@ -56,6 +58,9 @@ struct RemoteBackendFormView: View {
             .onChange(of: draft.modelsPath) { _ in
                 if !updatingDefaults { modelsPathEdited = true }
             }
+            .onChange(of: draft.name) { _ in
+                if !updatingDefaults { nameEdited = true }
+            }
                 .alert(LocalizedStringKey("Unable to Save"), isPresented: Binding(
                     get: { errorMessage != nil },
                     set: { if !$0 { errorMessage = nil } }
@@ -87,7 +92,7 @@ struct RemoteBackendFormView: View {
                         EndpointTypeGrid(selection: $draft.endpointType)
                     }
 
-                    if !draft.endpointType.isRelay {
+                    if !draft.endpointType.isRelay && !draft.endpointType.isOpenRouter {
                         MacFormCard(title: LocalizedStringKey("Endpoints")) {
                             endpointPathFields
                         }
@@ -140,6 +145,9 @@ struct RemoteBackendFormView: View {
         }
         .onChange(of: draft.modelsPath) { _ in
             if !updatingDefaults { modelsPathEdited = true }
+        }
+        .onChange(of: draft.name) { _ in
+            if !updatingDefaults { nameEdited = true }
         }
         .alert(LocalizedStringKey("Unable to Save"), isPresented: Binding(
             get: { errorMessage != nil },
@@ -250,7 +258,7 @@ struct RemoteBackendFormView: View {
 
     @ViewBuilder
     private var endpointPathsSection: some View {
-        if !draft.endpointType.isRelay {
+        if !draft.endpointType.isRelay && !draft.endpointType.isOpenRouter {
             Section(LocalizedStringKey("Endpoints")) { endpointPathFields }
         }
     }
@@ -309,15 +317,32 @@ struct RemoteBackendFormView: View {
 
     @ViewBuilder
     private var authenticationFields: some View {
-        TextField(LocalizedStringKey("Auth header (optional)"), text: $draft.authHeader, axis: .vertical)
+        if draft.endpointType.isOpenRouter {
+            SecureField(LocalizedStringKey("OpenRouter API key"), text: $draft.openRouterAPIKey)
 #if !os(macOS)
-            .platformAutocapitalization(.never)
+                .platformAutocapitalization(.never)
 #endif
-            .autocorrectionDisabled(true)
-            .focused($focusedField, equals: .auth)
+                .autocorrectionDisabled(true)
+                .focused($focusedField, equals: .openRouterAPIKey)
 #if os(macOS)
-            .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.roundedBorder)
 #endif
+            Link(LocalizedStringKey("Create OpenRouter API Key"), destination: URL(string: "https://openrouter.ai/keys")!)
+            Text(LocalizedStringKey("OpenRouter uses standard Bearer API-key authentication. We'll verify the key before saving this endpoint."))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            TextField(LocalizedStringKey("Auth header (optional)"), text: $draft.authHeader, axis: .vertical)
+#if !os(macOS)
+                .platformAutocapitalization(.never)
+#endif
+                .autocorrectionDisabled(true)
+                .focused($focusedField, equals: .auth)
+#if os(macOS)
+                .textFieldStyle(.roundedBorder)
+#endif
+        }
     }
 
     @ViewBuilder
@@ -402,6 +427,7 @@ struct RemoteBackendFormView: View {
         draft.modelsPath = draft.endpointType.defaultModelsPath
         chatPathEdited = false
         modelsPathEdited = false
+        nameEdited = false
         lastEndpointType = draft.endpointType
         applyRelayDefaultsIfNeeded()
     }
@@ -425,6 +451,18 @@ struct RemoteBackendFormView: View {
     }
 
     private func applyRelayDefaultsIfNeeded() {
+        if draft.endpointType.isOpenRouter {
+            updatingDefaults = true
+            defer { updatingDefaults = false }
+            let canonical = RemoteBackend.openRouterDefaultBaseURL.absoluteString
+            if draft.baseURL.trimmingCharacters(in: .whitespacesAndNewlines) != canonical {
+                draft.baseURL = canonical
+            }
+            if !nameEdited && draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                draft.name = draft.endpointType.displayName
+            }
+            return
+        }
 #if !os(macOS)
         guard draft.endpointType.isRelay else { return }
         let canonical = RelayConfiguration.containerIdentifier
@@ -444,6 +482,10 @@ struct RemoteBackendFormView: View {
         if draft.endpointType.isRelay {
             return hasName && hasBase
         }
+        if draft.endpointType.isOpenRouter {
+            let hasKey = !draft.openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            return hasName && hasBase && hasKey
+        }
         return hasName && hasBase
     }
 
@@ -461,6 +503,9 @@ struct RemoteBackendFormView: View {
         focusedField = nil
         isSaving = true
         do {
+            if draft.endpointType.isOpenRouter {
+                _ = try await RemoteBackendAPI.verifyOpenRouterAPIKey(draft.openRouterAPIKey)
+            }
             try await onSave(draft)
             close()
         } catch {

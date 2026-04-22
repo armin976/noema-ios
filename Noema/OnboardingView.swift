@@ -24,8 +24,7 @@ struct OnboardingView: View {
     @EnvironmentObject var tabRouter: TabRouter
     @EnvironmentObject var walkthrough: GuidedWalkthroughManager
 
-    private let recommendedModelID = "unsloth/Qwen3-1.7B-GGUF"
-    private let recommendedQuantLabel = "Q3_K_M"
+    private let recommendedModelID = "unsloth/Qwen3.5-2B-GGUF"
     @State private var recommendedDetail: ModelDetails?
     @State private var recommendedQuant: QuantInfo?
     @State private var recommendedLoading = false
@@ -327,7 +326,7 @@ struct OnboardingView: View {
                 .font(.headline)
                 .foregroundColor(textPrimary)
 
-            Text("Try the Qwen 3 1.7B GGUF (Q3_K_M) build below. It's a good starting point and you can delete it anytime.")
+            Text("Try the Qwen 3.5 2B GGUF build below. It's a good starting point and you can delete it anytime.")
                 .font(.caption)
                 .foregroundColor(textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -355,6 +354,14 @@ struct OnboardingView: View {
                         set: { _ in }
                     ),
                     downloading: recommendedDownloading,
+                    remoteMode: false,
+                    remoteStatusText: nil,
+                    remoteErrorText: nil,
+                    remoteUnsupportedReason: nil,
+                    remoteCompleted: false,
+                    openUnavailableReason: nil,
+                    showsLowQualityMarker: quant.isLowBitQuant,
+                    downloadController: downloadController,
                     openAction: { await openRecommendedModel(detail: detail, quant: quant) },
                     downloadAction: { await downloadRecommendedModel(detail: detail, quant: quant) },
                     cancelAction: { cancelRecommendedDownload(detail: detail, quant: quant) }
@@ -530,7 +537,7 @@ struct OnboardingView: View {
             do {
                 let registry = ManualModelRegistry()
                 let details = try await registry.details(for: recommendedModelID)
-                if let quant = details.quants.first(where: { $0.label.caseInsensitiveCompare(recommendedQuantLabel) == .orderedSame }) {
+                if let quant = ManualModelRegistry.recommendedStarterQuant(in: details) {
                     await MainActor.run {
                         recommendedDetail = details
                         recommendedQuant = quant
@@ -557,7 +564,7 @@ struct OnboardingView: View {
     private func applyRecommendedFallback() {
         if let entry = ManualModelRegistry.defaultEntries.first(where: { $0.record.id == recommendedModelID }) {
             recommendedDetail = entry.details
-            recommendedQuant = entry.details.quants.first { $0.label.caseInsensitiveCompare(recommendedQuantLabel) == .orderedSame }
+            recommendedQuant = ManualModelRegistry.recommendedStarterQuant(in: entry.details)
         }
     }
 
@@ -576,9 +583,7 @@ struct OnboardingView: View {
     }
 
     private func recommendedFileURL(for quant: QuantInfo, detailID: String) -> URL {
-        var dir = InstalledModelsStore.baseDir(for: quant.format, modelID: detailID)
-        dir.appendPathComponent(quant.downloadURL.lastPathComponent)
-        return dir
+        InstalledModelsStore.localModelURL(for: quant, modelID: detailID)
     }
 
     @MainActor
@@ -599,15 +604,17 @@ struct OnboardingView: View {
                 isVision = ModelVisionDetector.guessLlamaVisionModel(from: url)
             case .mlx:
                 isVision = MLXBridge.isVLMModel(at: url)
-            case .slm:
+            case .et:
                 let slug = detail.id.isEmpty ? url.deletingPathExtension().lastPathComponent : detail.id
                 isVision = LeapCatalogService.isVisionQuantizationSlug(slug)
-            case .apple:
+            case .ane:
+                isVision = false
+            case .afm:
                 isVision = false
             }
         }
 
-        var isToolCapable = await ToolCapabilityDetector.isToolCapable(repoId: detail.id, token: token)
+        var isToolCapable = quant.format == .afm ? false : await ToolCapabilityDetector.isToolCapable(repoId: detail.id, token: token)
         if isToolCapable == false {
             isToolCapable = ToolCapabilityDetector.isToolCapableLocal(url: url, format: quant.format)
         }
@@ -616,7 +623,7 @@ struct OnboardingView: View {
         switch quant.format {
         case .gguf, .mlx:
             moeInfo = ModelScanner.moeInfo(for: url, format: quant.format)
-        case .slm, .apple:
+        case .et, .ane, .afm:
             moeInfo = nil
         }
         let architectureLabels = LocalModel.architectureLabels(for: url, format: quant.format, modelID: detail.id)
@@ -641,6 +648,7 @@ struct OnboardingView: View {
 
         var settings = modelManager.settings(for: local)
         settings = tunedSettingsForRecommendedModel(settings, local: local, quant: quant, sizeBytes: effectiveSize)
+        settings = modelManager.normalizeLocalSettings(settings, for: local)
         await chatVM.unload()
         if await chatVM.load(url: url, settings: settings, format: quant.format) {
             modelManager.updateSettings(settings, for: local)
@@ -663,6 +671,8 @@ struct OnboardingView: View {
         let usableSize = sizeBytes > 0 ? sizeBytes : quant.sizeBytes
         let requestedContext = max(512, Int(updated.contextLength.rounded()))
         let layerCount = local.totalLayers > 0 ? local.totalLayers : nil
+        let modelMaxContext = ModelSettings.supportedMaxContextLength(for: local)
+        let kvCacheEstimate = ModelRAMAdvisor.GGUFKVCacheEstimate.resolved(from: updated)
 
         if usableSize > 0 {
             let fits = ModelRAMAdvisor.fitsInRAM(
@@ -670,14 +680,17 @@ struct OnboardingView: View {
                 sizeBytes: usableSize,
                 contextLength: requestedContext,
                 layerCount: layerCount,
-                moeInfo: local.moeInfo
+                moeInfo: local.moeInfo,
+                kvCacheEstimate: kvCacheEstimate
             )
             if !fits {
                 if let maxContext = ModelRAMAdvisor.maxContextUnderBudget(
                     format: quant.format,
                     sizeBytes: usableSize,
                     layerCount: layerCount,
-                    moeInfo: local.moeInfo
+                    moeInfo: local.moeInfo,
+                    upperBound: modelMaxContext,
+                    kvCacheEstimate: kvCacheEstimate
                 ) {
                     let safeContext = max(512, min(requestedContext, maxContext))
                     if Double(safeContext) < updated.contextLength {
@@ -695,7 +708,7 @@ struct OnboardingView: View {
             updated.gpuLayers = 0
         }
 
-        return updated
+        return updated.normalizedForLocalModel(local)
     }
 
     private func onboardingImageView(keywords: [String], height: CGFloat) -> some View {

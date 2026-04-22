@@ -17,6 +17,7 @@ struct ModelHubMeta: Codable {
         let architecture: String?
         let context_length: Int?
         let chat_template: String?
+        let quantize_imatrix_file: String?
     }
 
     struct ProjectorFile: Codable {
@@ -86,7 +87,8 @@ enum HuggingFaceMetadataCache {
                 let arch = g["architecture"] as? String
                 let ctx = g["context_length"] as? Int
                 let tmpl = g["chat_template"] as? String
-                gguf = .init(architecture: arch, context_length: ctx, chat_template: tmpl)
+                let imatrix = g["quantize_imatrix_file"] as? String
+                gguf = .init(architecture: arch, context_length: ctx, chat_template: tmpl, quantize_imatrix_file: imatrix)
             }
             // Parse siblings for both GGUF projector files and MLX processors
             var projectorFiles: [ModelHubMeta.ProjectorFile] = []

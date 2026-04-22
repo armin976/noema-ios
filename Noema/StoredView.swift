@@ -1,9 +1,6 @@
 #if os(iOS) || os(visionOS) || os(macOS)
 // StoredView.swift
 import SwiftUI
-#if canImport(LeapSDK)
-import LeapSDK
-#endif
 import Foundation
 import UniformTypeIdentifiers
 import PDFKit
@@ -13,10 +10,14 @@ struct ModelRow: View {
     let isLoading: Bool
     var isLoaded: Bool = false
     var settingsAction: (() -> Void)? = nil
+    var deleteAction: (() -> Void)? = nil
     let loadAction: () -> Void
     @EnvironmentObject var vm: ChatVM
+    @EnvironmentObject var modelManager: AppModelManager
 
     var body: some View {
+        let hidesArchitectureAndMoEChips = model.format == .ane || model.format == .afm
+        let hidesStoredSize = model.format == .afm
         let displayName: String = {
             if model.quant.isEmpty {
                 return model.name
@@ -27,7 +28,7 @@ struct ModelRow: View {
             }
         }()
 
-        HStack {
+        let rowContent = HStack {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     if model.isFavourite {
@@ -63,8 +64,13 @@ struct ModelRow: View {
 
                 // Chips
                 HStack(spacing: 8) {
-                    if model.format != .slm {
+                    if !model.quant.isEmpty && model.format != .ane {
                         chip(text: QuantExtractor.shortLabel(from: model.quant, format: model.format), color: .accentColor)
+                    }
+                    if let source = model.slmSourceFormatLabel {
+                        chip(text: source, color: .secondary)
+                    }
+                    if model.format != .et && !hidesArchitectureAndMoEChips {
                         if !model.architectureFamily.isEmpty {
                             chip(text: model.architectureFamily.uppercased(), color: .secondary)
                         }
@@ -80,7 +86,7 @@ struct ModelRow: View {
 
                 // Format chip
                 HStack {
-                    Text(model.format.rawValue)
+                    Text(model.format.displayName)
                         .font(FontTheme.caption)
                         .fontWeight(.bold)
                         .padding(.horizontal, 8)
@@ -88,15 +94,31 @@ struct ModelRow: View {
                         .background(model.format.tagGradient)
                         .clipShape(Capsule())
                         .foregroundColor(.white)
+                    if model.format == .et {
+                        let backend = modelManager.displaySettings(for: model).etBackend.displayName
+                        Text(backend)
+                            .font(FontTheme.caption.weight(.semibold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(AppTheme.cardFill)
+                            .overlay(
+                                Capsule()
+                                    .stroke(AppTheme.cardStroke, lineWidth: 1)
+                            )
+                            .clipShape(Capsule())
+                            .foregroundStyle(AppTheme.text)
+                    }
                     Spacer(minLength: 0)
                 }
             }
             Spacer()
             
             VStack(alignment: .trailing, spacing: 6) {
-                Text(String(format: "%.1f GB", model.sizeGB))
-                    .font(FontTheme.caption)
-                    .foregroundStyle(AppTheme.secondaryText)
+                if !hidesStoredSize {
+                    Text(String(format: "%.1f GB", model.sizeGB))
+                        .font(FontTheme.caption)
+                        .foregroundStyle(AppTheme.secondaryText)
+                }
                 
                 if !isLoaded {
                     #if os(macOS)
@@ -131,7 +153,21 @@ struct ModelRow: View {
         }
         .padding(.vertical, 12)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(model.name), size \(String(format: "%.1f", model.sizeGB)) gigabytes")
+        .accessibilityLabel(hidesStoredSize ? model.name : "\(model.name), size \(String(format: "%.1f", model.sizeGB)) gigabytes")
+
+        if let settingsAction, let deleteAction {
+            rowContent
+                .accessibilityAction(named: Text(LocalizedStringKey("Model Settings")), settingsAction)
+                .accessibilityAction(named: Text(LocalizedStringKey("Delete")), deleteAction)
+        } else if let settingsAction {
+            rowContent
+                .accessibilityAction(named: Text(LocalizedStringKey("Model Settings")), settingsAction)
+        } else if let deleteAction {
+            rowContent
+                .accessibilityAction(named: Text(LocalizedStringKey("Delete")), deleteAction)
+        } else {
+            rowContent
+        }
     }
     
     @ViewBuilder
@@ -202,6 +238,8 @@ struct StoredView: View {
     @State private var pendingLoad: (LocalModel, ModelSettings)?
     @AppStorage("hideGGUFOffloadWarning") private var hideGGUFOffloadWarning = false
     @State private var showRemoteBackendForm = false
+    @State private var modelPendingDeletion: LocalModel?
+    @State private var datasetPendingDeletion: LocalDataset?
 
     var body: some View {
         NavigationStack {
@@ -294,6 +332,63 @@ struct StoredView: View {
             } message: {
                 Text(vm.loadError ?? "")
             }
+            .alert(
+                datasetDeleteConfirmationTitle,
+                isPresented: Binding(
+                    get: { datasetPendingDeletion != nil },
+                    set: { isPresented in
+                        if !isPresented {
+                            datasetPendingDeletion = nil
+                        }
+                    }
+                )
+            ) {
+                Button(LocalizedStringKey("Delete"), role: .destructive) {
+                    guard let dataset = datasetPendingDeletion else { return }
+                    datasetPendingDeletion = nil
+                    try? datasetManager.delete(dataset)
+                    if selectedDataset?.datasetID == dataset.datasetID {
+                        selectedDataset = nil
+                    }
+                    if importedDataset?.datasetID == dataset.datasetID {
+                        importedDataset = nil
+                    }
+                }
+                Button(LocalizedStringKey("Cancel"), role: .cancel) {
+                    datasetPendingDeletion = nil
+                }
+            } message: {
+                Text(LocalizedStringKey("This will remove the dataset and its embeddings from this device."))
+            }
+            .alert(
+                modelDeleteConfirmationTitle,
+                isPresented: Binding(
+                    get: { modelPendingDeletion != nil },
+                    set: { isPresented in
+                        if !isPresented {
+                            modelPendingDeletion = nil
+                        }
+                    }
+                )
+            ) {
+                Button(LocalizedStringKey("Delete"), role: .destructive) {
+                    guard let model = modelPendingDeletion else { return }
+                    guard model.format != .afm else {
+                        modelPendingDeletion = nil
+                        return
+                    }
+                    modelPendingDeletion = nil
+                    Task { @MainActor in
+                        if modelManager.loadedModel?.id == model.id {
+                            await vm.unload()
+                        }
+                        modelManager.delete(model)
+                    }
+                }
+                Button(LocalizedStringKey("Cancel"), role: .cancel) {
+                    modelPendingDeletion = nil
+                }
+            }
             .confirmationDialog(
                 Text(LocalizedStringKey("Model doesn't support GPU offload")),
                 isPresented: $showOffloadWarning,
@@ -319,7 +414,7 @@ struct StoredView: View {
                 if DeviceGPUInfo.supportsGPUOffload {
                     Text(LocalizedStringKey("This model doesn't support GPU offload and generation speed will be significantly slower. Consider switching to an MLX model."))
                 } else {
-                    Text(LocalizedStringKey("This model doesn't support GPU offload and generation speed will be significantly slower. Fastest option on this device: use an SLM (Leap) model."))
+                    Text(LocalizedStringKey("This model doesn't support GPU offload and generation speed will be significantly slower. Fastest option on this device: use an ET model."))
                 }
             }
             .fileImporter(isPresented: $showImporter,
@@ -375,6 +470,54 @@ struct StoredView: View {
                 modelManager.refreshRemoteBackends(offGrid: false)
             }
         }
+        .onAppear {
+            openPendingDatasetDetailIfNeeded()
+        }
+        .onChangeCompat(of: tabRouter.pendingStoredDatasetID) { _, _ in
+            openPendingDatasetDetailIfNeeded()
+        }
+        .onChangeCompat(of: modelManager.downloadedDatasets) { _, _ in
+            openPendingDatasetDetailIfNeeded()
+        }
+    }
+
+    private func openPendingDatasetDetailIfNeeded() {
+        guard let pendingID = tabRouter.pendingStoredDatasetID else { return }
+        guard let dataset = modelManager.downloadedDatasets.first(where: { $0.datasetID == pendingID }) else { return }
+        tabRouter.pendingStoredDatasetID = nil
+        guard selectedDataset?.datasetID != dataset.datasetID else { return }
+        selectedDataset = dataset
+    }
+
+    private var modelDeleteConfirmationTitle: String {
+        guard let model = modelPendingDeletion else { return String(localized: "Delete") }
+        return String.localizedStringWithFormat(String(localized: "Delete %@?"), model.name)
+    }
+
+    private var datasetDeleteConfirmationTitle: String {
+        guard let dataset = datasetPendingDeletion else { return String(localized: "Delete") }
+        return String.localizedStringWithFormat(String(localized: "Delete %@?"), dataset.name)
+    }
+
+    private var afmHiddenNotice: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Apple Foundation Model is hidden. You can re-enable it in Settings.")
+                .font(FontTheme.body)
+                .foregroundStyle(AppTheme.text)
+            Button {
+                tabRouter.dismissAFMHiddenNotice()
+                withAnimation(.easeInOut) {
+                    tabRouter.selection = .settings
+                }
+            } label: {
+                Label("Open Settings", systemImage: "gearshape")
+            }
+            .buttonStyle(.bordered)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(20)
+        .background(AppTheme.cardFill)
+        .cornerRadius(AppTheme.cornerRadius)
     }
 
     @ViewBuilder private var modelsSection: some View {
@@ -395,6 +538,10 @@ struct StoredView: View {
                 .contentShape(Rectangle())
                 .foregroundStyle(Color.accentColor)
                 .accessibilityLabel(LocalizedStringKey("Add remote endpoint"))
+            }
+
+            if tabRouter.isAFMHiddenNoticeVisible {
+                afmHiddenNotice
             }
 
             if modelManager.downloadedModels.isEmpty {
@@ -440,7 +587,9 @@ struct StoredView: View {
                     ForEach(modelManager.downloadedModels, id: \.id) { model in
                         ModelRow(model: model,
                                 isLoading: loadingModelID == model.id,
-                                isLoaded: modelManager.loadedModel?.id == model.id) {
+                                isLoaded: modelManager.loadedModel?.id == model.id,
+                                settingsAction: { selectedModel = model },
+                                deleteAction: model.format == .afm ? nil : { modelPendingDeletion = model }) {
                             load(model)
                         }
                         .environmentObject(vm)
@@ -457,15 +606,12 @@ struct StoredView: View {
                             selectedModel = model
                         }
                         .contextMenu {
-                            Button(role: .destructive) {
-                                Task {
-                                    if modelManager.loadedModel?.id == model.id {
-                                        await vm.unload()
-                                    }
-                                    modelManager.delete(model)
+                            if model.format != .afm {
+                                Button(role: .destructive) {
+                                    modelPendingDeletion = model
+                                } label: {
+                                    Label(LocalizedStringKey("Delete"), systemImage: "trash")
                                 }
-                            } label: {
-                                Label(LocalizedStringKey("Delete"), systemImage: "trash")
                             }
                         }
                     }
@@ -521,7 +667,11 @@ struct StoredView: View {
             
             LazyVStack(spacing: 16) {
                 ForEach(modelManager.downloadedDatasets) { ds in
-                    DatasetRow(dataset: ds, indexing: datasetManager.indexingDatasetID == ds.datasetID)
+                    DatasetRow(
+                        dataset: ds,
+                        indexing: datasetManager.indexingDatasetID == ds.datasetID,
+                        deleteAction: { datasetPendingDeletion = ds }
+                    )
                         .padding(20)
                         .background(AppTheme.cardFill)
                         .clipShape(RoundedRectangle(cornerRadius: AppTheme.cornerRadius, style: .continuous))
@@ -533,7 +683,7 @@ struct StoredView: View {
                         .onTapGesture { selectedDataset = ds }
                         .contextMenu {
                             Button(role: .destructive) {
-                                try? datasetManager.delete(ds)
+                                datasetPendingDeletion = ds
                             } label: {
                                 Label(LocalizedStringKey("Delete"), systemImage: "trash")
                             }
@@ -546,6 +696,9 @@ struct StoredView: View {
 
     private func load(_ model: LocalModel, settings: ModelSettings? = nil, bypassWarning: Bool = false) {
         let resolvedSettings = settings ?? modelManager.settings(for: model)
+        if !bypassWarning {
+            AppSoundPlayer.play(.loadPress)
+        }
         if model.format == .gguf && !DeviceGPUInfo.supportsGPUOffload && !hideGGUFOffloadWarning && !bypassWarning {
             pendingLoad = (model, resolvedSettings)
             showOffloadWarning = true
@@ -553,7 +706,7 @@ struct StoredView: View {
         }
         loadingModelID = model.id
         Task { @MainActor in
-            let settings = resolvedSettings
+            let settings = modelManager.normalizeLocalSettings(resolvedSettings, for: model)
             // Unload any current model to get accurate RAM info
             await vm.unload()
             try? await Task.sleep(nanoseconds: 200_000_000)
@@ -564,7 +717,17 @@ struct StoredView: View {
                 let sizeBytes = Int64(model.sizeGB * 1_073_741_824.0)
                 let ctx = Int(settings.contextLength)
                 let layerHint: Int? = model.totalLayers > 0 ? model.totalLayers : nil
-            if !ModelRAMAdvisor.fitsInRAM(format: model.format, sizeBytes: sizeBytes, contextLength: ctx, layerCount: layerHint, moeInfo: model.moeInfo) {
+                let kvCacheEstimate = ModelRAMAdvisor.GGUFKVCacheEstimate.resolved(from: settings)
+                if !ModelRAMAdvisor.fitsInRAM(
+                    format: model.format,
+                    sizeBytes: sizeBytes,
+                    contextLength: ctx,
+                    layerCount: layerHint,
+                    moeInfo: model.moeInfo,
+                    kvCacheEstimate: kvCacheEstimate
+                ) {
+                    AppSoundPlayer.play(.error)
+                    Haptics.error()
                     vm.loadError = "Model likely exceeds memory budget. Lower context size or use a smaller quant/model."
                     loadingModelID = nil
                     return
@@ -616,15 +779,29 @@ struct StoredView: View {
                         return
                     }
                 }
-            case .slm:
+            case .et:
                 break
-            case .apple:
-                // Unsupported model format
-                loadingModelID = nil
-                return
+            case .ane:
+                var isDir: ObjCBool = false
+                if FileManager.default.fileExists(atPath: loadURL.path, isDirectory: &isDir) {
+                    loadURL = isDir.boolValue ? loadURL : loadURL.deletingLastPathComponent()
+                } else {
+                    var d: ObjCBool = false
+                    let dir = InstalledModelsStore.baseDir(for: .ane, modelID: model.modelID)
+                    if FileManager.default.fileExists(atPath: dir.path, isDirectory: &d), d.boolValue {
+                        loadURL = dir
+                    } else {
+                        loadingModelID = nil
+                        return
+                    }
+                }
+            case .afm:
+                loadURL = InstalledModelsStore.baseDir(for: .afm, modelID: model.modelID)
+                try? FileManager.default.createDirectory(at: loadURL, withIntermediateDirectories: true)
             }
             let success = await vm.load(url: loadURL, settings: settings, format: model.format)
             if success {
+                modelManager.updateSettings(settings, for: model)
                 modelManager.markModelUsed(model)
                 tabRouter.selection = .chat
             } else {
@@ -707,6 +884,8 @@ struct StoredView: View {
     @State private var showOffloadWarning = false
     @State private var pendingLoad: (LocalModel, ModelSettings)?
     @State private var activeDatasetModal: StoredDatasetModal?
+    @State private var modelPendingDeletion: LocalModel?
+    @State private var datasetPendingDeletion: LocalDataset?
 
     var body: some View {
         navigationContent
@@ -722,6 +901,69 @@ struct StoredView: View {
             Button(LocalizedStringKey("OK"), role: .cancel) {}
         } message: {
             Text(vm.loadError ?? "")
+        }
+        .alert(
+            datasetDeleteConfirmationTitle,
+            isPresented: Binding(
+                get: { datasetPendingDeletion != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        datasetPendingDeletion = nil
+                    }
+                }
+            )
+        ) {
+            Button(LocalizedStringKey("Delete"), role: .destructive) {
+                guard let dataset = datasetPendingDeletion else { return }
+                datasetPendingDeletion = nil
+                try? datasetManager.delete(dataset)
+                if selectedDataset?.datasetID == dataset.datasetID {
+                    selectedDataset = nil
+                }
+                if importedDataset?.datasetID == dataset.datasetID {
+                    importedDataset = nil
+                }
+                if modelManager.activeDataset?.datasetID == dataset.datasetID {
+                    modelManager.setActiveDataset(nil)
+                }
+                if activeDatasetModal != nil {
+                    activeDatasetModal = nil
+                }
+            }
+            Button(LocalizedStringKey("Cancel"), role: .cancel) {
+                datasetPendingDeletion = nil
+            }
+        } message: {
+            Text(LocalizedStringKey("This will remove the dataset and its embeddings from this device."))
+        }
+        .alert(
+            modelDeleteConfirmationTitle,
+            isPresented: Binding(
+                get: { modelPendingDeletion != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        modelPendingDeletion = nil
+                    }
+                }
+            )
+        ) {
+            Button(LocalizedStringKey("Delete"), role: .destructive) {
+                guard let model = modelPendingDeletion else { return }
+                guard model.format != .afm else {
+                    modelPendingDeletion = nil
+                    return
+                }
+                modelPendingDeletion = nil
+                Task { @MainActor in
+                    if modelManager.loadedModel?.id == model.id {
+                        await vm.unload()
+                    }
+                    modelManager.delete(model)
+                }
+            }
+            Button(LocalizedStringKey("Cancel"), role: .cancel) {
+                modelPendingDeletion = nil
+            }
         }
         .confirmationDialog(
             Text(LocalizedStringKey("Model doesn't support GPU offload")),
@@ -748,7 +990,7 @@ struct StoredView: View {
             if DeviceGPUInfo.supportsGPUOffload {
                 Text(LocalizedStringKey("This model doesn't support GPU offload and generation speed will be significantly slower. Consider switching to an MLX model."))
             } else {
-                Text(LocalizedStringKey("This model doesn't support GPU offload and generation speed will be significantly slower. Fastest option on this device: use an SLM (Leap) model."))
+                Text(LocalizedStringKey("This model doesn't support GPU offload and generation speed will be significantly slower. Fastest option on this device: use an ET model."))
             }
         }
         .fileImporter(
@@ -833,6 +1075,15 @@ struct StoredView: View {
                 dismissDatasetModal()
             }
         }
+        .onAppear {
+            openPendingDatasetDetailIfNeeded()
+        }
+        .onChangeCompat(of: tabRouter.pendingStoredDatasetID) { _, _ in
+            openPendingDatasetDetailIfNeeded()
+        }
+        .onChangeCompat(of: modelManager.downloadedDatasets) { _, _ in
+            openPendingDatasetDetailIfNeeded()
+        }
     }
 
     private var navigationContent: some View {
@@ -864,6 +1115,49 @@ struct StoredView: View {
             modelManager.refreshRemoteBackends(offGrid: offGrid)
             datasetManager.reloadFromDisk()
         }
+    }
+
+    private func openPendingDatasetDetailIfNeeded() {
+        guard let pendingID = tabRouter.pendingStoredDatasetID else { return }
+        guard let dataset = modelManager.downloadedDatasets.first(where: { $0.datasetID == pendingID }) else { return }
+        tabRouter.pendingStoredDatasetID = nil
+        guard selectedDataset?.datasetID != dataset.datasetID else { return }
+        selectedDataset = dataset
+    }
+
+    private var modelDeleteConfirmationTitle: String {
+        guard let model = modelPendingDeletion else { return String(localized: "Delete") }
+        return String.localizedStringWithFormat(String(localized: "Delete %@?"), model.name)
+    }
+
+    private var datasetDeleteConfirmationTitle: String {
+        guard let dataset = datasetPendingDeletion else { return String(localized: "Delete") }
+        return String.localizedStringWithFormat(String(localized: "Delete %@?"), dataset.name)
+    }
+
+    private var afmHiddenNotice: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Apple Foundation Model is hidden. You can re-enable it in Settings.")
+                .font(FontTheme.body)
+                .foregroundStyle(AppTheme.text)
+            Button {
+                tabRouter.dismissAFMHiddenNotice()
+                withAnimation(.easeInOut) {
+                    tabRouter.selection = .settings
+                }
+            } label: {
+                Label("Open Settings", systemImage: "gearshape")
+            }
+            .buttonStyle(.bordered)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(20)
+        .glassifyIfAvailable(in: RoundedRectangle(cornerRadius: AppTheme.cornerRadius, style: .continuous))
+        .background(AppTheme.cardFill)
+        .overlay(
+            RoundedRectangle(cornerRadius: AppTheme.cornerRadius, style: .continuous)
+                .stroke(AppTheme.cardStroke, lineWidth: 1)
+        )
     }
 
     private var offGridBadge: some View {
@@ -926,6 +1220,10 @@ struct StoredView: View {
                 .foregroundStyle(Color.accentColor)
                 .accessibilityLabel(LocalizedStringKey("Add remote endpoint"))
             }
+
+            if tabRouter.isAFMHiddenNoticeVisible {
+                afmHiddenNotice
+            }
             
             if modelManager.downloadedModels.isEmpty {
                 VStack(spacing: 16) {
@@ -977,7 +1275,8 @@ struct StoredView: View {
                                 model: model,
                                 isLoading: loadingModelID == model.id,
                                 isLoaded: modelManager.loadedModel?.id == model.id,
-                                settingsAction: { selectedModel = model }
+                                settingsAction: { selectedModel = model },
+                                deleteAction: model.format == .afm ? nil : { modelPendingDeletion = model }
                             ) {
                                 load(model)
                             }
@@ -991,12 +1290,9 @@ struct StoredView: View {
                             Button(LocalizedStringKey("Open Settings")) {
                                 selectedModel = model
                             }
-                            Button(LocalizedStringKey("Delete"), role: .destructive) {
-                                Task {
-                                    if modelManager.loadedModel?.id == model.id {
-                                        await vm.unload()
-                                    }
-                                    modelManager.delete(model)
+                            if model.format != .afm {
+                                Button(LocalizedStringKey("Delete"), role: .destructive) {
+                                    modelPendingDeletion = model
                                 }
                             }
                         }
@@ -1105,13 +1401,17 @@ struct StoredView: View {
                 LazyVStack(spacing: 16) {
                     ForEach(modelManager.downloadedDatasets) { ds in
                         storedCard {
-                            DatasetRow(dataset: ds, indexing: datasetManager.indexingDatasetID == ds.datasetID)
+                            DatasetRow(
+                                dataset: ds,
+                                indexing: datasetManager.indexingDatasetID == ds.datasetID,
+                                deleteAction: { datasetPendingDeletion = ds }
+                            )
                         }
                         .contentShape(Rectangle())
                         .onTapGesture { selectedDataset = ds }
                         .contextMenu {
                             Button(LocalizedStringKey("Delete"), role: .destructive) {
-                                try? datasetManager.delete(ds)
+                                datasetPendingDeletion = ds
                             }
                         }
                     }
@@ -1123,6 +1423,9 @@ struct StoredView: View {
 
     private func load(_ model: LocalModel, settings: ModelSettings? = nil, bypassWarning: Bool = false) {
         let resolvedSettings = settings ?? modelManager.settings(for: model)
+        if !bypassWarning {
+            AppSoundPlayer.play(.loadPress)
+        }
         if model.format == .gguf && !DeviceGPUInfo.supportsGPUOffload && !hideGGUFOffloadWarning && !bypassWarning {
             pendingLoad = (model, resolvedSettings)
             showOffloadWarning = true
@@ -1139,7 +1442,17 @@ struct StoredView: View {
                 let sizeBytes = Int64(model.sizeGB * 1_073_741_824.0)
                 let ctx = Int(settings.contextLength)
                 let layerHint: Int? = model.totalLayers > 0 ? model.totalLayers : nil
-                if !ModelRAMAdvisor.fitsInRAM(format: model.format, sizeBytes: sizeBytes, contextLength: ctx, layerCount: layerHint, moeInfo: model.moeInfo) {
+                let kvCacheEstimate = ModelRAMAdvisor.GGUFKVCacheEstimate.resolved(from: settings)
+                if !ModelRAMAdvisor.fitsInRAM(
+                    format: model.format,
+                    sizeBytes: sizeBytes,
+                    contextLength: ctx,
+                    layerCount: layerHint,
+                    moeInfo: model.moeInfo,
+                    kvCacheEstimate: kvCacheEstimate
+                ) {
+                    AppSoundPlayer.play(.error)
+                    Haptics.error()
                     vm.loadError = String(localized: "Model likely exceeds memory budget. Lower context size or use a smaller quant/model.")
                     loadingModelID = nil
                     return
@@ -1191,11 +1504,25 @@ struct StoredView: View {
                         return
                     }
                 }
-            case .slm:
+            case .et:
                 break
-            case .apple:
-                loadingModelID = nil
-                return
+            case .ane:
+                var isDir: ObjCBool = false
+                if FileManager.default.fileExists(atPath: loadURL.path, isDirectory: &isDir) {
+                    loadURL = isDir.boolValue ? loadURL : loadURL.deletingLastPathComponent()
+                } else {
+                    var d: ObjCBool = false
+                    let dir = InstalledModelsStore.baseDir(for: .ane, modelID: model.modelID)
+                    if FileManager.default.fileExists(atPath: dir.path, isDirectory: &d), d.boolValue {
+                        loadURL = dir
+                    } else {
+                        loadingModelID = nil
+                        return
+                    }
+                }
+            case .afm:
+                loadURL = InstalledModelsStore.baseDir(for: .afm, modelID: model.modelID)
+                try? FileManager.default.createDirectory(at: loadURL, withIntermediateDirectories: true)
             }
 
             let success = await vm.load(url: loadURL, settings: settings, format: model.format)
@@ -1326,7 +1653,7 @@ struct StoredView: View {
     private func presentModelSettings(for model: LocalModel) {
         macModalPresenter.present(
             title: model.name,
-            subtitle: model.format.rawValue,
+            subtitle: model.format.displayName,
             showCloseButton: true,
             dimensions: MacModalDimensions(
                 minWidth: 600,

@@ -6,14 +6,23 @@ import Combine
 enum ExploreSearchMode: String {
     case gguf = "GGUF"
     case mlx = "MLX"
-    case slm  = "SLM"
+    case et  = "ET"
+    case ane = "ANE"
+    case afm = "AFM"
+
+    var displayName: String {
+        switch self {
+        case .ane:
+            return "CML"
+        default:
+            return rawValue
+        }
+    }
 }
 @MainActor
 final class ExploreViewModel: ObservableObject {
     @Published private(set) var recommended: [ModelRecord] = []
     @Published private(set) var searchResults: [ModelRecord] = []
-    @Published private(set) var leapModels: [LeapCatalogEntry] = []
-    @Published private(set) var filteredLeap: [LeapCatalogEntry] = []
     @Published var searchText: String = ""
     @Published private(set) var isSearching = false
     @Published private(set) var isLoadingPage = false
@@ -22,15 +31,6 @@ final class ExploreViewModel: ObservableObject {
     @Published var searchError: String?
     @Published var searchMode: ExploreSearchMode = ExploreSearchMode.gguf {
         didSet {
-#if os(visionOS)
-            // The SLM mode is not presented on visionOS; coerce back to GGUF/MLX if set.
-            if searchMode == .slm { searchMode = .gguf }
-#endif
-#if os(macOS)
-            if searchMode == .slm {
-                searchMode = DeviceGPUInfo.supportsGPUOffload ? .mlx : .gguf
-            }
-#endif
         }
     }
     
@@ -53,14 +53,7 @@ final class ExploreViewModel: ObservableObject {
         $searchText
             .removeDuplicates()
             .debounce(for: .milliseconds(350), scheduler: RunLoop.main)
-            .sink { [weak self] text in
-                guard let self else { return }
-                if text.trimmingCharacters(in: .whitespaces).isEmpty {
-                    filteredLeap = leapModels
-                } else {
-                    filteredLeap = leapModels.filter { $0.displayName.localizedCaseInsensitiveContains(text) || $0.slug.localizedCaseInsensitiveContains(text) }
-                }
-            }
+            .sink { _ in }
             .store(in: &cancellables)
     }
 
@@ -78,21 +71,16 @@ final class ExploreViewModel: ObservableObject {
         if recommended.isEmpty {
             let reg = registry
             if let list = try? await reg.curated() {
+                print("[ExploreVM] curated() returned \(list.count) records")
                 var seen = Set<String>()
                 let deduped = list.filter { seen.insert($0.id).inserted }
                 recommended = Self.prioritizeAuthors(in: deduped)
+                print("[ExploreVM] recommended set to \(recommended.count) records")
                 prefetchVisionStatus(for: recommended)
+            } else {
+                print("[ExploreVM] curated() returned nil (threw or empty)")
             }
         }
-        #if !os(macOS)
-        if leapModels.isEmpty {
-            let models = await LeapCatalogService.loadCatalog()
-            // Hide VL (vision-capable) SLM bundles from the Explore SLM list
-            let nonVision = models.filter { !LeapCatalogService.isVisionQuantizationSlug($0.slug) }
-            leapModels = nonVision
-            filteredLeap = nonVision
-        }
-        #endif
     }
 
     func details(for id: String) async -> ModelDetails? {
@@ -104,7 +92,6 @@ final class ExploreViewModel: ObservableObject {
         searchTask?.cancel()
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { isSearching = false; isLoadingSearch = false; return }
-        guard searchMode != .slm else { return }
         isSearching = true
         searchTask = Task { [weak self] in
             await self?.search(query: trimmed, reset: true)
@@ -124,6 +111,15 @@ final class ExploreViewModel: ObservableObject {
         isLoadingSearch = true
         let reg = registry
         let mode = searchMode
+        let formatFilter: ModelFormat? = {
+            switch mode {
+            case .gguf: return .gguf
+            case .mlx: return .mlx
+            case .et: return .et
+            case .ane: return .ane
+            case .afm: return .afm
+            }
+        }()
         let startPage = page
         var existing = reset ? Set<String>() : Set(searchResults.map { $0.id })
 
@@ -132,10 +128,13 @@ final class ExploreViewModel: ObservableObject {
         var pageCount = 0
         
         // Determine if we should include vision models based on search mode and UI filter.
-        // In MLX and GGUF modes, default to fetching both pipelines; the format filter
+        // In MLX/GGUF/ET/ANE modes, default to fetching both pipelines; the format filter
         // is applied client‑side. When the user selects the Vision filter, restrict
         // to vision pipeline only; when Text is selected, restrict to text‑generation only.
-        var includeVisionModels = (mode == .gguf || mode == .mlx)
+        var includeVisionModels = (mode == .gguf || mode == .mlx || mode == .et || mode == .ane)
+        if mode == .afm {
+            includeVisionModels = false
+        }
         var visionOnly = false
         if let fm = filterManager, UIConstants.showMultimodalUI {
             switch fm.filter {
@@ -150,7 +149,7 @@ final class ExploreViewModel: ObservableObject {
         }
         
         do {
-            for try await rec in reg.searchStream(query: query, page: startPage, includeVisionModels: includeVisionModels, visionOnly: visionOnly) {
+            for try await rec in reg.searchStream(query: query, page: startPage, format: formatFilter, includeVisionModels: includeVisionModels, visionOnly: visionOnly) {
                 pageCount += 1
                 unfilteredResults.append(rec)
                 
@@ -169,9 +168,15 @@ final class ExploreViewModel: ObservableObject {
                         || rec.id.hasPrefix("mlx-community/")
                         || rec.id.hasPrefix("lmstudio-community/")
                     shouldInclude = matchesMLX && (!visionOnly || isVLM)
-                case .slm:
-                    // SLM is not used for search; keep false.
-                    shouldInclude = false
+                case .et:
+                    // ET mode uses Hugging Face `filter=executorch`.
+                    shouldInclude = rec.formats.contains(.et) && (!visionOnly || isVLM)
+                case .ane:
+                    // ANE mode uses Hugging Face `filter=coreml`.
+                    shouldInclude = rec.formats.contains(.ane) && (!visionOnly || isVLM)
+                case .afm:
+                    // AFM mode is local-only and text-only.
+                    shouldInclude = rec.formats.contains(.afm) && !isVLM
                 }
                 
                 #if DEBUG
@@ -203,16 +208,6 @@ final class ExploreViewModel: ObservableObject {
 
         }
     
-        // MLX should be a strict filter on every platform (macOS and iOS), matching user expectations.
-        if fetched.isEmpty && !unfilteredResults.isEmpty && mode == .slm {
-            print("[ExploreViewModel] No filtered results for '\(query)' in SLM mode, showing all \(unfilteredResults.count) results")
-            for rec in unfilteredResults {
-                if existing.insert(rec.id).inserted {
-                    fetched.append(rec)
-                }
-            }
-        }
-        
         let prioritized = Self.prioritizeAuthors(in: fetched)
         // Append, then re-dedupe and re-prioritize to avoid any duplicates slipping through
         let appended = searchResults + prioritized
@@ -225,7 +220,7 @@ final class ExploreViewModel: ObservableObject {
     }
 
     func loadNextPage() {
-        guard searchMode != .slm && isSearching && canLoadMore && !isLoadingPage else { return }
+        guard isSearching && canLoadMore && !isLoadingPage else { return }
         isLoadingPage = true
         page += 1
         searchTask = Task { [weak self, page] in
@@ -237,44 +232,36 @@ final class ExploreViewModel: ObservableObject {
     }
 
     func toggleMode() {
-#if os(visionOS)
-        // Cycle between GGUF and MLX only; SLM is not offered on visionOS.
-        switch searchMode {
-        case .gguf:
-            searchMode = .mlx
-        default:
-            searchMode = .gguf
-        }
-#elseif os(macOS)
-        switch searchMode {
-        case .gguf:
-            searchMode = .mlx
-        case .mlx, .slm:
-            searchMode = .gguf
-        }
-#else
         if !DeviceGPUInfo.supportsGPUOffload {
-            // Pre-A13: skip MLX entirely; cycle between GGUF and SLM only
+            // Pre-A13: skip MLX entirely; cycle GGUF -> ET -> ANE -> GGUF.
             switch searchMode {
             case .gguf:
-                searchMode = .slm
+                searchMode = .et
             case .mlx:
                 // If somehow set to MLX, jump to GGUF
                 searchMode = .gguf
-            case .slm:
+            case .et:
+                searchMode = .ane
+            case .ane:
+                searchMode = .gguf
+            case .afm:
                 searchMode = .gguf
             }
         } else {
+            // GPU-capable cycle: GGUF -> MLX -> ET -> ANE -> GGUF.
             switch searchMode {
             case .gguf:
                 searchMode = .mlx
             case .mlx:
-                searchMode = .slm
-            case .slm:
+                searchMode = .et
+            case .et:
+                searchMode = .ane
+            case .ane:
+                searchMode = .gguf
+            case .afm:
                 searchMode = .gguf
             }
         }
-#endif
 
         handleSearchInput(searchText)
     }
@@ -290,7 +277,7 @@ final class ExploreViewModel: ObservableObject {
         // Prefetch for GGUF/MLX repos and also any with an explicit VLM pipeline tag so
         // Vision mode results on iOS/macOS can resolve quickly.
         let repos = records
-            .filter { $0.formats.contains(.gguf) || $0.formats.contains(.mlx) || ($0.pipeline_tag == "image-text-to-text") }
+            .filter { $0.formats.contains(.gguf) || $0.formats.contains(.mlx) || $0.formats.contains(.et) || $0.formats.contains(.ane) || ($0.pipeline_tag == "image-text-to-text") }
             .map(\.id)
             .filter { !prefetchedVisionRepos.contains($0) }
         guard !repos.isEmpty else { return }

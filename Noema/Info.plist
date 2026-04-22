@@ -72,6 +72,11 @@
                 <string>prcb7njmu6.skadnetwork</string>
             </dict>
         </array>
+        <key>NSAppTransportSecurity</key>
+        <dict>
+                <key>NSAllowsArbitraryLoads</key>
+                <true/>
+        </dict>
 
 </dict>
 </plist>

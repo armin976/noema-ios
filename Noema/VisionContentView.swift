@@ -18,7 +18,7 @@ struct MainView: View {
     @EnvironmentObject private var walkthrough: GuidedWalkthroughManager
     @AppStorage("appearance") private var appearance = "system"
     @AppStorage("offGrid") private var offGrid = false
-    @AppStorage("visionVerticalPanelLayout") private var useVerticalPanelLayout = true
+    @AppStorage("visionVerticalPanelLayout") private var useVerticalPanelLayout = false
     @AppStorage("storedPanelWindowActive") private var storedPanelWindowActive = false
     @AppStorage("storedPanelWindowCount") private var storedPanelWindowCount = 0
     @State private var didAutoLoad = false
@@ -80,16 +80,13 @@ struct MainView: View {
         .onPreferenceChange(GuidedHighlightPreferenceKey.self) { anchors in
             walkthrough.updateAnchors(anchors)
         }
-        // Global indexing banner across all tabs
         .overlay(alignment: .top) {
-            IndexingNotificationView(datasetManager: datasetManager)
-                .environmentObject(chatVM)
-                .padding(.top, UIDevice.current.userInterfaceIdiom == .pad ? 60 : 8)
-        }
-        // Global model loading notification across all tabs
-        .overlay(alignment: .top) {
-            ModelLoadingNotificationView(modelManager: modelManager, loadingTracker: chatVM.loadingProgressTracker)
-                .padding(.top, UIDevice.current.userInterfaceIdiom == .pad ? 120 : 68)
+            TopNotificationStack(
+                datasetManager: datasetManager,
+                modelManager: modelManager,
+                loadingTracker: chatVM.loadingProgressTracker
+            )
+            .padding(.top, UIDevice.current.userInterfaceIdiom == .pad ? 60 : 8)
         }
         .overlay {
             GuidedWalkthroughOverlay(allowedSteps: mainGuideSteps)
@@ -138,7 +135,15 @@ struct MainView: View {
             }
             updateStoredPanelWindow(forceRecreation: true)
         }
-        .onChangeCompat(of: tabRouter.selection) { _, newValue in
+        .onChangeCompat(of: tabRouter.selection) { oldValue, newValue in
+            if oldValue != .chat,
+               newValue == .chat,
+               chatVM.loading || chatVM.stillLoading,
+               !chatVM.canAcceptChatInput {
+                tabRouter.selection = oldValue
+                Task { await logger.log("[UI][Tab] blocked chat switch while model loading") }
+                return
+            }
             let sanitized = sanitizedSelection(newValue)
             if sanitized != newValue {
                 tabRouter.selection = sanitized

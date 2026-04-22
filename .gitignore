@@ -24,3 +24,8 @@ xcuserdata/
 
 # macOS Finder metadata
 .DS_Store
+
+# Local vendored Python runtime bundles
+Frameworks/Python-iOS.xcframework/
+Frameworks/Python-visionOS.xcframework/
+Frameworks/Python-macOS.xcframework/

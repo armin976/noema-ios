@@ -93,16 +93,13 @@ struct MainView: View {
         .onPreferenceChange(GuidedHighlightPreferenceKey.self) { anchors in
             walkthrough.updateAnchors(anchors)
         }
-        // Global indexing banner across all tabs
         .overlay(alignment: .top) {
-            IndexingNotificationView(datasetManager: datasetManager)
-                .environmentObject(chatVM)
-                .padding(.top, UIDevice.current.userInterfaceIdiom == .pad ? 60 : 8)
-        }
-        // Global model loading notification across all tabs
-        .overlay(alignment: .top) {
-            ModelLoadingNotificationView(modelManager: modelManager, loadingTracker: chatVM.loadingProgressTracker)
-                .padding(.top, UIDevice.current.userInterfaceIdiom == .pad ? 120 : 68)  // Offset below indexing notification
+            TopNotificationStack(
+                datasetManager: datasetManager,
+                modelManager: modelManager,
+                loadingTracker: chatVM.loadingProgressTracker
+            )
+            .padding(.top, UIDevice.current.userInterfaceIdiom == .pad ? 60 : 8)
         }
         .overlay {
             GuidedWalkthroughOverlay(allowedSteps: mainGuideSteps)
@@ -116,6 +113,7 @@ struct MainView: View {
         .onAppear {
             modelManager.bind(datasetManager: datasetManager)
             downloadController.configure(modelManager: modelManager, datasetManager: datasetManager)
+            downloadController.bootstrapIfNeeded()
             datasetManager.bind(downloadController: downloadController)
             chatVM.modelManager = modelManager
             chatVM.datasetManager = datasetManager

@@ -40,11 +40,13 @@ struct RemoteBackendRow: View {
                         .font(FontTheme.body)
                         .fontWeight(.medium)
                         .foregroundStyle(AppTheme.text)
-                    
-                    badge(text: backend.endpointType.displayName,
-                          color: badgeColor(for: backend.endpointType))
-                    
-                    if backend.hasAuth {
+
+                    if !backend.isOpenRouter {
+                        badge(text: backend.endpointType.displayName,
+                              color: badgeColor(for: backend.endpointType))
+                    }
+
+                    if backend.hasAuth && !backend.isOpenRouter {
                         badge(text: String(localized: "Auth"), color: .orange)
                     }
                 }
@@ -119,6 +121,7 @@ struct RemoteBackendRow: View {
     private func badgeColor(for type: RemoteBackend.EndpointType) -> Color {
         switch type {
         case .openAI: return .blue
+        case .openRouter: return .orange
         case .lmStudio: return .purple
         case .ollama: return .green
         case .cloudRelay, .noemaRelay: return .teal

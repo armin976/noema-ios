@@ -5,7 +5,7 @@ import RelayKit
 actor RelayOutbox {
     private var configuredContainerID: String?
     private let pollIntervalNanoseconds: UInt64 = 750_000_000 // 0.75s
-    private let timeout: TimeInterval = 90
+    private let timeout: TimeInterval = 180
 
     func sendAndAwaitReply(
         containerID: String,

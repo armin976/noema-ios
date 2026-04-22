@@ -5,6 +5,7 @@ struct InstalledModel: Identifiable, Codable {
     let id: UUID
     let modelID: String
     let quantLabel: String
+    let parameterCountLabel: String?
     let url: URL
     let format: ModelFormat
     let sizeBytes: Int64
@@ -16,11 +17,13 @@ struct InstalledModel: Identifiable, Codable {
     var isMultimodal: Bool = false
     var isToolCapable: Bool = false
     var moeInfo: MoEInfo? = nil
+    var etBackend: ETBackend? = nil
 
-    init(id: UUID = UUID(), modelID: String, quantLabel: String, url: URL, format: ModelFormat, sizeBytes: Int64, lastUsed: Date?, installDate: Date, checksum: String?, isFavourite: Bool, totalLayers: Int, isMultimodal: Bool = false, isToolCapable: Bool = false, moeInfo: MoEInfo? = nil) {
+    init(id: UUID = UUID(), modelID: String, quantLabel: String, parameterCountLabel: String? = nil, url: URL, format: ModelFormat, sizeBytes: Int64, lastUsed: Date?, installDate: Date, checksum: String?, isFavourite: Bool, totalLayers: Int, isMultimodal: Bool = false, isToolCapable: Bool = false, moeInfo: MoEInfo? = nil, etBackend: ETBackend? = nil) {
         self.id = id
         self.modelID = modelID
         self.quantLabel = quantLabel
+        self.parameterCountLabel = parameterCountLabel
         self.url = url
         self.format = format
         self.sizeBytes = sizeBytes
@@ -32,6 +35,7 @@ struct InstalledModel: Identifiable, Codable {
         self.isMultimodal = isMultimodal
         self.isToolCapable = isToolCapable
         self.moeInfo = moeInfo
+        self.etBackend = etBackend
     }
 }
 
@@ -46,6 +50,11 @@ extension InstalledModel {
 }
 
 final class InstalledModelsStore {
+    private struct PathMigration: Sendable {
+        let oldPath: String
+        let newPath: String
+    }
+
     private var items: [InstalledModel] = []
     private let url: URL
     private let queue = DispatchQueue(label: "store")
@@ -68,6 +77,7 @@ final class InstalledModelsStore {
             let newModel = InstalledModel(id: m.id,
                                           modelID: m.modelID,
                                           quantLabel: m.quantLabel,
+                                          parameterCountLabel: m.parameterCountLabel,
                                           url: url,
                                           format: m.format,
                                           sizeBytes: m.sizeBytes,
@@ -78,8 +88,37 @@ final class InstalledModelsStore {
                                           totalLayers: m.totalLayers,
                                           isMultimodal: m.isMultimodal,
                                           isToolCapable: m.isToolCapable,
-                                          moeInfo: m.moeInfo)
+                                          moeInfo: m.moeInfo,
+                                          etBackend: m.etBackend)
             self.items.append(newModel)
+            self.save()
+        }
+    }
+
+    func upsert(_ m: InstalledModel) {
+        queue.sync {
+            let url = Self.canonicalURL(for: m.url, format: m.format)
+            let newModel = InstalledModel(id: m.id,
+                                          modelID: m.modelID,
+                                          quantLabel: m.quantLabel,
+                                          parameterCountLabel: m.parameterCountLabel,
+                                          url: url,
+                                          format: m.format,
+                                          sizeBytes: m.sizeBytes,
+                                          lastUsed: m.lastUsed,
+                                          installDate: m.installDate,
+                                          checksum: m.checksum,
+                                          isFavourite: m.isFavourite,
+                                          totalLayers: m.totalLayers,
+                                          isMultimodal: m.isMultimodal,
+                                          isToolCapable: m.isToolCapable,
+                                          moeInfo: m.moeInfo,
+                                          etBackend: m.etBackend)
+            if let index = self.items.firstIndex(where: { $0.modelID == m.modelID && $0.quantLabel == m.quantLabel }) {
+                self.items[index] = newModel
+            } else {
+                self.items.append(newModel)
+            }
             self.save()
         }
     }
@@ -140,10 +179,20 @@ final class InstalledModelsStore {
         }
     }
 
+    func updateETBackend(modelID: String, quantLabel: String, backend: ETBackend?) {
+        queue.sync {
+            if let index = items.firstIndex(where: { $0.modelID == modelID && $0.quantLabel == quantLabel }) {
+                items[index].etBackend = backend
+                save()
+            }
+        }
+    }
+
     func reload() {
         guard let data = try? Data(contentsOf: url) else { return }
         if let decoded = try? JSONDecoder().decode([InstalledModel].self, from: data) {
             items = decoded
+            _ = migrateLegacySLMEntries()
             _ = migratePaths()
         }
     }
@@ -155,40 +204,21 @@ final class InstalledModelsStore {
 
     var totalSizeBytes: Int64 { items.reduce(0) { $0 + $1.sizeBytes } }
 
-    /// Migrates any legacy SLM records so the stored URL points at the bundle root
-    /// under Application Support/Models/<slug>.bundle. Returns whether changes were made.
+    /// Removes legacy SLM/Leap bundle records. ET now stores Hugging Face
+    /// `.pte` programs and tokenizer artifacts under `Documents/LocalLLMModels`.
     @discardableResult
-    func migrateLeapBundles() -> Bool {
+    func migrateLegacySLMEntries() -> Bool {
         var changed = false
         queue.sync {
-            let base = FileManager.default
-                .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("Models", isDirectory: true)
-            for idx in items.indices {
-                guard items[idx].format == .slm else { continue }
-                let current = items[idx].url
-                let cfg = current.appendingPathComponent("config.yaml")
-                if current.pathExtension != "bundle" ||
-                    !FileManager.default.fileExists(atPath: cfg.path) {
-                    let canonical = base.appendingPathComponent(items[idx].modelID + ".bundle")
-                    let it = items[idx]
-                    items[idx] = InstalledModel(id: it.id,
-                                               modelID: it.modelID,
-                                               quantLabel: it.quantLabel,
-                                               url: canonical,
-                                               format: .slm,
-                                               sizeBytes: it.sizeBytes,
-                                               lastUsed: it.lastUsed,
-                                               installDate: it.installDate,
-                                               checksum: it.checksum,
-                                               isFavourite: it.isFavourite,
-                                               totalLayers: it.totalLayers,
-                                               isMultimodal: it.isMultimodal,
-                                               isToolCapable: it.isToolCapable,
-                                               moeInfo: it.moeInfo)
-                    changed = true
-                }
+            let before = items.count
+            items.removeAll { item in
+                guard item.format == .et else { return false }
+                let path = item.url.path.lowercased()
+                if path.hasSuffix(".bundle") || path.contains(".bundle/") { return true }
+                if item.url.lastPathComponent.lowercased() == "config.yaml" { return true }
+                return false
             }
+            changed = items.count != before
             if changed { save() }
         }
         return changed
@@ -200,6 +230,7 @@ final class InstalledModelsStore {
     @discardableResult
     func migratePaths() -> Bool {
         var changed = false
+        var pendingMigrations: [PathMigration] = []
         queue.sync {
             for idx in items.indices {
                 let item = items[idx]
@@ -209,6 +240,7 @@ final class InstalledModelsStore {
                     items[idx] = InstalledModel(id: item.id,
                                                modelID: item.modelID,
                                                quantLabel: item.quantLabel,
+                                               parameterCountLabel: item.parameterCountLabel,
                                                url: canonical,
                                                format: item.format,
                                                sizeBytes: item.sizeBytes,
@@ -219,23 +251,158 @@ final class InstalledModelsStore {
                                                totalLayers: item.totalLayers,
                                                isMultimodal: item.isMultimodal,
                                                isToolCapable: item.isToolCapable,
-                                               moeInfo: item.moeInfo)
-                    // Keep startup preferences stable if path changed.
-                    StartupPreferencesStore.updateLocalPath(from: oldURL.path, to: canonical.path)
-                    let defaults = UserDefaults.standard
-                    // Migrate any saved per-model settings under old path key.
-                    if let data = defaults.data(forKey: "modelSettings"),
-                       var dict = try? JSONDecoder().decode([String: ModelSettings].self, from: data),
-                       let val = dict.removeValue(forKey: oldURL.path) {
-                        dict[canonical.path] = val
-                        if let newData = try? JSONEncoder().encode(dict) {
-                            defaults.set(newData, forKey: "modelSettings")
-                        }
-                    }
+                                               moeInfo: item.moeInfo,
+                                               etBackend: item.etBackend)
+                    pendingMigrations.append(PathMigration(oldPath: oldURL.path, newPath: canonical.path))
                     changed = true
                 }
             }
             if changed { save() }
+        }
+        Self.applyPathMigrations(pendingMigrations)
+        return changed
+    }
+
+    /// Collapses legacy fragmented split-GGUF installs (one store entry per shard)
+    /// into a single logical installed model entry keyed by the primary shard.
+    @discardableResult
+    func migrateShardedGGUFEntries() -> Bool {
+        var changed = false
+        queue.sync {
+            struct GroupKey: Hashable {
+                let modelID: String
+                let directoryPath: String
+                let baseStem: String
+                let partCount: Int
+            }
+            struct GroupState {
+                var indices: [Int] = []
+                var modelID: String
+                var directoryURL: URL
+                var baseStem: String
+                var partCount: Int
+            }
+
+            var groups: [GroupKey: GroupState] = [:]
+
+            for idx in items.indices {
+                let item = items[idx]
+                guard item.format == .gguf else { continue }
+                guard let split = GGUFShardNaming.parseSplitFilename(item.url.lastPathComponent) else { continue }
+                let dir = item.url.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
+                let key = GroupKey(
+                    modelID: item.modelID,
+                    directoryPath: dir.path,
+                    baseStem: split.baseStem.lowercased(),
+                    partCount: split.partCount
+                )
+                var state = groups[key] ?? GroupState(indices: [], modelID: item.modelID, directoryURL: dir, baseStem: split.baseStem, partCount: split.partCount)
+                state.indices.append(idx)
+                groups[key] = state
+            }
+
+            guard !groups.isEmpty else { return }
+
+            let fm = FileManager.default
+            var removalIndices = Set<Int>()
+            var replacements: [InstalledModel] = []
+
+            func writeShardArtifacts(in dir: URL, primaryName: String, shardNames: [String]) {
+                let artifactsURL = dir.appendingPathComponent("artifacts.json")
+                var obj: [String: Any] = [:]
+                if let data = try? Data(contentsOf: artifactsURL),
+                   let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    obj = parsed
+                }
+                obj["weights"] = primaryName
+                obj["weightShards"] = shardNames
+                if obj["mmproj"] == nil { obj["mmproj"] = NSNull() }
+                if let out = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted]) {
+                    try? out.write(to: artifactsURL)
+                }
+            }
+
+            func isProjectorFile(_ url: URL) -> Bool {
+                let name = url.lastPathComponent.lowercased()
+                return name.contains("mmproj")
+                    || name.contains("projector")
+                    || name.contains("image_proj")
+                    || name.contains("imatrix")
+            }
+
+            for (_, state) in groups {
+                // We only collapse fragmented installs (multiple store entries for the same split group).
+                guard state.indices.count > 1 else { continue }
+
+                guard let dirContents = try? fm.contentsOfDirectory(at: state.directoryURL, includingPropertiesForKeys: nil) else { continue }
+
+                var shardsByPart: [Int: URL] = [:]
+                for file in dirContents {
+                    guard file.pathExtension.lowercased() == "gguf" else { continue }
+                    guard !isProjectorFile(file) else { continue }
+                    guard let split = GGUFShardNaming.parseSplitFilename(file.lastPathComponent) else { continue }
+                    guard split.baseStem.caseInsensitiveCompare(state.baseStem) == .orderedSame else { continue }
+                    guard split.partCount == state.partCount else { continue }
+                    guard Self.isValidGGUF(at: file) else { continue }
+                    if shardsByPart[split.partIndex] == nil {
+                        shardsByPart[split.partIndex] = file.resolvingSymlinksInPath().standardizedFileURL
+                    }
+                }
+
+                guard shardsByPart.count == state.partCount else { continue }
+
+                let orderedParts = shardsByPart.keys.sorted()
+                guard let firstPartIndex = orderedParts.first,
+                      let primary = shardsByPart[1] ?? shardsByPart[firstPartIndex] else { continue }
+
+                let orderedShardURLs = orderedParts.compactMap { shardsByPart[$0] }
+                let shardNames = orderedShardURLs.map { $0.lastPathComponent }
+                let totalSize = orderedShardURLs.reduce(into: Int64(0)) { result, url in
+                    let sz = (try? fm.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+                    result += sz
+                }
+
+                let sourceItems = state.indices.map { items[$0] }
+                let earliestInstall = sourceItems.map(\.installDate).min() ?? Date()
+                let latestLastUsed = sourceItems.compactMap(\.lastUsed).max()
+                let totalLayers = sourceItems.map(\.totalLayers).max() ?? 0
+                let mergedMoE: MoEInfo? =
+                    sourceItems.compactMap(\.moeInfo).first(where: { $0.isMoE }) ??
+                    sourceItems.compactMap(\.moeInfo).first
+                let quantLabel = GGUFShardNaming.normalizedQuantLabel(for: primary.lastPathComponent, repoID: state.modelID)
+
+                writeShardArtifacts(in: state.directoryURL, primaryName: primary.lastPathComponent, shardNames: shardNames)
+
+                let merged = InstalledModel(
+                    modelID: state.modelID,
+                    quantLabel: quantLabel,
+                    parameterCountLabel: sourceItems.compactMap(\.parameterCountLabel).first,
+                    url: Self.canonicalURL(for: primary, format: .gguf),
+                    format: .gguf,
+                    sizeBytes: totalSize > 0 ? totalSize : sourceItems.reduce(0) { $0 + $1.sizeBytes },
+                    lastUsed: latestLastUsed,
+                    installDate: earliestInstall,
+                    checksum: nil,
+                    isFavourite: sourceItems.contains(where: { $0.isFavourite }),
+                    totalLayers: totalLayers,
+                    isMultimodal: sourceItems.contains(where: { $0.isMultimodal }),
+                    isToolCapable: sourceItems.contains(where: { $0.isToolCapable }),
+                    moeInfo: mergedMoE,
+                    etBackend: nil
+                )
+
+                removalIndices.formUnion(state.indices)
+                replacements.append(merged)
+            }
+
+            guard !replacements.isEmpty else { return }
+
+            items = items.enumerated()
+                .filter { !removalIndices.contains($0.offset) }
+                .map(\.element)
+            items.append(contentsOf: replacements)
+            save()
+            changed = true
         }
         return changed
     }
@@ -282,21 +449,77 @@ final class InstalledModelsStore {
                 return (isDir.boolValue ? fixed : fixed.deletingLastPathComponent()).resolvingSymlinksInPath().standardizedFileURL
             }
             return fixed
-        case .slm:
+        case .et:
+            if fixed.pathExtension.lowercased() == "pte" { return fixed }
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: fixed.path, isDirectory: &isDir), isDir.boolValue,
+               let found = firstPTE(in: fixed) {
+                return found.resolvingSymlinksInPath().standardizedFileURL
+            }
             return fixed
-        case .apple:
-            return fixed
+        case .ane:
+            let fm = FileManager.default
+            var isDir: ObjCBool = false
+            if let artifact = enclosingANEArtifact(for: fixed) {
+                return artifact.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
+            }
+            if fm.fileExists(atPath: fixed.path, isDirectory: &isDir), isDir.boolValue {
+                if firstANEArtifact(in: fixed) != nil {
+                    return fixed
+                }
+                if firstANEArtifact(in: fixed.deletingLastPathComponent()) != nil {
+                    return fixed.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
+                }
+                return fixed
+            }
+            let parent = fixed.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
+            return parent
+        case .afm:
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: fixed.path, isDirectory: &isDir), isDir.boolValue {
+                return fixed
+            }
+            return fixed.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
+        }
+    }
+
+    static func enclosingANEArtifact(for url: URL) -> URL? {
+        let fm = FileManager.default
+        var candidate = url.resolvingSymlinksInPath().standardizedFileURL
+
+        while true {
+            let ext = candidate.pathExtension.lowercased()
+            if (ext == "mlmodelc" || ext == "mlpackage" || ext == "mlmodel"),
+               fm.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+
+            let parent = candidate.deletingLastPathComponent()
+            if parent.path == candidate.path {
+                return nil
+            }
+            candidate = parent
+        }
+    }
+
+    static func localModelURL(for quant: QuantInfo, modelID: String) -> URL {
+        let base = baseDir(for: quant.format, modelID: modelID)
+        switch quant.format {
+        case .ane:
+            return canonicalURL(for: base, format: .ane)
+        case .afm:
+            return canonicalURL(for: base, format: .afm)
+        case .gguf, .mlx, .et:
+            let relativePath = quant.primaryDownloadRelativePath
+            let candidate = base.appendingPathComponent(relativePath)
+            return canonicalURL(for: candidate, format: quant.format)
         }
     }
 
     /// Base directory used for storing models of the given format and id.
     static func baseDir(for format: ModelFormat, modelID: String) -> URL {
         switch format {
-        case .slm:
-            return FileManager.default
-                .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("Models", isDirectory: true)
-        case .gguf, .mlx, .apple:
+        case .gguf, .mlx, .et, .ane, .afm:
             var dir = FileManager.default
                 .urls(for: .documentDirectory, in: .userDomainMask)[0]
                 .appendingPathComponent("LocalLLMModels", isDirectory: true)
@@ -314,6 +537,7 @@ final class InstalledModelsStore {
     @discardableResult
     func rehomeIfMissing() -> Bool {
         var changed = false
+        var pendingMigrations: [PathMigration] = []
         queue.sync {
             for idx in items.indices {
                 let item = items[idx]
@@ -327,22 +551,28 @@ final class InstalledModelsStore {
                     var isDir: ObjCBool = false
                     let exists = FileManager.default.fileExists(atPath: base.path, isDirectory: &isDir)
                     repaired = (exists && isDir.boolValue) ? base : nil
-                case .slm:
-                    let u = FileManager.default
-                        .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                        .appendingPathComponent("Models", isDirectory: true)
-                        .appendingPathComponent(item.modelID + ".bundle")
-                    var d: ObjCBool = false
-                    let exists = FileManager.default.fileExists(atPath: u.path, isDirectory: &d)
-                    repaired = (exists && d.boolValue) ? u : nil
-                case .apple:
-                    repaired = nil
+                case .et:
+                    repaired = Self.firstPTE(in: base)
+                case .ane:
+                    if Self.firstANEArtifact(in: base) != nil {
+                        repaired = Self.canonicalURL(for: base, format: .ane)
+                    } else {
+                        repaired = nil
+                    }
+                case .afm:
+                    var isDir: ObjCBool = false
+                    if FileManager.default.fileExists(atPath: base.path, isDirectory: &isDir), isDir.boolValue {
+                        repaired = Self.canonicalURL(for: base, format: .afm)
+                    } else {
+                        repaired = nil
+                    }
                 }
                 if let newURL = repaired {
                     let oldURL = item.url
                     items[idx] = InstalledModel(id: item.id,
                                                modelID: item.modelID,
                                                quantLabel: item.quantLabel,
+                                               parameterCountLabel: item.parameterCountLabel,
                                                url: newURL,
                                                format: item.format,
                                                sizeBytes: item.sizeBytes,
@@ -353,25 +583,54 @@ final class InstalledModelsStore {
                                                totalLayers: item.totalLayers,
                                                isMultimodal: item.isMultimodal,
                                                isToolCapable: item.isToolCapable,
-                                               moeInfo: item.moeInfo)
-                    // Preserve startup preferences across re-homing.
-                    StartupPreferencesStore.updateLocalPath(from: oldURL.path, to: newURL.path)
-                    let defaults = UserDefaults.standard
-                    // Migrate any saved per-model settings under old path key.
-                    if let data = defaults.data(forKey: "modelSettings"),
-                       var dict = try? JSONDecoder().decode([String: ModelSettings].self, from: data),
-                       let val = dict.removeValue(forKey: oldURL.path) {
-                        dict[newURL.path] = val
-                        if let newData = try? JSONEncoder().encode(dict) {
-                            defaults.set(newData, forKey: "modelSettings")
-                        }
-                    }
+                                               moeInfo: item.moeInfo,
+                                               etBackend: item.etBackend)
+                    pendingMigrations.append(PathMigration(oldPath: oldURL.path, newPath: newURL.path))
                     changed = true
                 }
             }
             if changed { save() }
         }
+        Self.applyPathMigrations(pendingMigrations)
         return changed
+    }
+
+    private static func applyPathMigrations(_ migrations: [PathMigration]) {
+        guard !migrations.isEmpty else { return }
+
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                Self.applyPathMigrationsOnMain(migrations)
+            }
+        } else {
+            Task { @MainActor in
+                Self.applyPathMigrationsOnMain(migrations)
+            }
+        }
+    }
+
+    @MainActor
+    private static func applyPathMigrationsOnMain(_ migrations: [PathMigration]) {
+        let defaults = UserDefaults.standard
+        let decoder = JSONDecoder()
+        var modelSettings = defaults.data(forKey: "modelSettings")
+            .flatMap { try? decoder.decode([String: ModelSettings].self, from: $0) } ?? [:]
+        var didUpdateModelSettings = false
+        var canonicalPathMigrations: [(oldPath: String, newPath: String)] = []
+
+        for migration in migrations {
+            StartupPreferencesStore.updateLocalPath(from: migration.oldPath, to: migration.newPath)
+            if let settings = modelSettings.removeValue(forKey: migration.oldPath) {
+                modelSettings[migration.newPath] = settings
+                didUpdateModelSettings = true
+            }
+            canonicalPathMigrations.append((oldPath: migration.oldPath, newPath: migration.newPath))
+        }
+
+        if didUpdateModelSettings, let newData = try? JSONEncoder().encode(modelSettings) {
+            defaults.set(newData, forKey: "modelSettings")
+        }
+        ModelSettingsStore.migrateCanonicalPaths(canonicalPathMigrations)
     }
 
     /// Returns true if the given URL is a readable GGUF file (magic == "GGUF").
@@ -400,18 +659,107 @@ final class InstalledModelsStore {
         // Prefer non-mmproj/projector files and validate GGUF magic; choose the largest by size
         func isMMProj(_ u: URL) -> Bool {
             let name = u.lastPathComponent.lowercased()
-            return name.contains("mmproj") || name.contains("projector") || name.contains("image_proj")
+            return name.contains("mmproj")
+                || name.contains("projector")
+                || name.contains("image_proj")
+                || name.contains("imatrix")
         }
         func fileSize(_ u: URL) -> Int64 {
             (try? FileManager.default.attributesOfItem(atPath: u.path)[.size] as? Int64) ?? 0
         }
         let valid = candidates.filter { isValidGGUF(at: $0) }
         let weights = valid.filter { !isMMProj($0) }
-        if let best = weights.sorted(by: { fileSize($0) > fileSize($1) }).first {
+        func rank(_ u: URL) -> Int {
+            if GGUFShardNaming.isShardPartOne(u) { return 0 }
+            return 1
+        }
+        if let best = weights.sorted(by: {
+            let r0 = rank($0)
+            let r1 = rank($1)
+            if r0 != r1 { return r0 < r1 }
+            return fileSize($0) > fileSize($1)
+        }).first {
             return best
         }
         // If only mmproj files exist, do not return them as model weights.
         return nil
+    }
+
+    static func firstPTE(in dir: URL) -> URL? {
+        var candidates: [URL] = []
+        if let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
+            candidates.append(contentsOf: files.filter { $0.pathExtension.lowercased() == "pte" })
+            for sub in files {
+                var isDir: ObjCBool = false
+                if FileManager.default.fileExists(atPath: sub.path, isDirectory: &isDir), isDir.boolValue,
+                   let subfiles = try? FileManager.default.contentsOfDirectory(at: sub, includingPropertiesForKeys: nil) {
+                    candidates.append(contentsOf: subfiles.filter { $0.pathExtension.lowercased() == "pte" })
+                }
+            }
+        }
+        if candidates.isEmpty { return nil }
+        return candidates.sorted(by: { lhs, rhs in
+            let l = lhs.lastPathComponent.lowercased()
+            let r = rhs.lastPathComponent.lowercased()
+            if l == "model.pte" { return true }
+            if r == "model.pte" { return false }
+            return l < r
+        }).first
+    }
+
+    static func firstANEArtifact(in dir: URL) -> URL? {
+        let fm = FileManager.default
+        var candidates: [URL] = []
+
+        if let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
+            for file in files {
+                var isDir: ObjCBool = false
+                let exists = fm.fileExists(atPath: file.path, isDirectory: &isDir)
+                guard exists else { continue }
+                let ext = file.pathExtension.lowercased()
+                if isDir.boolValue {
+                    if ext == "mlmodelc" || ext == "mlpackage" {
+                        candidates.append(file)
+                    }
+                } else if ext == "mlmodel" {
+                    candidates.append(file)
+                }
+            }
+        }
+
+        if candidates.isEmpty {
+            if let enumerator = fm.enumerator(at: dir, includingPropertiesForKeys: nil) {
+                while let item = enumerator.nextObject() as? URL {
+                    var isDir: ObjCBool = false
+                    guard fm.fileExists(atPath: item.path, isDirectory: &isDir) else { continue }
+                    let ext = item.pathExtension.lowercased()
+                    if isDir.boolValue {
+                        if ext == "mlmodelc" || ext == "mlpackage" {
+                            candidates.append(item)
+                        }
+                    } else if ext == "mlmodel" {
+                        candidates.append(item)
+                    }
+                }
+            }
+        }
+
+        if candidates.isEmpty { return nil }
+        func priority(_ url: URL) -> Int {
+            switch url.pathExtension.lowercased() {
+            case "mlmodelc": return 0
+            case "mlpackage": return 1
+            case "mlmodel": return 2
+            default: return 9
+            }
+        }
+        return candidates.sorted { lhs, rhs in
+            let lp = priority(lhs)
+            let rp = priority(rhs)
+            if lp != rp { return lp < rp }
+            if lhs.path.count != rhs.path.count { return lhs.path.count < rhs.path.count }
+            return lhs.path < rhs.path
+        }.first
     }
 }
 

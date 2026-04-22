@@ -1,0 +1,544 @@
+import Foundation
+import XCTest
+import NoemaPackages
+@testable import Noema
+#if canImport(UIKit)
+import UIKit
+#endif
+
+final class Qwen35LoopbackTests: XCTestCase {
+    @MainActor
+    func testSanitizedHistoryRemovesTrailingStreamingEmptyAssistantPlaceholder() {
+        let vm = ChatVM()
+        let history: [ChatVM.Msg] = [
+            .init(role: "system", text: "sys", timestamp: Date()),
+            .init(role: "🧑‍💻", text: "hello", timestamp: Date()),
+            .init(role: "🤖", text: "   ", timestamp: Date(), streaming: true),
+        ]
+
+        let sanitized = vm.sanitizedHistoryForTemplateDrivenLoopback(history)
+
+        XCTAssertEqual(sanitized.count, 2)
+        XCTAssertEqual(sanitized.last?.role, "🧑‍💻")
+    }
+
+    @MainActor
+    func testSanitizedHistoryPreservesNonEmptyAssistantMessage() {
+        let vm = ChatVM()
+        let history: [ChatVM.Msg] = [
+            .init(role: "system", text: "sys", timestamp: Date()),
+            .init(role: "🧑‍💻", text: "hello", timestamp: Date()),
+            .init(role: "🤖", text: "answer", timestamp: Date(), streaming: true),
+        ]
+
+        let sanitized = vm.sanitizedHistoryForTemplateDrivenLoopback(history)
+
+        XCTAssertEqual(sanitized, history)
+    }
+
+    @MainActor
+    func testSanitizedHistoryPreservesNonStreamingEmptyAssistantMessage() {
+        let vm = ChatVM()
+        let history: [ChatVM.Msg] = [
+            .init(role: "system", text: "sys", timestamp: Date()),
+            .init(role: "🧑‍💻", text: "hello", timestamp: Date()),
+            .init(role: "assistant", text: "", timestamp: Date(), streaming: false),
+        ]
+
+        let sanitized = vm.sanitizedHistoryForTemplateDrivenLoopback(history)
+
+        XCTAssertEqual(sanitized, history)
+    }
+
+    @MainActor
+    func testSanitizedHistoryLeavesUserTerminatedHistoryUnchanged() {
+        let vm = ChatVM()
+        let history: [ChatVM.Msg] = [
+            .init(role: "system", text: "sys", timestamp: Date()),
+            .init(role: "🧑‍💻", text: "hello", timestamp: Date()),
+        ]
+
+        let sanitized = vm.sanitizedHistoryForTemplateDrivenLoopback(history)
+
+        XCTAssertEqual(sanitized, history)
+    }
+
+    @MainActor
+    func testStructuredLoopbackInputDropsLiveAssistantPlaceholder() {
+        let vm = ChatVM()
+        vm.setLoadedStateForTesting(
+            modelLoaded: true,
+            loadedURL: URL(fileURLWithPath: "/tmp/Qwen3.5-4B-Q4_K_M.gguf"),
+            loadedFormat: .gguf
+        )
+
+        let history: [ChatVM.Msg] = [
+            .init(role: "system", text: "sys", timestamp: Date()),
+            .init(role: "🧑‍💻", text: "hello", timestamp: Date()),
+            .init(role: "🤖", text: "", timestamp: Date(), streaming: true),
+        ]
+
+        guard let input = vm.structuredLoopbackInput(for: history),
+              case .messages(let messages) = input.content else {
+            return XCTFail("Expected structured loopback messages")
+        }
+
+        XCTAssertEqual(messages.last?.role, "user")
+        XCTAssertEqual(messages.last?.content, "hello")
+    }
+
+    func testTemplateDrivenLoopbackRequestPlanAddsGenerationPrompt() {
+        let client = NoemaLlamaClient(url: URL(fileURLWithPath: "/tmp/Qwen3.5-4B-Q4_K_M.gguf"))
+        let input = LLMInput(.messages([ChatMessage(role: "user", content: "hello")]))
+
+        let plan = client.buildLoopbackRequestPlan(for: input, forceNonStreaming: false)
+
+        XCTAssertEqual(plan.endpoint, "/v1/chat/completions")
+        XCTAssertEqual(plan.requestMode, "chat_completions")
+        XCTAssertEqual(plan.body["add_generation_prompt"] as? Bool, true)
+        XCTAssertEqual(plan.body["reasoning_format"] as? String, "deepseek")
+        let kwargs = plan.body["chat_template_kwargs"] as? [String: Bool]
+        XCTAssertEqual(kwargs?["enable_thinking"], true)
+    }
+
+    func testAliasModelUsesMetadataBackedQwen35Profile() throws {
+        let root = try makeTemporaryDirectory()
+        let weight = root.appendingPathComponent("Next2.5-Q4_K_M.gguf")
+        let template = root.appendingPathComponent("chat_template.jinja")
+        FileManager.default.createFile(atPath: weight.path, contents: Data("GGUF".utf8))
+        FileManager.default.createFile(
+            atPath: template.path,
+            contents: Data(
+                """
+                <|im_start|>assistant
+                {% if enable_thinking %}<think>{% endif %}
+                <tool_call><function=name><parameter=name>
+                """.utf8
+            )
+        )
+
+        XCTAssertTrue(TemplateDrivenModelSupport.isQwen35(modelURL: weight))
+        XCTAssertEqual(TemplateDrivenModelSupport.templateLabel(modelURL: weight), "qwen3.5-override")
+        let configuration = TemplateDrivenModelSupport.loopbackStartConfiguration(
+            modelURL: weight,
+            ggufPath: weight.path,
+            mmprojPath: nil
+        )
+        XCTAssertTrue(configuration.useJinja)
+        XCTAssertEqual(configuration.reasoningBudget, -1)
+        XCTAssertNotNil(configuration.chatTemplateFile)
+    }
+
+    func testStructuredMultimodalRequestPlanPreservesHistoryAndQwenFlags() throws {
+        let root = try makeTemporaryDirectory()
+        let weight = root.appendingPathComponent("Next2.5-Q4_K_M.gguf")
+        let template = root.appendingPathComponent("chat_template.jinja")
+        let image = root.appendingPathComponent("photo.jpg")
+        FileManager.default.createFile(atPath: weight.path, contents: Data("GGUF".utf8))
+        FileManager.default.createFile(
+            atPath: template.path,
+            contents: Data(
+                """
+                <|im_start|>assistant
+                {% if enable_thinking %}<think>{% endif %}
+                <tool_call><function=name><parameter=name>
+                """.utf8
+            )
+        )
+        FileManager.default.createFile(atPath: image.path, contents: Data("not-a-real-image".utf8))
+
+        let client = NoemaLlamaClient(url: weight)
+        let input = LLMInput.multimodal(
+            messages: [
+                ChatMessage(role: "system", content: "sys"),
+                ChatMessage(role: "user", content: "Describe this image")
+            ],
+            imagePaths: [image.path]
+        )
+
+        let plan = client.buildLoopbackRequestPlan(for: input, forceNonStreaming: false)
+        let messages = try XCTUnwrap(plan.body["messages"] as? [[String: Any]])
+        let userPayload = try XCTUnwrap(messages.last)
+        let content = try XCTUnwrap(userPayload["content"] as? [[String: Any]])
+        let imagePayload = try XCTUnwrap(content.last?["image_url"] as? [String: String])
+
+        XCTAssertEqual(plan.body["add_generation_prompt"] as? Bool, true)
+        XCTAssertEqual(plan.body["reasoning_format"] as? String, "deepseek")
+        XCTAssertEqual((plan.body["chat_template_kwargs"] as? [String: Bool])?["enable_thinking"], true)
+        XCTAssertEqual(messages.first?["role"] as? String, "system")
+        XCTAssertEqual(messages.first?["content"] as? String, "sys")
+        XCTAssertEqual(userPayload["role"] as? String, "user")
+        XCTAssertEqual(content.first?["text"] as? String, "Describe this image")
+        XCTAssertTrue(imagePayload["url"]?.hasPrefix("data:image/") == true)
+    }
+
+    @MainActor
+    func testLoopbackChatMessagesPreserveToolCallsAndToolMessageIDs() throws {
+        let vm = ChatVM()
+        vm.setLoadedStateForTesting(
+            modelLoaded: true,
+            loadedURL: URL(fileURLWithPath: "/tmp/Qwen3.5-4B-Q4_K_M.gguf"),
+            loadedFormat: .gguf
+        )
+
+        let toolCall = ChatVM.Msg.ToolCall(
+            toolName: "noema.python.execute",
+            displayName: "Python",
+            iconName: "chevron.left.forwardslash.chevron.right",
+            requestParams: ["code": AnyCodable("print(2 + 2)")],
+            phase: .completed,
+            externalToolCallID: "call-1",
+            result: #"{"stdout":"4"}"#
+        )
+        var assistant = ChatVM.Msg(
+            role: "🤖",
+            text: "<think>Using Python</think>\(noemaToolAnchorToken)",
+            timestamp: Date()
+        )
+        assistant.toolCalls = [toolCall]
+
+        let history: [ChatVM.Msg] = [
+            .init(role: "system", text: "sys", timestamp: Date()),
+            .init(role: "🧑‍💻", text: "Do 2+2", timestamp: Date()),
+            assistant,
+            .init(role: "tool", text: #"{"stdout":"4"}"#, timestamp: Date())
+        ]
+
+        let messages = try XCTUnwrap(vm.loopbackChatMessages(from: history))
+        let assistantMessage = try XCTUnwrap(messages.first(where: { $0.role == "assistant" && ($0.toolCalls?.isEmpty == false) }))
+        let toolMessage = try XCTUnwrap(messages.first(where: { $0.role == "tool" }))
+
+        XCTAssertEqual(assistantMessage.toolCalls?.first?.id, "call-1")
+        XCTAssertEqual(assistantMessage.toolCalls?.first?.function.name, "noema.python.execute")
+        XCTAssertEqual(assistantMessage.toolCalls?.first?.function.arguments, #"{"code":"print(2 + 2)"}"#)
+        XCTAssertEqual(toolMessage.toolCallId, "call-1")
+        XCTAssertFalse(assistantMessage.content.contains(noemaToolAnchorToken))
+        XCTAssertTrue(assistantMessage.content.contains("<think>Using Python</think>"))
+    }
+
+    func testLoopbackRequestPlanSerializesToolCallsAndNullAssistantContent() throws {
+        let client = NoemaLlamaClient(url: URL(fileURLWithPath: "/tmp/Qwen3.5-4B-Q4_K_M.gguf"))
+        let input = LLMInput(.messages([
+            ChatMessage(role: "user", content: "Do 2+2"),
+            ChatMessage(
+                role: "assistant",
+                content: "",
+                toolCalls: [
+                    ToolCall(
+                        id: "call-1",
+                        name: "noema.python.execute",
+                        arguments: #"{"code":"print(2 + 2)"}"#
+                    )
+                ]
+            ),
+            ChatMessage(role: "tool", content: #"{"stdout":"4"}"#, toolCallId: "call-1")
+        ]))
+
+        let plan = client.buildLoopbackRequestPlan(for: input, forceNonStreaming: false)
+        let messages = try XCTUnwrap(plan.body["messages"] as? [[String: Any]])
+        let assistantPayload = try XCTUnwrap(messages.first(where: { ($0["role"] as? String) == "assistant" }))
+        let toolPayload = try XCTUnwrap(messages.first(where: { ($0["role"] as? String) == "tool" }))
+        let toolCalls = try XCTUnwrap(assistantPayload["tool_calls"] as? [[String: Any]])
+        let function = try XCTUnwrap(toolCalls.first?["function"] as? [String: Any])
+
+        XCTAssertEqual(toolCalls.count, 1)
+        XCTAssertEqual(toolCalls.first?["id"] as? String, "call-1")
+        XCTAssertEqual(function["name"] as? String, "noema.python.execute")
+        XCTAssertEqual(function["arguments"] as? String, #"{"code":"print(2 + 2)"}"#)
+        XCTAssertTrue(assistantPayload["content"] is NSNull)
+        XCTAssertEqual(toolPayload["tool_call_id"] as? String, "call-1")
+    }
+
+    func testLoopbackRequestPlanPreservesAssistantThoughtTextAlongsideToolCalls() throws {
+        let client = NoemaLlamaClient(url: URL(fileURLWithPath: "/tmp/Qwen3.5-4B-Q4_K_M.gguf"))
+        let thought = "<think>Using Python to verify the arithmetic.</think>"
+        let input = LLMInput(.messages([
+            ChatMessage(
+                role: "assistant",
+                content: thought,
+                toolCalls: [
+                    ToolCall(
+                        id: "call-1",
+                        name: "noema.python.execute",
+                        arguments: #"{"code":"print(2 + 2)"}"#
+                    )
+                ]
+            )
+        ]))
+
+        let plan = client.buildLoopbackRequestPlan(for: input, forceNonStreaming: false)
+        let messages = try XCTUnwrap(plan.body["messages"] as? [[String: Any]])
+        let assistantPayload = try XCTUnwrap(messages.first)
+
+        XCTAssertEqual(assistantPayload["content"] as? String, thought)
+        XCTAssertEqual((assistantPayload["tool_calls"] as? [[String: Any]])?.count, 1)
+    }
+
+    @MainActor
+    func testStrictFinalAnswerTextKeepsVisibleTextBeforeToolAnchor() {
+        let vm = ChatVM()
+        var message = ChatVM.Msg(
+            role: "🤖",
+            text: "Visible answer\(noemaToolAnchorToken)",
+            timestamp: Date()
+        )
+        message.toolCalls = [
+            .init(
+                toolName: "noema.web.retrieve",
+                displayName: "Web Search",
+                iconName: "globe",
+                requestParams: [:],
+                phase: .completed,
+                result: "[]"
+            )
+        ]
+
+        XCTAssertEqual(vm.strictFinalAnswerText(for: message), "Visible answer")
+    }
+
+    @MainActor
+    func testStrictFinalAnswerTextIgnoresScrubbedToolArtifacts() {
+        let vm = ChatVM()
+        var message = ChatVM.Msg(
+            role: "🤖",
+            text: "Visible answer",
+            timestamp: Date()
+        )
+        message.toolCalls = [
+            .init(
+                toolName: "noema.web.retrieve",
+                displayName: "Web Search",
+                iconName: "globe",
+                requestParams: [:],
+                phase: .completed,
+                result: "[]"
+            )
+        ]
+
+        XCTAssertEqual(vm.strictFinalAnswerText(for: message), "Visible answer")
+    }
+
+    @MainActor
+    func testToolOnlyAssistantMessageKeepsEmptyScrubbedContentWithoutFallbackText() throws {
+        let vm = ChatVM()
+        vm.setLoadedStateForTesting(
+            modelLoaded: true,
+            loadedURL: URL(fileURLWithPath: "/tmp/Qwen3.5-4B-Q4_K_M.gguf"),
+            loadedFormat: .gguf
+        )
+
+        let toolCall = ChatVM.Msg.ToolCall(
+            toolName: "noema.web.retrieve",
+            displayName: "Web Search",
+            iconName: "globe",
+            requestParams: ["query": AnyCodable("latest ai news")],
+            phase: .completed,
+            result: "[]"
+        )
+        var assistant = ChatVM.Msg(
+            role: "🤖",
+            text: noemaToolAnchorToken,
+            timestamp: Date()
+        )
+        assistant.toolCalls = [toolCall]
+
+        XCTAssertNil(vm.strictFinalAnswerText(for: assistant))
+        XCTAssertNil(vm.finalAnswerText(for: assistant))
+
+        let messages = try XCTUnwrap(vm.loopbackChatMessages(from: [assistant]))
+        let assistantMessage = try XCTUnwrap(messages.first(where: { $0.role == "assistant" }))
+
+        XCTAssertEqual(assistantMessage.content, "")
+        XCTAssertEqual(assistantMessage.toolCalls?.count, 1)
+        XCTAssertFalse(assistantMessage.content.contains("interrupted before completion"))
+    }
+
+    @MainActor
+    func testResolvedVisiblePostToolFinalTextPreservesExistingVisibleText() {
+        let vm = ChatVM()
+        let visibleText = "<think>First</think>\(noemaToolAnchorToken)<think>Second</think>\nFinal answer"
+        vm.streamMsgs = [
+            ChatVM.Msg(role: "🧑‍💻", text: "Who is the president of Romania", timestamp: Date()),
+            ChatVM.Msg(role: "🤖", text: visibleText, timestamp: Date(), streaming: true)
+        ]
+
+        let resolved = vm.resolvedVisiblePostToolFinalText(
+            existingVisibleText: vm.streamMsgs[1].text,
+            fallbackText: "replacement text that should not win",
+            toolCalls: vm.streamMsgs[1].toolCalls
+        )
+        vm.streamMsgs[1].text = resolved
+        vm.streamMsgs[1].streaming = false
+
+        XCTAssertEqual(vm.streamMsgs[1].text, visibleText)
+        XCTAssertFalse(vm.streamMsgs[1].streaming)
+    }
+
+    func testGenerationCoordinatorAllowsFutureUnloadsAfterConcurrentWaiters() async {
+        let coordinator = GenerationCoordinator()
+
+        await coordinator.acquireGeneration()
+
+        let firstUnload = Task { await coordinator.beginUnloadAcquiring() }
+        await Task.yield()
+        let secondUnload = Task { await coordinator.beginUnloadAcquiring() }
+        await Task.yield()
+
+        await coordinator.releaseGeneration()
+
+        let firstDidUnload = await firstUnload.value
+        XCTAssertTrue(firstDidUnload)
+        await coordinator.endUnload()
+        let secondDidUnload = await secondUnload.value
+        XCTAssertFalse(secondDidUnload)
+
+        await coordinator.acquireGeneration()
+        let thirdUnload = Task { await coordinator.beginUnloadAcquiring() }
+        await Task.yield()
+        await coordinator.releaseGeneration()
+
+        let thirdDidUnload = await thirdUnload.value
+        XCTAssertTrue(thirdDidUnload)
+        await coordinator.endUnload()
+    }
+
+    @MainActor
+    func testManualUnloadDetachesClientStateBeforeAwaitedTeardownCompletes() async {
+        let probe = AsyncUnloadProbe()
+        let vm = ChatVM()
+        let client = AnyLLMClient(
+            textStream: { _ in
+                AsyncThrowingStream<String, Error> { continuation in
+                    continuation.finish()
+                }
+            },
+            unloadAsync: {
+                await probe.waitForRelease()
+            }
+        )
+
+        vm.setClientForTesting(
+            client,
+            modelLoaded: true,
+            loadedURL: URL(fileURLWithPath: "/tmp/manual-unload.gguf"),
+            loadedFormat: .gguf
+        )
+
+        let unloadTask = Task {
+            await vm.unload()
+        }
+
+        await probe.waitUntilInvoked()
+
+        XCTAssertFalse(vm.modelLoaded)
+        XCTAssertNil(vm.loadedModelURL)
+        XCTAssertNil(vm.loadedModelFormat)
+        let invocationCountBeforeResume = await probe.invocationCount()
+        XCTAssertEqual(invocationCountBeforeResume, 1)
+
+        await probe.resume()
+        await unloadTask.value
+
+        let invocationCountAfterResume = await probe.invocationCount()
+        XCTAssertEqual(invocationCountAfterResume, 1)
+    }
+
+    private func makeTemporaryDirectory() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: root)
+        }
+        return root
+    }
+
+#if canImport(UIKit)
+    func testAttachmentNormalizerClampsOversizedImageData() throws {
+        let input = try XCTUnwrap(Self.makeJPEG(width: 4200, height: 2800))
+        let normalized = try XCTUnwrap(AttachmentImageNormalizer.normalizeAttachmentData(input))
+
+        XCTAssertLessThanOrEqual(max(normalized.pixelWidth, normalized.pixelHeight), AttachmentImageNormalizer.maxLongEdgePixels)
+        XCTAssertTrue(normalized.wasClamped)
+        let expectedRatio = 4200.0 / 2800.0
+        let actualRatio = Double(normalized.pixelWidth) / Double(normalized.pixelHeight)
+        XCTAssertEqual(actualRatio, expectedRatio, accuracy: 0.02)
+    }
+
+    @MainActor
+    func testSavePendingImageDataNormalizesOversizedPhotoPickerData() async throws {
+        let vm = ChatVM()
+        let priorURLs = Set(vm.pendingImageURLs)
+        let input = try XCTUnwrap(Self.makeJPEG(width: 4032, height: 3024))
+
+        await vm.savePendingImageData(input)
+
+        let newURL = try XCTUnwrap(vm.pendingImageURLs.last(where: { !priorURLs.contains($0) }))
+        defer { try? FileManager.default.removeItem(at: newURL) }
+
+        let metadata = try XCTUnwrap(AttachmentImageNormalizer.metadata(forFileAt: newURL))
+        XCTAssertLessThanOrEqual(max(metadata.pixelWidth, metadata.pixelHeight), AttachmentImageNormalizer.maxLongEdgePixels)
+    }
+
+    func testLoopbackImagePayloadClampsOversizedStoredAttachment() throws {
+        let client = NoemaLlamaClient(url: URL(fileURLWithPath: "/tmp/Qwen3.5-4B-Q4_K_M.gguf"))
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("noema-loopback-\(UUID().uuidString).jpg")
+        let data = try XCTUnwrap(Self.makeJPEG(width: 5000, height: 1800))
+        try data.write(to: tempURL, options: [.atomic])
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let payload = client.loopbackImagePayload(for: tempURL.path)
+
+        XCTAssertEqual(payload.mime, "image/jpeg")
+        XCTAssertLessThanOrEqual(max(payload.pixelWidth, payload.pixelHeight), AttachmentImageNormalizer.maxLongEdgePixels)
+        XCTAssertTrue(payload.wasClamped)
+    }
+
+    private static func makeJPEG(width: Int, height: Int) -> Data? {
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: width, height: height))
+        let image = renderer.image { context in
+            UIColor.systemBlue.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            UIColor.white.setFill()
+            context.fill(CGRect(x: width / 8, y: height / 8, width: width / 3, height: height / 3))
+        }
+        return image.jpegData(compressionQuality: 0.95)
+    }
+#endif
+}
+
+private actor AsyncUnloadProbe {
+    private var count = 0
+    private var invocationWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func waitForRelease() async {
+        count += 1
+
+        let waiters = invocationWaiters
+        invocationWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+
+        await withCheckedContinuation { continuation in
+            releaseContinuation = continuation
+        }
+    }
+
+    func waitUntilInvoked() async {
+        if count > 0 { return }
+        await withCheckedContinuation { continuation in
+            invocationWaiters.append(continuation)
+        }
+    }
+
+    func invocationCount() -> Int {
+        count
+    }
+
+    func resume() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}

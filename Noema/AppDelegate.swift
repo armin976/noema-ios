@@ -8,6 +8,9 @@ import FBSDKCoreKit
 class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
 #if canImport(FBSDKCoreKit) && os(iOS)
+        // Avoid SKAdNetwork reporter cache writes from FBSDK background queues
+        // that can trigger SwiftUI/AppStorage background publish warnings.
+        Settings.shared.isSKAdNetworkReportEnabled = false
         let handled = ApplicationDelegate.shared.application(
             application,
             didFinishLaunchingWithOptions: launchOptions

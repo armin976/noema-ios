@@ -19,6 +19,7 @@ import FBSDKCoreKit
 struct NoemaVisionOSApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
+    @MainActor
     init() {
         configureSharedApplicationEnvironment()
     }
@@ -35,13 +36,13 @@ struct NoemaApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     @AppStorage("appearance") private var appearance = "system"
-    @StateObject private var tabRouter = TabRouter()
-    @StateObject private var chatVM = ChatVM()
-    @StateObject private var modelManager = AppModelManager()
-    @StateObject private var datasetManager = DatasetManager()
-    @StateObject private var downloadController = DownloadController()
-    @StateObject private var walkthroughManager = GuidedWalkthroughManager()
-    @StateObject private var localizationManager = LocalizationManager()
+    @StateObject private var tabRouter: TabRouter
+    @StateObject private var chatVM: ChatVM
+    @StateObject private var modelManager: AppModelManager
+    @StateObject private var datasetManager: DatasetManager
+    @StateObject private var downloadController: DownloadController
+    @StateObject private var walkthroughManager: GuidedWalkthroughManager
+    @StateObject private var localizationManager: LocalizationManager
 
 #if canImport(FBSDKCoreKit) && os(iOS)
     @Environment(\.scenePhase) private var scenePhase
@@ -57,6 +58,23 @@ struct NoemaApp: App {
 
     init() {
         configureSharedApplicationEnvironment()
+        let tabRouter = TabRouter()
+        let chatVM = ChatVM()
+        let modelManager = AppModelManager()
+        let datasetManager = DatasetManager()
+        let downloadController = DownloadController()
+        let walkthroughManager = GuidedWalkthroughManager()
+        let localizationManager = LocalizationManager()
+
+        UITestLaunchConfiguration.applyIfNeeded(modelManager: modelManager, chatVM: chatVM)
+
+        _tabRouter = StateObject(wrappedValue: tabRouter)
+        _chatVM = StateObject(wrappedValue: chatVM)
+        _modelManager = StateObject(wrappedValue: modelManager)
+        _datasetManager = StateObject(wrappedValue: datasetManager)
+        _downloadController = StateObject(wrappedValue: downloadController)
+        _walkthroughManager = StateObject(wrappedValue: walkthroughManager)
+        _localizationManager = StateObject(wrappedValue: localizationManager)
     }
 
     var body: some Scene {
@@ -130,7 +148,7 @@ struct NoemaMacApp: App {
                 .environment(\.locale, localizationManager.locale)
                 .task {
                     await MainActor.run {
-                        RelayManagementViewModel.shared.bind(modelManager: modelManager)
+                        RelayManagementViewModel.shared.bind(modelManager: modelManager, chatVM: chatVM)
                         RelayControlCenter.shared.refresh(from: RelayManagementViewModel.shared)
                         RelayManagementViewModel.shared.start()
                     }

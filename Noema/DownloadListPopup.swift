@@ -30,6 +30,11 @@ struct DownloadListPopup: View {
                 ForEach(controller.embeddingItems) { item in
                     embeddingRow(for: item)
                 }
+                Section {
+                    EmptyView()
+                } footer: {
+                    Text(LocalizedStringKey("Downloads continue on iPhone and iPad while Noema remains available in the background. Force-quitting the app stops automatic resume."))
+                }
             }
             .navigationTitle("Downloads")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { close() } } }
@@ -62,6 +67,9 @@ struct DownloadListPopup: View {
                                 .foregroundStyle(.red)
                         }
                     } else {
+                        Text(LocalizedStringKey(item.status.statusLabelKey))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                         Text("\(Int(item.progress * 100)) %")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
@@ -73,24 +81,21 @@ struct DownloadListPopup: View {
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
+                        if item.imatrixSize > 0 || item.quant.requiresImportanceMatrix {
+                            Text("(+ iMatrix \(Int(item.imatrixProgress * 100))%)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     
                     // Control buttons
-                    if let error = item.error, error.isRetryable {
-                        // Show retry button for network errors
-                        Button { controller.resume(itemID: item.id) } label: {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Retry download")
-                    } else if controller.paused.contains(item.id) {
-                        // Show resume button for intentionally paused downloads
+                    if item.canResume {
                         Button { controller.resume(itemID: item.id) } label: {
                             Image(systemName: "play.fill")
                         }
                         .buttonStyle(.borderless)
-                    } else if item.error == nil {
-                        // Show pause button for active downloads
+                        .help("Resume download")
+                    } else if item.canPause && item.error == nil {
                         Button { controller.pause(itemID: item.id) } label: {
                             Image(systemName: "pause.fill")
                         }
@@ -121,12 +126,26 @@ struct DownloadListPopup: View {
                 ProgressView(value: item.progress)
                     .modernProgress()
                 HStack {
+                    Text(LocalizedStringKey(item.status.statusLabelKey))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                     Text("\(Int(item.progress * 100)) %")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Text(speedText(item.speed))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                    if item.canResume {
+                        Button { controller.resume(itemID: item.id) } label: {
+                            Image(systemName: "play.fill")
+                        }
+                        .buttonStyle(.borderless)
+                    } else if item.canPause {
+                        Button { controller.pause(itemID: item.id) } label: {
+                            Image(systemName: "pause.fill")
+                        }
+                        .buttonStyle(.borderless)
+                    }
                     Button { controller.cancel(itemID: item.id) } label: {
                         Image(systemName: "stop.fill")
                     }
@@ -153,6 +172,9 @@ struct DownloadListPopup: View {
                     ProgressView(value: item.progress)
                 }
                 HStack {
+                    Text(LocalizedStringKey(item.status.statusLabelKey))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                     let pct = item.expectedBytes > 0
                         ? Int(Double(item.downloadedBytes) / Double(item.expectedBytes) * 100)
                         : Int(item.progress * 100)
@@ -162,6 +184,17 @@ struct DownloadListPopup: View {
                     Text(speedText(item.speed))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                    if item.canResume {
+                        Button { controller.resume(itemID: item.id) } label: {
+                            Image(systemName: "play.fill")
+                        }
+                        .buttonStyle(.borderless)
+                    } else if item.canPause {
+                        Button { controller.pause(itemID: item.id) } label: {
+                            Image(systemName: "pause.fill")
+                        }
+                        .buttonStyle(.borderless)
+                    }
                     Button { controller.cancel(itemID: item.id) } label: {
                         Image(systemName: "stop.fill")
                     }
@@ -179,9 +212,23 @@ struct DownloadListPopup: View {
             VStack(alignment: .trailing) {
                 ProgressView(value: item.progress)
                 HStack {
+                    Text(LocalizedStringKey(item.status.statusLabelKey))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                     Text("\(Int(item.progress * 100)) %")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                    if item.canResume {
+                        Button { controller.resume(itemID: item.id) } label: {
+                            Image(systemName: "play.fill")
+                        }
+                        .buttonStyle(.borderless)
+                    } else if item.canPause {
+                        Button { controller.pause(itemID: item.id) } label: {
+                            Image(systemName: "pause.fill")
+                        }
+                        .buttonStyle(.borderless)
+                    }
                     Button { controller.cancel(itemID: item.id) } label: {
                         Image(systemName: "stop.fill")
                     }

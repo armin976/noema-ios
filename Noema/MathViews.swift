@@ -16,12 +16,18 @@ import UIKit
 #endif
 
 @MainActor struct MathRenderTuning {
-    // Provide small, safe insets to avoid top/bottom glyph clipping and to
-    // leave a hairline of space around inline and block math. These values are
-    // intentionally conservative so line height only grows when formulas are
-    // actually tall.
-    static var inlineInsets: UIEdgeInsets = UIEdgeInsets(top: 3, left: 0, bottom: 3, right: 0)
-    static var blockInsets: UIEdgeInsets = UIEdgeInsets(top: 2, left: 0, bottom: 2, right: 0)
+    // Provide safe insets to avoid top/bottom glyph clipping. Some SwiftMath
+    // layouts (integrals with limits, tall fractions) can extend to the
+    // very edge of their measured bounds on iOS, so we slightly over-pad.
+    static func inlineInsets(for fontSize: CGFloat) -> UIEdgeInsets {
+        let pad = max(4, ceil(fontSize * 0.20))
+        return UIEdgeInsets(top: pad, left: 0, bottom: pad, right: 0)
+    }
+
+    static func blockInsets(for fontSize: CGFloat) -> UIEdgeInsets {
+        let pad = max(6, ceil(fontSize * 0.22))
+        return UIEdgeInsets(top: pad, left: 0, bottom: pad, right: 0)
+    }
 }
 
 @MainActor final class MathImageCache {
@@ -37,6 +43,14 @@ import UIKit
     func insert(_ image: UIImage, for key: String) {
         let cost = Int(image.size.width * image.size.height * (image.scale * image.scale))
         cache.setObject(image, forKey: key as NSString, cost: max(cost, 1))
+    }
+}
+
+private struct BlockMathAvailableWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 1
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
@@ -75,25 +89,24 @@ private func colorSignature(for color: UIColor) -> String {
     // light/dark appearance swaps never reuse stale glyph images.
     let insetKey = "t:\(Int(insets.top))|l:\(Int(insets.left))|b:\(Int(insets.bottom))|r:\(Int(insets.right))"
     let colorKey = colorSignature(for: color)
-    let key = "\(isDisplayMode ? "D" : "I"):\(Int(fontSize)):\(colorKey):\(insetKey):\(latex)"
+    let renderVersion = "v2"
+    let key = "\(renderVersion):\(isDisplayMode ? "D" : "I"):\(Int(fontSize)):\(colorKey):\(insetKey):\(latex)"
     if let img = MathImageCache.shared.image(for: key) { return img }
+
+#if os(macOS)
     let label = MTMathUILabel()
     label.latex = latex
     label.labelMode = isDisplayMode ? MTMathUILabelMode.display : MTMathUILabelMode.text
+    label.textAlignment = .left
     label.fontSize = fontSize
     label.textColor = color
     label.contentInsets = insets
-    // Prefer default math font
     label.font = MTFontManager().termesFont(withSize: fontSize)
+
     let fittingSize = label.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
     let size = CGSize(width: ceil(fittingSize.width), height: ceil(fittingSize.height))
-    label.frame = CGRect(origin: .zero, size: size)
-#if !os(macOS)
-    label.layoutIfNeeded()
-#endif
     guard size.width > 0, size.height > 0 else { return nil }
 
-#if os(macOS)
     let view = MTMathUILabel(frame: CGRect(origin: .zero, size: size))
     view.latex = latex
     view.labelMode = isDisplayMode ? MTMathUILabelMode.display : MTMathUILabelMode.text
@@ -109,18 +122,23 @@ private func colorSignature(for color: UIColor) -> String {
     MathImageCache.shared.insert(image, for: key)
     return image
 #else
-    let format = UIGraphicsImageRendererFormat.default()
-#if os(visionOS)
-    format.scale = 1.0
-#else
-    format.scale = UIScreen.main.scale
-#endif
-    let renderer = UIGraphicsImageRenderer(size: size, format: format)
-    let img = renderer.image { _ in
-        label.drawHierarchy(in: CGRect(origin: .zero, size: size), afterScreenUpdates: true)
-    }
-    MathImageCache.shared.insert(img, for: key)
-    return img
+    // SwiftMath's MTMathImage renders via the internal display list and applies
+    // the correct CoreText coordinate transforms, avoiding flipped superscripts
+    // that can occur when snapshotting MTMathUILabel offscreen.
+    let img = MTMathImage(
+        latex: latex,
+        fontSize: fontSize,
+        textColor: color,
+        labelMode: isDisplayMode ? .display : .text,
+        textAlignment: .left
+    )
+    img.contentInsets = insets
+    img.font = MTFontManager().termesFont(withSize: fontSize)
+
+    let (_, rendered) = img.asImage()
+    guard let rendered else { return nil }
+    MathImageCache.shared.insert(rendered, for: key)
+    return rendered
 #endif
 }
 
@@ -131,34 +149,45 @@ struct InlineMathView: View {
 
     @Environment(\.colorScheme) private var colorScheme
     private var uiColor: UIColor { resolvedMathColor(for: colorScheme) }
-    private var inlineInsets: UIEdgeInsets { MathRenderTuning.inlineInsets }
+    private var inlineInsets: UIEdgeInsets { MathRenderTuning.inlineInsets(for: fontSize) }
+    private var baselineOffset: CGFloat { inlineInsets.bottom + fontSize * 0.22 }
 
     var body: some View {
-        Group {
-            if useCache, let img = renderMathImage(latex: latex, fontSize: fontSize, isDisplayMode: false, color: uiColor, insets: inlineInsets) {
-                // Render at the label's natural size (which already reflects
-                // fontSize and contentInsets) so tall formulas can naturally
-                // expand the line box instead of being clipped.
-                let size = img.size
-                Image(platformImage: img)
-                    .resizable()
-                    .interpolation(.high)
-                    .antialiased(true)
-                    .renderingMode(.original)
-                    .frame(width: size.width, height: size.height, alignment: .leading)
-                    // Approximate baseline alignment; keep a small descent tweak
-                    .alignmentGuide(.firstTextBaseline) { d in
-                        d[VerticalAlignment.bottom] - (inlineInsets.bottom + fontSize * 0.22)
-                    }
-                    .accessibilityLabel(Text(plainAccessibilityLabel(from: latex)))
-            } else {
-                InlineMathUILabel(latex: latex, fontSize: fontSize, color: uiColor, insets: inlineInsets)
-                    .alignmentGuide(.firstTextBaseline) { d in
-                        d[VerticalAlignment.bottom] - (inlineInsets.bottom + fontSize * 0.22)
-                    }
-                    .accessibilityLabel(Text(plainAccessibilityLabel(from: latex)))
-            }
+        if useCache, let img = renderMathImage(latex: latex, fontSize: fontSize, isDisplayMode: false, color: uiColor, insets: inlineInsets) {
+            cachedMathImage(img)
+        } else {
+            liveMathLabel
         }
+    }
+
+    private var liveMathLabel: some View {
+        InlineMathUILabel(latex: latex, fontSize: fontSize, color: uiColor, insets: inlineInsets)
+            .alignmentGuide(.firstTextBaseline) { d in
+                d[VerticalAlignment.bottom] - baselineOffset
+            }
+            .accessibilityLabel(Text(plainAccessibilityLabel(from: latex)))
+    }
+
+    private func cachedMathImage(_ img: UIImage) -> some View {
+        // Render at the label's natural size (which already reflects fontSize and contentInsets)
+        // so tall formulas can naturally expand the line box instead of being clipped.
+        let size = img.size
+        let base = Image(platformImage: img)
+            .resizable()
+            .interpolation(.high)
+            .antialiased(true)
+            .renderingMode(.original)
+#if canImport(UIKit)
+            .flipsForRightToLeftLayoutDirection(false)
+#endif
+
+        return base
+            .frame(width: size.width, height: size.height, alignment: .leading)
+            // Approximate baseline alignment; keep a small descent tweak.
+            .alignmentGuide(.firstTextBaseline) { d in
+                d[VerticalAlignment.bottom] - baselineOffset
+            }
+            .accessibilityLabel(Text(plainAccessibilityLabel(from: latex)))
     }
 }
 
@@ -199,6 +228,9 @@ private struct InlineMathUILabel: UIViewRepresentable {
         let v = MTMathUILabel()
         v.labelMode = .text
         v.textAlignment = .left
+#if canImport(UIKit)
+        v.semanticContentAttribute = .forceLeftToRight
+#endif
         v.fontSize = fontSize
         v.textColor = color
         v.contentInsets = insets
@@ -225,9 +257,11 @@ struct BlockMathView: View {
     let latex: String
     var fontSize: CGFloat = preferredFontSize(.title3)
     var useCache: Bool = true
+    var widthBehavior: BlockMathWidthBehavior = .intrinsic
     @Environment(\.colorScheme) private var colorScheme
     private var uiColor: UIColor { resolvedMathColor(for: colorScheme) }
-    private var blockInsets: UIEdgeInsets { MathRenderTuning.blockInsets }
+    private var blockInsets: UIEdgeInsets { MathRenderTuning.blockInsets(for: fontSize) }
+    @State private var availableWidth: CGFloat = 1
 
     // Added helper to compute display size preserving intrinsic aspect ratio without expanding to full width.
     private func displaySize(for image: UIImage) -> CGSize {
@@ -238,25 +272,69 @@ struct BlockMathView: View {
     }
 
     var body: some View {
-        Group {
+        content
+            // Align leading without forcing full-width occupation and avoid extra vertical padding
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .alignmentGuide(.firstTextBaseline) { d in d[VerticalAlignment.top] }
+            .padding(.vertical, 0)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch widthBehavior {
+        case .intrinsic:
             if useCache, let img = renderMathImage(latex: latex, fontSize: fontSize, isDisplayMode: true, color: uiColor, insets: blockInsets) {
-                let size = displaySize(for: img)
-                Image(platformImage: img)
-                    .resizable()
-                    .interpolation(.high)
-                    .antialiased(true)
-                    .renderingMode(.original)
-                    .frame(width: size.width, height: size.height, alignment: .leading)
-                    .accessibilityLabel(Text(plainAccessibilityLabel(from: latex)))
+                cachedMathImage(img)
             } else {
-                BlockMathUILabel(latex: latex, fontSize: fontSize, color: uiColor, insets: blockInsets)
-                    .accessibilityLabel(Text(plainAccessibilityLabel(from: latex)))
+                liveMathLabel(preferredMaxLayoutWidth: nil)
+            }
+        case .wrapThenScroll:
+            wrappedScrollableMathLabel
+        }
+    }
+
+    private func liveMathLabel(preferredMaxLayoutWidth: CGFloat?) -> some View {
+        BlockMathUILabel(
+            latex: latex,
+            fontSize: fontSize,
+            color: uiColor,
+            insets: blockInsets,
+            preferredMaxLayoutWidth: preferredMaxLayoutWidth
+        )
+            .accessibilityLabel(Text(plainAccessibilityLabel(from: latex)))
+    }
+
+    private var wrappedScrollableMathLabel: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            liveMathLabel(preferredMaxLayoutWidth: availableWidth)
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(minWidth: availableWidth, alignment: .leading)
+        }
+        .background {
+            GeometryReader { proxy in
+                Color.clear
+                    .preference(key: BlockMathAvailableWidthKey.self, value: max(proxy.size.width, 1))
             }
         }
-        // Align leading without forcing full-width occupation and avoid extra vertical padding
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .alignmentGuide(.firstTextBaseline) { d in d[VerticalAlignment.top] }
-        .padding(.vertical, 0)
+        .onPreferenceChange(BlockMathAvailableWidthKey.self) { width in
+            availableWidth = max(width, 1)
+        }
+    }
+
+    private func cachedMathImage(_ img: UIImage) -> some View {
+        let size = displaySize(for: img)
+        let base = Image(platformImage: img)
+            .resizable()
+            .interpolation(.high)
+            .antialiased(true)
+            .renderingMode(.original)
+#if canImport(UIKit)
+            .flipsForRightToLeftLayoutDirection(false)
+#endif
+
+        return base
+            .frame(width: size.width, height: size.height, alignment: .leading)
+            .accessibilityLabel(Text(plainAccessibilityLabel(from: latex)))
     }
 }
 
@@ -275,15 +353,21 @@ private struct BlockMathUILabel: NSViewRepresentable {
     let fontSize: CGFloat
     let color: UIColor
     let insets: UIEdgeInsets
+    let preferredMaxLayoutWidth: CGFloat?
 
     func makeNSView(context: Context) -> MTMathUILabel {
         let v = MTMathUILabel()
         v.labelMode = .display
         v.textAlignment = .left
+        v.setContentHuggingPriority(.required, for: .horizontal)
+        v.setContentHuggingPriority(.required, for: .vertical)
+        v.setContentCompressionResistancePriority(.required, for: .horizontal)
+        v.setContentCompressionResistancePriority(.required, for: .vertical)
         v.fontSize = fontSize
         v.textColor = color
         v.contentInsets = insets
         v.font = MTFontManager().termesFont(withSize: fontSize)
+        v.preferredMaxLayoutWidth = preferredMaxLayoutWidth ?? 0
         v.latex = latex
         return v
     }
@@ -291,7 +375,18 @@ private struct BlockMathUILabel: NSViewRepresentable {
         nsView.fontSize = fontSize
         nsView.textColor = color
         nsView.contentInsets = insets
+        nsView.preferredMaxLayoutWidth = preferredMaxLayoutWidth ?? 0
         nsView.latex = latex
+    }
+
+    static func sizeThatFits(_ proposal: ProposedViewSize, nsView: MTMathUILabel, context: Context) -> CGSize? {
+        if let width = proposal.width, width.isFinite, width > 0 {
+            nsView.preferredMaxLayoutWidth = width
+            return nsView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        }
+        nsView.preferredMaxLayoutWidth = 0
+        let size = nsView.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
+        return CGSize(width: ceil(size.width), height: ceil(size.height))
     }
 }
 #else
@@ -300,15 +395,24 @@ private struct BlockMathUILabel: UIViewRepresentable {
     let fontSize: CGFloat
     let color: UIColor
     let insets: UIEdgeInsets
+    let preferredMaxLayoutWidth: CGFloat?
 
     func makeUIView(context: Context) -> MTMathUILabel {
         let v = MTMathUILabel()
         v.labelMode = .display
         v.textAlignment = .left
+#if canImport(UIKit)
+        v.semanticContentAttribute = .forceLeftToRight
+#endif
+        v.setContentHuggingPriority(.required, for: .horizontal)
+        v.setContentHuggingPriority(.required, for: .vertical)
+        v.setContentCompressionResistancePriority(.required, for: .horizontal)
+        v.setContentCompressionResistancePriority(.required, for: .vertical)
         v.fontSize = fontSize
         v.textColor = color
         v.contentInsets = insets
         v.font = MTFontManager().termesFont(withSize: fontSize)
+        v.preferredMaxLayoutWidth = preferredMaxLayoutWidth ?? 0
         v.latex = latex
         return v
     }
@@ -316,7 +420,18 @@ private struct BlockMathUILabel: UIViewRepresentable {
         uiView.fontSize = fontSize
         uiView.textColor = color
         uiView.contentInsets = insets
+        uiView.preferredMaxLayoutWidth = preferredMaxLayoutWidth ?? 0
         uiView.latex = latex
+    }
+
+    static func sizeThatFits(_ proposal: ProposedViewSize, uiView: MTMathUILabel, context: Context) -> CGSize? {
+        if let width = proposal.width, width.isFinite, width > 0 {
+            uiView.preferredMaxLayoutWidth = width
+            return uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        }
+        uiView.preferredMaxLayoutWidth = 0
+        let size = uiView.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
+        return CGSize(width: ceil(size.width), height: ceil(size.height))
     }
 }
 #endif

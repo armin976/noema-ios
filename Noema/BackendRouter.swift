@@ -1,8 +1,5 @@
 // BackendRouter.swift
 import Foundation
-#if canImport(LeapSDK)
-import LeapSDK
-#endif
 
 struct GenerateRequest: Sendable { let prompt: String }
 enum TokenEvent: Sendable { case token(String) }
@@ -78,24 +75,30 @@ struct MLXBackend: InferenceBackend {
     mutating func unload() { client = nil }
 }
 
-#if canImport(LeapSDK)
-@available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
-struct LeapBackend: InferenceBackend {
-    static let supported: Set<ModelFormat> = [.slm]
-    private var client: LeapLLMClient?
+struct AFMBackend: InferenceBackend {
+    static let supported: Set<ModelFormat> = [.afm]
+    private var client: AnyLLMClient?
 
     mutating func load(_ installed: InstalledModel) async throws {
-        LeapBundleDownloader.sanitizeBundleIfNeeded(at: installed.url)
-        let runner = try await Leap.load(url: installed.url)
-        let ident = installed.url.deletingPathExtension().lastPathComponent
-        client = LeapLLMClient.make(runner: runner, modelIdentifier: ident)
+        let afmClient = AFMLLMClient()
+        try await afmClient.load()
+        client = AnyLLMClient(
+            textStream: { input in
+                try await afmClient.textStream(from: input)
+            },
+            cancel: nil,
+            unload: { afmClient.unload() },
+            syncSystemPrompt: { prompt in
+                await afmClient.syncSystemPrompt(prompt)
+            }
+        )
     }
 
     func generate(streaming request: GenerateRequest) -> AsyncThrowingStream<TokenEvent, Error> {
         AsyncThrowingStream { continuation in
             guard let client = client else {
                 continuation.finish(throwing: NSError(domain: "Noema", code: -1,
-                    userInfo: [NSLocalizedDescriptionKey: "LeapBackend client not loaded"]))
+                    userInfo: [NSLocalizedDescriptionKey: "AFMBackend client not loaded"]))
                 return
             }
 
@@ -113,9 +116,119 @@ struct LeapBackend: InferenceBackend {
         }
     }
 
-    mutating func unload() { client = nil }
+    mutating func unload() {
+        client?.unload()
+        client = nil
+    }
+}
+
+#if os(iOS) || os(visionOS)
+@available(iOS 18.0, visionOS 2.0, *)
+struct CoreMLBackend: InferenceBackend {
+    static let supported: Set<ModelFormat> = [.ane]
+    private var client: AnyLLMClient?
+
+    mutating func load(_ installed: InstalledModel) async throws {
+        let resolved = try ANEModelResolver.resolve(modelURL: installed.url)
+        let settings = ModelSettings
+            .resolvedANEModelSettings(modelID: installed.modelID, modelURL: resolved.modelRoot)
+            .settings
+        let coreMLClient = try CoreMLLLMClient(resolvedModel: resolved, settings: settings)
+        try await coreMLClient.load()
+        client = AnyLLMClient(coreMLClient)
+    }
+
+    func generate(streaming request: GenerateRequest) -> AsyncThrowingStream<TokenEvent, Error> {
+        AsyncThrowingStream { continuation in
+            guard let client = client else {
+                continuation.finish(throwing: NSError(domain: "Noema", code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "CoreMLBackend client not loaded"]))
+                return
+            }
+
+            Task {
+                do {
+                    let input = LLMInput.plain(request.prompt)
+                    for try await token in try await client.textStream(from: input) {
+                        continuation.yield(.token(token))
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
+    mutating func unload() {
+        client?.unload()
+        client = nil
+    }
 }
 #endif
+
+@available(macOS 14.0, iOS 17.0, tvOS 17.0, visionOS 1.0, *)
+struct ExecuTorchBackend: InferenceBackend {
+    static let supported: Set<ModelFormat> = [.et]
+    private var client: AnyLLMClient?
+
+    mutating func load(_ installed: InstalledModel) async throws {
+        guard let pte = ETModelResolver.pteURL(for: installed.url) else {
+            throw NSError(domain: "Noema", code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Missing .pte file for ET model."])
+        }
+        guard let tokenizer = ETModelResolver.tokenizerURL(for: installed.url)
+                ?? ETModelResolver.tokenizerURL(for: pte.deletingLastPathComponent()) else {
+            throw NSError(domain: "Noema", code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Missing tokenizer for ET model."])
+        }
+
+        let effectiveSettings: ModelSettings = {
+            var settings = ModelSettings.default(for: .et)
+            settings.etBackend = ETBackendDetector.effectiveBackend(
+                userSelected: installed.etBackend,
+                detected: nil
+            )
+            return settings
+        }()
+
+        let etClient = ExecuTorchLLMClient(
+            modelPath: pte.path,
+            tokenizerPath: tokenizer.path,
+            isVision: installed.isMultimodal,
+            settings: effectiveSettings
+        )
+        try await etClient.load()
+        client = AnyLLMClient(etClient)
+    }
+
+    func generate(streaming request: GenerateRequest) -> AsyncThrowingStream<TokenEvent, Error> {
+        AsyncThrowingStream { continuation in
+            guard let client = client else {
+                continuation.finish(throwing: NSError(domain: "Noema", code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "ExecuTorchBackend client not loaded"]))
+                return
+            }
+
+            Task {
+                do {
+                    let input = LLMInput.plain(request.prompt)
+                    for try await token in try await client.textStream(from: input) {
+                        continuation.yield(.token(token))
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
+    mutating func unload() {
+        client?.unload()
+        client = nil
+    }
+}
 
 final class BackendRouter {
     private var backend: (any InferenceBackend)?
@@ -132,7 +245,7 @@ final class BackendRouter {
                 throw NSError(
                     domain: "Noema",
                     code: -3,
-                    userInfo: [NSLocalizedDescriptionKey: "MLX models require A13+ GPU on this device. For best performance, use SLM (Leap) models; otherwise use GGUF."]
+                    userInfo: [NSLocalizedDescriptionKey: "MLX models require A13+ GPU on this device. For best performance, use ET models; otherwise use GGUF."]
                 )
             }
             var b = MLXBackend()
@@ -140,10 +253,24 @@ final class BackendRouter {
             backend = b
             return b
         }
-        #if canImport(LeapSDK)
-        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
-            if LeapBackend.supported.contains(model.format) {
-                var b = LeapBackend()
+        if AFMBackend.supported.contains(model.format) {
+            var b = AFMBackend()
+            try await b.load(model)
+            backend = b
+            return b
+        }
+        if #available(macOS 14.0, iOS 17.0, tvOS 17.0, visionOS 1.0, *) {
+            if ExecuTorchBackend.supported.contains(model.format) {
+                var b = ExecuTorchBackend()
+                try await b.load(model)
+                backend = b
+                return b
+            }
+        }
+        #if os(iOS) || os(visionOS)
+        if #available(iOS 18.0, visionOS 2.0, *) {
+            if CoreMLBackend.supported.contains(model.format) {
+                var b = CoreMLBackend()
                 try await b.load(model)
                 backend = b
                 return b

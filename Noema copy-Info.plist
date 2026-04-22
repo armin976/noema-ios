@@ -29,5 +29,10 @@
 	<string>Noema</string>
 	<key>CFBundleName</key>
 	<string>Noema</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
 </dict>
 </plist>

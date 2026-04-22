@@ -103,10 +103,42 @@ enum ToolCapabilityDetector {
                 }
             }
             return false
-        case .slm:
-            return true // Allow Leap/SLM to use tools by design
-        case .apple:
+        case .et:
+            return true // Allow Leap/ET to use tools by design
+        case .ane:
+            var root = InstalledModelsStore.canonicalURL(for: url, format: .ane)
+            var isDir: ObjCBool = false
+            if !FileManager.default.fileExists(atPath: root.path, isDirectory: &isDir) || !isDir.boolValue {
+                root = root.deletingLastPathComponent()
+            }
+
+            var candidateDirs: [URL] = [root]
+            if let entries = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) {
+                for entry in entries {
+                    var dirFlag: ObjCBool = false
+                    if FileManager.default.fileExists(atPath: entry.path, isDirectory: &dirFlag), dirFlag.boolValue {
+                        candidateDirs.append(entry)
+                    }
+                }
+            }
+
+            let candidateNames = ["config.json", "tokenizer_config.json", "tokenizer.json", "added_tokens.json", "chat_template.json"]
+            for dir in candidateDirs {
+                for name in candidateNames {
+                    let file = dir.appendingPathComponent(name)
+                    guard FileManager.default.fileExists(atPath: file.path) else { continue }
+                    if let data = try? Data(contentsOf: file), let s = String(data: data, encoding: .utf8) {
+                        if textContainsToolHints(s) { return true }
+                        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                           let ct = obj["chat_template"] as? String, textContainsToolHints(ct) {
+                            return true
+                        }
+                    }
+                }
+            }
             return false
+        case .afm:
+            return true
         }
     }
 

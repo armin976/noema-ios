@@ -32,7 +32,7 @@ public final class ManualModelRegistry: ModelRegistry, @unchecked Sendable {
     }
 
 
-    public func searchStream(query: String, page: Int, includeVisionModels: Bool, visionOnly: Bool) -> AsyncThrowingStream<ModelRecord, Error> {
+    public func searchStream(query: String, page: Int, format: ModelFormat?, includeVisionModels: Bool, visionOnly: Bool) -> AsyncThrowingStream<ModelRecord, Error> {
         // Manual registry doesn't need vision models parameter, but we need to match the protocol
         return .init { continuation in
             continuation.finish()
@@ -76,7 +76,7 @@ public final class ManualModelRegistry: ModelRegistry, @unchecked Sendable {
                 case .gguf:
                     let target = QuantExtractor.shortLabel(from: extra.label, format: .gguf).lowercased()
                     picked = candidates.first(where: { QuantExtractor.shortLabel(from: $0.label, format: .gguf).lowercased() == target }) ?? candidates.first
-                case .slm, .apple:
+                case .et, .ane, .afm:
                     picked = candidates.first
                 }
                 if let q = picked {
@@ -97,7 +97,8 @@ public final class ManualModelRegistry: ModelRegistry, @unchecked Sendable {
                                               sizeBytes: extra.sizeBytes,
                                               downloadURL: newURL,
                                               sha256: extra.sha256,
-                                              configURL: extra.configURL ?? cfg)
+                                              configURL: extra.configURL ?? cfg,
+                                              downloadParts: extra.downloadParts)
                     if !quants.contains(where: { $0.downloadURL == candidate.downloadURL }) {
                         quants.append(candidate)
                     }
@@ -135,12 +136,14 @@ public final class ManualModelRegistry: ModelRegistry, @unchecked Sendable {
                         picked = mlxQuants.first
                     }
                     if let mlxQuant = picked {
-                        quants[i] = QuantInfo(label: quants[i].label,
-                                              format: .mlx,
-                                              sizeBytes: mlxQuant.sizeBytes,
-                                              downloadURL: mlxQuant.downloadURL,
-                                              sha256: mlxQuant.sha256,
-                                              configURL: mlxQuant.configURL ?? URL(string: "https://huggingface.co/\(repo)/raw/main/config.json"))
+                        quants[i] = quants[i].copying(
+                            format: .mlx,
+                            sizeBytes: mlxQuant.sizeBytes,
+                            downloadURL: mlxQuant.downloadURL,
+                            sha256: mlxQuant.sha256,
+                            configURL: mlxQuant.configURL ?? URL(string: "https://huggingface.co/\(repo)/raw/main/config.json"),
+                            downloadParts: mlxQuant.downloadParts
+                        )
                     }
                 } else {
                     // First time for this curated MLX repo: fetch details and cache
@@ -156,12 +159,14 @@ public final class ManualModelRegistry: ModelRegistry, @unchecked Sendable {
                             picked = mlxQuants.first
                         }
                         if let mlxQuant = picked {
-                            quants[i] = QuantInfo(label: quants[i].label,
-                                                  format: .mlx,
-                                                  sizeBytes: mlxQuant.sizeBytes,
-                                                  downloadURL: mlxQuant.downloadURL,
-                                                  sha256: mlxQuant.sha256,
-                                                  configURL: mlxQuant.configURL ?? URL(string: "https://huggingface.co/\(repo)/raw/main/config.json"))
+                            quants[i] = quants[i].copying(
+                                format: .mlx,
+                                sizeBytes: mlxQuant.sizeBytes,
+                                downloadURL: mlxQuant.downloadURL,
+                                sha256: mlxQuant.sha256,
+                                configURL: mlxQuant.configURL ?? URL(string: "https://huggingface.co/\(repo)/raw/main/config.json"),
+                                downloadParts: mlxQuant.downloadParts
+                            )
                         }
                     } else {
                         // Fallback: add ?download=1 for size probing and set config to the repo
@@ -170,12 +175,10 @@ public final class ManualModelRegistry: ModelRegistry, @unchecked Sendable {
                         if !q.contains(where: { $0.name == "download" }) { q.append(URLQueryItem(name: "download", value: "1")) }
                         comps.queryItems = q
                         if let newURL = comps.url {
-                            quants[i] = QuantInfo(label: quants[i].label,
-                                                  format: quants[i].format,
-                                                  sizeBytes: quants[i].sizeBytes,
-                                                  downloadURL: newURL,
-                                                  sha256: quants[i].sha256,
-                                                  configURL: quants[i].configURL ?? URL(string: "https://huggingface.co/\(repo)/raw/main/config.json"))
+                            quants[i] = quants[i].copying(
+                                downloadURL: newURL,
+                                configURL: quants[i].configURL ?? URL(string: "https://huggingface.co/\(repo)/raw/main/config.json")
+                            )
                         }
                     }
                 }
@@ -183,12 +186,7 @@ public final class ManualModelRegistry: ModelRegistry, @unchecked Sendable {
 
             if quants[i].sizeBytes == 0 {
                 if let size = try? await fetchSize(quants[i].downloadURL) {
-                    quants[i] = QuantInfo(label: quants[i].label,
-                                          format: quants[i].format,
-                                          sizeBytes: size,
-                                          downloadURL: quants[i].downloadURL,
-                                          sha256: quants[i].sha256,
-                                          configURL: quants[i].configURL)
+                    quants[i] = quants[i].copying(sizeBytes: size)
                 }
             }
         }
@@ -276,234 +274,389 @@ public final class ManualModelRegistry: ModelRegistry, @unchecked Sendable {
         Int64(gb * 1_073_741_824.0)
     }
 
+    static func recommendedStarterQuant(in details: ModelDetails) -> QuantInfo? {
+        let preferredPool = details.quants.filter { $0.format == .gguf && $0.isHighBitQuant }
+        let fallbackPool = preferredPool.isEmpty ? details.quants.filter { $0.isHighBitQuant } : preferredPool
+        let candidates = fallbackPool.isEmpty ? details.quants : fallbackPool
+        return candidates.min { starterQuantSortKey(for: $0) < starterQuantSortKey(for: $1) }
+    }
+
+    private static func starterQuantSortKey(for quant: QuantInfo) -> (Int, Int, Int, Int64, String) {
+        let formatRank = quant.format == .gguf ? 0 : 1
+        let bits = quant.inferredBitWidth ?? 99
+        let bitDistance = abs(bits - 4)
+        let label = QuantExtractor.shortLabel(from: quant.label, format: quant.format).uppercased()
+        let variantRank: Int = {
+            guard quant.format == .gguf else { return 0 }
+            if label.contains("_K_M") { return 0 }
+            if label.contains("_K_S") { return 1 }
+            if label.contains("_K_L") { return 2 }
+            return 9
+        }()
+        let sizeRank = quant.sizeBytes > 0 ? quant.sizeBytes : Int64.max / 4
+        return (formatRank, bitDistance, variantRank, sizeRank, label)
+    }
+
     public static var defaultEntries: [Entry] {
         let locale = LocalizationManager.preferredLocale()
-        let qwen17MinRAM   = requiredRAMBytes(from: bytesFromMB(730))       // lowest quant ~730MB
-        let gemma3nMinRAM  = requiredRAMBytes(from: bytesFromGB(2.2))       // lowest quant ~2.2GB
-        let phi4MiniMinRAM = requiredRAMBytes(from: bytesFromGB(2.0))       // lowest quant ~2.0GB
-        let qwenVLMinRAM   = requiredRAMBytes(from: bytesFromGB(2.3))       // MLX 3bit ≈2.3GB
-        let olmo3MinRAM    = requiredRAMBytes(from: bytesFromGB(2.7))       // lowest quant ~2.7GB
+        let qwenSummary = String(localized: "Qwen 3.5 is a new multimodal model family from Qwen designed for text, images, video, reasoning, coding, and agent-style tool use, with support for both thinking and non-thinking modes. The 2B variant shown here is a compact version intended especially for prototyping, local use, fine-tuning, and efficient deployment, while still offering a very large native context window and strong multilingual coverage.", locale: locale)
+        let bonsaiSummary = String(localized: "Bonsai-8B-GGUF is a 1-bit, GGUF-packaged 8B language model built on a Qwen3-8B dense architecture and designed for efficient local inference with llama.cpp across CUDA, Metal, CPU, and mobile environments.", locale: locale)
+        let gemmaSummary = String(localized: "Gemma 3 4B is a lightweight multimodal model developed by Google that accepts both text and images as input and generates text responses. Despite its relatively small size, it supports a 128K token context window, multilingual capability across more than 140 languages, and is designed to run efficiently on local hardware such as laptops and desktops.", locale: locale)
+        let lfmSummary = String(localized: "LFM2.5-1.2B-Thinking is a compact reasoning-focused language model from Liquid AI designed for efficient on-device inference, built on the LFM2 architecture with additional pre-training and reinforcement learning. The release is optimized for local runtimes, allowing the roughly 1.2-billion-parameter model to run on consumer hardware while retaining strong reasoning and conversational capabilities.", locale: locale)
+        let graniteSummary = String(localized: "Granite-4.0-H-Tiny is a 7-billion-parameter long-context instruction-tuned language model developed by IBM as part of the Granite 4.0 family. It is designed for enterprise-oriented applications such as conversational assistants, retrieval-augmented generation, coding tasks, and tool-calling workflows, while supporting multilingual interaction and contexts up to 128K tokens.", locale: locale)
+        let gemma4Summary = String(localized: "Gemma 4 is a family of open multimodal models from Google DeepMind designed for strong reasoning, coding, and long-context tasks, with support for text and image input across the lineup and audio on the smaller variants. It comes in several sizes and architectures, including efficient dense models and a Mixture-of-Experts option, making it suitable for everything from on-device use on laptops and phones to more demanding workstation deployments.", locale: locale)
+        let qwen3Summary = String(localized: "Qwen3-1.7B is a compact language model in Alibaba's Qwen3 family, designed to balance strong reasoning, instruction following, and multilingual performance within a lightweight 1.7 billion parameter size. It supports both deliberate reasoning for harder tasks and faster general conversation, making it a versatile small model for local use, research, and everyday AI applications.", locale: locale)
         return [
             Entry(
                 record: ModelRecord(
-                    id: "Qwen/Qwen3-VL-4B-Instruct-GGUF",
-                    displayName: "Qwen 3 VL 4B (Vision)",
+                    id: "unsloth/Qwen3.5-2B-GGUF",
+                    displayName: "Qwen 3.5 2B",
                     publisher: "Qwen",
-                    summary: String(localized: "Compact vision-language model for image and text understanding with instruction tuning, ideal for on-device multimodal use.", locale: locale),
+                    summary: qwenSummary,
                     hasInstallableQuant: true,
                     formats: [.gguf, .mlx],
                     installed: false,
-                    tags: ["gguf", "mlx", "qwen3", "vision", "vlm"],
+                    tags: ["gguf", "mlx", "qwen3.5", "multimodal", "vision", "reasoning", "tool-use"],
                     pipeline_tag: "image-text-to-text",
-                    minRAMBytes: qwenVLMinRAM
+                    minRAMBytes: nil,
+                    recommendedETBackend: nil,
+                    supportsVision: true
                 ),
                 details: ModelDetails(
-                    id: "Qwen/Qwen3-VL-4B-Instruct-GGUF",
-                    summary: String(localized: "Qwen 3 VL 4B brings vision-language capabilities in a small footprint, with GGUF quants and an MLX 3-bit build for Apple Silicon.", locale: locale),
+                    id: "unsloth/Qwen3.5-2B-GGUF",
+                    summary: qwenSummary,
                     quants: [
                         QuantInfo(
-                            label: "MLX 3bit",
+                            label: "GGUF",
+                            format: .gguf,
+                            sizeBytes: 0,
+                            downloadURL: URL(string: "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF")!,
+                            sha256: nil,
+                            configURL: nil
+                        ),
+                        QuantInfo(
+                            label: "INT4",
                             format: .mlx,
                             sizeBytes: 0,
-                            downloadURL: URL(string: "https://huggingface.co/mlx-community/Qwen3-VL-4B-Instruct-3bit")!,
+                            downloadURL: URL(string: "https://huggingface.co/mlx-community/Qwen3.5-2B-4bit")!,
+                            sha256: nil,
+                            configURL: nil
+                        ),
+                        QuantInfo(
+                            label: "INT6",
+                            format: .mlx,
+                            sizeBytes: 0,
+                            downloadURL: URL(string: "https://huggingface.co/mlx-community/Qwen3.5-2B-6bit")!,
                             sha256: nil,
                             configURL: nil
                         )
                     ],
                     promptTemplate: nil,
-                    minRAMBytes: qwenVLMinRAM
+                    minRAMBytes: nil
                 )
             ),
 
             Entry(
                 record: ModelRecord(
-                    id: "unsloth/Olmo-3-7B-Think-GGUF",
-                    displayName: "Olmo 3 7B",
-                    publisher: "unsloth",
-                    summary: String(localized: "Efficient 7B-class Olmo 3 model tuned for stronger reasoning while remaining laptop-friendly.", locale: locale),
+                    id: "prism-ml/Bonsai-8B-gguf",
+                    displayName: "Bonsai 8b",
+                    publisher: "Prism ML",
+                    summary: bonsaiSummary,
+                    parameterCountLabel: "8B",
                     hasInstallableQuant: true,
                     formats: [.gguf, .mlx],
                     installed: false,
-                    tags: ["gguf", "mlx", "olmo3", "reasoning"],
+                    tags: ["gguf", "mlx", "bonsai", "qwen3", "1-bit", "llama.cpp", "cuda", "metal", "cpu", "mobile"],
                     pipeline_tag: nil,
-                    minRAMBytes: olmo3MinRAM
+                    minRAMBytes: nil,
+                    recommendedETBackend: nil,
+                    supportsVision: false
                 ),
                 details: ModelDetails(
-                    id: "unsloth/Olmo-3-7B-Think-GGUF",
-                    summary: String(localized: "Olmo 3 7B Think pairs compact size with robust instruction following; available in GGUF quants plus an MLX 4-bit build for Apple Silicon.", locale: locale),
+                    id: "prism-ml/Bonsai-8B-gguf",
+                    summary: bonsaiSummary,
+                    parameterCountLabel: "8B",
                     quants: [
                         QuantInfo(
-                            label: "MLX 4bit",
+                            label: "GGUF",
+                            format: .gguf,
+                            sizeBytes: 0,
+                            downloadURL: URL(string: "https://huggingface.co/prism-ml/Bonsai-8B-gguf")!,
+                            sha256: nil,
+                            configURL: nil
+                        ),
+                        QuantInfo(
+                            label: "1-bit",
                             format: .mlx,
                             sizeBytes: 0,
-                            downloadURL: URL(string: "https://huggingface.co/mlx-community/Olmo-3-7B-Instruct-4bit")!,
+                            downloadURL: URL(string: "https://huggingface.co/prism-ml/Bonsai-8B-mlx-1bit")!,
                             sha256: nil,
                             configURL: nil
                         )
                     ],
                     promptTemplate: nil,
-                    minRAMBytes: olmo3MinRAM
+                    minRAMBytes: nil
                 )
             ),
 
             Entry(
-                record: ModelRecord(id: "unsloth/Qwen3-1.7B-GGUF",
-                                    displayName: "Qwen3-1.7B",
-                                    publisher: "Qwen",
-                                    summary: String(localized: "Qwen3-1.7B is a compact and efficient model from the Qwen3 family, suitable for on-device usage with strong general capabilities.", locale: locale),
-                                    hasInstallableQuant: true,
-                                    formats: [.gguf, .mlx],
-                                    installed: false,
-                                    tags: ["gguf", "mlx", "qwen3"],
-                                    pipeline_tag: nil,
-                                    minRAMBytes: qwen17MinRAM),
+                record: ModelRecord(
+                    id: "unsloth/gemma-3-4b-it-GGUF",
+                    displayName: "Gemma 3 4B",
+                    publisher: "Google",
+                    summary: gemmaSummary,
+                    hasInstallableQuant: true,
+                    formats: [.gguf, .mlx, .et],
+                    installed: false,
+                    tags: ["gguf", "mlx", "et", "gemma", "gemma3", "multimodal", "vision"],
+                    pipeline_tag: "image-text-to-text",
+                    minRAMBytes: nil,
+                    recommendedETBackend: nil,
+                    supportsVision: true
+                ),
+                details: ModelDetails(
+                    id: "unsloth/gemma-3-4b-it-GGUF",
+                    summary: gemmaSummary,
+                    quants: [
+                        QuantInfo(
+                            label: "GGUF",
+                            format: .gguf,
+                            sizeBytes: 0,
+                            downloadURL: URL(string: "https://huggingface.co/unsloth/gemma-3-4b-it-GGUF")!,
+                            sha256: nil,
+                            configURL: URL(string: "https://huggingface.co/unsloth/gemma-3-4b-it-GGUF/raw/main/config.json")
+                        ),
+                        QuantInfo(
+                            label: "INT4",
+                            format: .mlx,
+                            sizeBytes: 0,
+                            downloadURL: URL(string: "https://huggingface.co/mlx-community/gemma-3-4b-it-4bit")!,
+                            sha256: nil,
+                            configURL: nil
+                        ),
+                        QuantInfo(
+                            label: "INT8",
+                            format: .mlx,
+                            sizeBytes: 0,
+                            downloadURL: URL(string: "https://huggingface.co/mlx-community/gemma-3-4b-it-8bit")!,
+                            sha256: nil,
+                            configURL: nil
+                        ),
+                        QuantInfo(
+                            label: "ET",
+                            format: .et,
+                            sizeBytes: 0,
+                            downloadURL: URL(string: "https://huggingface.co/pytorch/gemma-3-4b-it-HQQ-INT8-INT4")!,
+                            sha256: nil,
+                            configURL: nil
+                        )
+                    ],
+                    promptTemplate: nil,
+                    minRAMBytes: nil
+                )
+            ),
+
+            Entry(
+                record: ModelRecord(
+                    id: "LiquidAI/LFM2.5-1.2B-Thinking-GGUF",
+                    displayName: "LFM 2.5 1.2B Thinking",
+                    publisher: "Liquid AI",
+                    summary: lfmSummary,
+                    hasInstallableQuant: true,
+                    formats: [.gguf, .mlx],
+                    installed: false,
+                    tags: ["gguf", "mlx", "lfm2.5", "thinking", "reasoning", "liquid-ai"],
+                    pipeline_tag: nil,
+                    minRAMBytes: nil,
+                    recommendedETBackend: nil,
+                    supportsVision: false
+                ),
+                details: ModelDetails(
+                    id: "LiquidAI/LFM2.5-1.2B-Thinking-GGUF",
+                    summary: lfmSummary,
+                    quants: [
+                        QuantInfo(
+                            label: "GGUF",
+                            format: .gguf,
+                            sizeBytes: 0,
+                            downloadURL: URL(string: "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Thinking-GGUF")!,
+                            sha256: nil,
+                            configURL: nil
+                        ),
+                        QuantInfo(
+                            label: "INT4",
+                            format: .mlx,
+                            sizeBytes: 0,
+                            downloadURL: URL(string: "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Thinking-MLX-4bit")!,
+                            sha256: nil,
+                            configURL: nil
+                        ),
+                        QuantInfo(
+                            label: "INT8",
+                            format: .mlx,
+                            sizeBytes: 0,
+                            downloadURL: URL(string: "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Thinking-MLX-8bit")!,
+                            sha256: nil,
+                            configURL: nil
+                        )
+                    ],
+                    promptTemplate: nil,
+                    minRAMBytes: nil
+                )
+            ),
+
+            Entry(
+                record: ModelRecord(
+                    id: "ibm-granite/granite-4.0-h-tiny-GGUF",
+                    displayName: "Granite 4.0 H Tiny",
+                    publisher: "IBM",
+                    summary: graniteSummary,
+                    hasInstallableQuant: true,
+                    formats: [.gguf, .mlx],
+                    installed: false,
+                    tags: ["gguf", "mlx", "granite", "granite4", "enterprise", "tool-use", "coding"],
+                    pipeline_tag: nil,
+                    minRAMBytes: nil,
+                    recommendedETBackend: nil,
+                    supportsVision: false
+                ),
+                details: ModelDetails(
+                    id: "ibm-granite/granite-4.0-h-tiny-GGUF",
+                    summary: graniteSummary,
+                    quants: [
+                        QuantInfo(
+                            label: "GGUF",
+                            format: .gguf,
+                            sizeBytes: 0,
+                            downloadURL: URL(string: "https://huggingface.co/ibm-granite/granite-4.0-h-tiny-GGUF")!,
+                            sha256: nil,
+                            configURL: nil
+                        ),
+                        QuantInfo(
+                            label: "INT4",
+                            format: .mlx,
+                            sizeBytes: 0,
+                            downloadURL: URL(string: "https://huggingface.co/mlx-community/granite-4.0-h-tiny-4bit")!,
+                            sha256: nil,
+                            configURL: nil
+                        ),
+                        QuantInfo(
+                            label: "INT8",
+                            format: .mlx,
+                            sizeBytes: 0,
+                            downloadURL: URL(string: "https://huggingface.co/mlx-community/granite-4.0-h-tiny-8bit")!,
+                            sha256: nil,
+                            configURL: nil
+                        )
+                    ],
+                    promptTemplate: nil,
+                    minRAMBytes: nil
+                )
+            ),
+
+            Entry(
+                record: ModelRecord(
+                    id: "unsloth/gemma-4-E2B-it-GGUF",
+                    displayName: "Gemma 4 E2B",
+                    publisher: "Google",
+                    summary: gemma4Summary,
+                    hasInstallableQuant: true,
+                    formats: [.gguf, .mlx],
+                    installed: false,
+                    tags: ["gguf", "mlx", "gemma", "gemma4", "multimodal", "vision"],
+                    pipeline_tag: "image-text-to-text",
+                    minRAMBytes: nil,
+                    recommendedETBackend: nil,
+                    supportsVision: true
+                ),
+                details: ModelDetails(
+                    id: "unsloth/gemma-4-E2B-it-GGUF",
+                    summary: gemma4Summary,
+                    quants: [
+                        QuantInfo(
+                            label: "GGUF",
+                            format: .gguf,
+                            sizeBytes: 0,
+                            downloadURL: URL(string: "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF")!,
+                            sha256: nil,
+                            configURL: nil
+                        ),
+                        QuantInfo(
+                            label: "INT4",
+                            format: .mlx,
+                            sizeBytes: 0,
+                            downloadURL: URL(string: "https://huggingface.co/unsloth/gemma-4-E2B-it-UD-MLX-4bit")!,
+                            sha256: nil,
+                            configURL: nil
+                        )
+                    ],
+                    promptTemplate: nil,
+                    minRAMBytes: nil
+                )
+            ),
+
+            Entry(
+                record: ModelRecord(
+                    id: "unsloth/Qwen3-1.7B-GGUF",
+                    displayName: "Qwen 3 1.7B",
+                    publisher: "Qwen",
+                    summary: qwen3Summary,
+                    hasInstallableQuant: true,
+                    formats: [.gguf, .mlx, .et, .ane],
+                    installed: false,
+                    tags: ["gguf", "mlx", "et", "cml", "qwen", "qwen3"],
+                    pipeline_tag: nil,
+                    minRAMBytes: nil,
+                    recommendedETBackend: nil,
+                    supportsVision: false
+                ),
                 details: ModelDetails(
                     id: "unsloth/Qwen3-1.7B-GGUF",
-                    summary: String(localized: "Qwen3-1.7B is a compact and efficient model from the Qwen3 family, suitable for on-device usage with strong general capabilities.", locale: locale),
-                    quants: [
-                        QuantInfo(label: "Q3_K_M",
-                                  format: .gguf,
-                                  sizeBytes: 0,
-                                  downloadURL: URL(string: "https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q3_K_M.gguf?download=true")!,
-                                  sha256: nil,
-                                  configURL: nil),
-                        QuantInfo(label: "Q4_K_M",
-                                  format: .gguf,
-                                  sizeBytes: 0,
-                                  downloadURL: URL(string: "https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf?download=true")!,
-                                  sha256: nil,
-                                  configURL: nil),
-                        QuantInfo(label: "Q6_K",
-                                  format: .gguf,
-                                  sizeBytes: 0,
-                                  downloadURL: URL(string: "https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q6_K.gguf?download=true")!,
-                                  sha256: nil,
-                                  configURL: nil),
-                        QuantInfo(label: "MLX 4bit",
-                                  format: .mlx,
-                                  sizeBytes: 0,
-                                  downloadURL: URL(string: "https://huggingface.co/mlx-community/Qwen3-1.7B-4bit")!,
-                                  sha256: nil,
-                                  configURL: nil)
-                    ],
-                    promptTemplate: nil,
-                    minRAMBytes: qwen17MinRAM
-                )
-            ),
-
-            Entry(
-                record: ModelRecord(
-                    id: "unsloth/gemma-3n-E2B-it-GGUF",
-                    displayName: "Gemma-3n-E2B-it",
-                    publisher: "Google",
-                    summary: String(localized: "Gemma 3n E2B is a lightweight instruction-tuned model from Google's Gemma family, optimized for efficient on-device conversations.", locale: locale),
-                    hasInstallableQuant: true,
-                    formats: [.gguf, .mlx],
-                    installed: false,
-                    tags: ["gguf", "mlx", "gemma", "gemma3n"],
-                    pipeline_tag: nil,
-                    minRAMBytes: gemma3nMinRAM
-                ),
-                details: ModelDetails(
-                    id: "unsloth/gemma-3n-E2B-it-GGUF",
-                    summary: String(localized: """
-Gemma 3n E2B is an instruction-tuned variant of Google's Gemma family built for efficient reasoning on low-resource devices.
-Available in GGUF quants (Q3_K_M, Q4_K_M, Q6_K) and an MLX 4-bit build for Apple Silicon.
-""", locale: locale),
+                    summary: qwen3Summary,
                     quants: [
                         QuantInfo(
-                            label: "Q3_K_M",
+                            label: "GGUF",
                             format: .gguf,
                             sizeBytes: 0,
-                            downloadURL: URL(string: "https://huggingface.co/unsloth/gemma-3n-E2B-it-GGUF/resolve/main/gemma-3n-E2B-it-Q3_K_M.gguf?download=true")!,
+                            downloadURL: URL(string: "https://huggingface.co/unsloth/Qwen3-1.7B-GGUF")!,
                             sha256: nil,
-                            configURL: URL(string: "https://huggingface.co/unsloth/gemma-3n-E2B-it-GGUF/raw/main/config.json")
+                            configURL: nil
                         ),
                         QuantInfo(
-                            label: "Q4_K_M",
-                            format: .gguf,
-                            sizeBytes: 0,
-                            downloadURL: URL(string: "https://huggingface.co/unsloth/gemma-3n-E2B-it-GGUF/resolve/main/gemma-3n-E2B-it-Q4_K_M.gguf?download=true")!,
-                            sha256: nil,
-                            configURL: URL(string: "https://huggingface.co/unsloth/gemma-3n-E2B-it-GGUF/raw/main/config.json")
-                        ),
-                        QuantInfo(
-                            label: "Q6_K",
-                            format: .gguf,
-                            sizeBytes: 0,
-                            downloadURL: URL(string: "https://huggingface.co/unsloth/gemma-3n-E2B-it-GGUF/resolve/main/gemma-3n-E2B-it-Q6_K.gguf?download=true")!,
-                            sha256: nil,
-                            configURL: URL(string: "https://huggingface.co/unsloth/gemma-3n-E2B-it-GGUF/raw/main/config.json")
-                        ),
-                        QuantInfo(
-                            label: "MLX 4bit",
+                            label: "INT4",
                             format: .mlx,
                             sizeBytes: 0,
-                            downloadURL: URL(string: "https://huggingface.co/mlx-community/gemma-3n-E2B-it-4bit")!,
+                            downloadURL: URL(string: "https://huggingface.co/mlx-community/Qwen3-1.7B-4bit")!,
+                            sha256: nil,
+                            configURL: nil
+                        ),
+                        QuantInfo(
+                            label: "INT8",
+                            format: .mlx,
+                            sizeBytes: 0,
+                            downloadURL: URL(string: "https://huggingface.co/mlx-community/Qwen3-1.7B-8bit")!,
+                            sha256: nil,
+                            configURL: nil
+                        ),
+                        QuantInfo(
+                            label: "CML",
+                            format: .ane,
+                            sizeBytes: 0,
+                            downloadURL: URL(string: "https://huggingface.co/anemll/anemll-Qwen-Qwen3-1.7B-ctx2048_0.3.5")!,
+                            sha256: nil,
+                            configURL: nil
+                        ),
+                        QuantInfo(
+                            label: "ET",
+                            format: .et,
+                            sizeBytes: 0,
+                            downloadURL: URL(string: "https://huggingface.co/larryliu0820/Qwen3-1.7B-INT8-INT4-ExecuTorch-XNNPACK")!,
                             sha256: nil,
                             configURL: nil
                         )
                     ],
                     promptTemplate: nil,
-                    minRAMBytes: gemma3nMinRAM
-                )
-            ),
-
-            Entry(
-                record: ModelRecord(
-                    id: "microsoft/phi-4-mini-reasoning",
-                    displayName: "Phi-4 Mini Reasoning",
-                    publisher: "microsoft",
-                    summary: String(localized: "Phi-4 Mini Reasoning is a lightweight model from the Phi-4 family, tuned for strong reasoning and efficiency across tasks.", locale: locale),
-                    hasInstallableQuant: true,
-                    formats: [.gguf, .mlx],
-                    installed: false,
-                    tags: ["gguf", "mlx", "phi-4", "reasoning"],
-                    pipeline_tag: nil,
-                    minRAMBytes: phi4MiniMinRAM
-                ),
-                details: ModelDetails(
-                    id: "microsoft/phi-4-mini-reasoning",
-                    summary: String(localized: """
-Phi-4 Mini Reasoning — a compact model in Microsoft’s Phi-4 line designed for logical reasoning, problem solving, and instruction-following. 
-Distributed in efficient GGUF quants (Q3_K_L, Q4_K_M, Q6_K) and an MLX 4-bit variant for Apple Silicon devices.
-""", locale: locale),
-                    quants: [
-                        QuantInfo(
-                            label: "Q3_K_L",
-                            format: .gguf,
-                            sizeBytes: 0,
-                            downloadURL: URL(string: "https://huggingface.co/lmstudio-community/Phi-4-mini-reasoning-GGUF/resolve/main/Phi-4-mini-reasoning-Q3_K_L.gguf?download=true")!,
-                            sha256: nil,
-                            configURL: URL(string: "https://huggingface.co/lmstudio-community/Phi-4-mini-reasoning-GGUF/raw/main/config.json")
-                        ),
-                        QuantInfo(
-                            label: "Q4_K_M",
-                            format: .gguf,
-                            sizeBytes: 0,
-                            downloadURL: URL(string: "https://huggingface.co/lmstudio-community/Phi-4-mini-reasoning-GGUF/resolve/main/Phi-4-mini-reasoning-Q4_K_M.gguf?download=true")!,
-                            sha256: nil,
-                            configURL: URL(string: "https://huggingface.co/lmstudio-community/Phi-4-mini-reasoning-GGUF/raw/main/config.json")
-                        ),
-                        QuantInfo(
-                            label: "Q6_K",
-                            format: .gguf,
-                            sizeBytes: 0,
-                            downloadURL: URL(string: "https://huggingface.co/lmstudio-community/Phi-4-mini-reasoning-GGUF/resolve/main/Phi-4-mini-reasoning-Q6_K.gguf?download=true")!,
-                            sha256: nil,
-                            configURL: URL(string: "https://huggingface.co/lmstudio-community/Phi-4-mini-reasoning-GGUF/raw/main/config.json")
-                        ),
-                        QuantInfo(
-                            label: "MLX 4bit",
-                            format: .mlx,
-                            sizeBytes: 0,
-                            downloadURL: URL(string: "https://huggingface.co/lmstudio-community/Phi-4-mini-reasoning-MLX-4bit/resolve/main/model.safetensors?download=true")!,
-                            sha256: nil,
-                            configURL: URL(string: "https://huggingface.co/lmstudio-community/Phi-4-mini-reasoning-MLX-4bit/raw/main/config.json")
-                        )
-                    ],
-                    promptTemplate: nil,
-                    minRAMBytes: phi4MiniMinRAM
+                    minRAMBytes: nil
                 )
             )
         ]

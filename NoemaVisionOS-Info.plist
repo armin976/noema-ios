@@ -17,5 +17,10 @@
         <string>Noema uses Bluetooth to share relay setup details with your other devices.</string>
         <key>NSBluetoothPeripheralUsageDescription</key>
         <string>Noema uses Bluetooth to share relay setup details with your other devices.</string>
+        <key>NSAppTransportSecurity</key>
+        <dict>
+                <key>NSAllowsArbitraryLoads</key>
+                <true/>
+        </dict>
 </dict>
 </plist>

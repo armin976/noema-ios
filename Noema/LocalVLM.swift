@@ -15,24 +15,31 @@ final class LocalVLM: ObservableObject {
         }
         let mmproj = try Weights.installAny(withExtension: "mmproj")
         let mmPath = mmproj?.url.path
-        let port = Int(LlamaServerBridge.start(host: "127.0.0.1", preferredPort: 0, ggufPath: gguf.url.path, mmprojPath: mmPath))
+        let port = Int(LlamaServerBridge.start(
+            TemplateDrivenModelSupport.loopbackStartConfiguration(
+                modelURL: gguf.url,
+                ggufPath: gguf.url.path,
+                mmprojPath: mmPath
+            )
+        ))
         guard port > 0 else { throw NSError(domain: "Noema", code: 1) }
         baseURL = URL(string: "http://127.0.0.1:\(port)")
         // Surface vision capability to the UI so it can enable the attach button
         let d = UserDefaults.standard
-        d.set(true, forKey: "serverVisionEnabled")
+        LoopbackVisionState.setEnabled(true)
         d.set(true, forKey: "currentModelIsRemote")
     }
 
     func stop() {
         LlamaServerBridge.stop()
         baseURL = nil
-        let d = UserDefaults.standard
-        d.set(false, forKey: "serverVisionEnabled")
+        LoopbackVisionState.setEnabled(false)
     }
 
     func send(prompt: String, imagePNG: Data) async throws -> String {
         guard let baseURL else { throw NSError(domain: "Noema", code: 2) }
+        let requestTimeout: TimeInterval = 60 * 60 * 24 * 365 * 10
+        let resourceTimeout: TimeInterval = 60 * 60 * 24 * 365 * 10
         let dataURL = "data:image/png;base64," + imagePNG.base64EncodedString()
         let body: [String: Any] = [
             "model": "local-vlm",
@@ -48,7 +55,20 @@ final class LocalVLM: ObservableObject {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, _) = try await URLSession.shared.data(for: req)
+        req.timeoutInterval = requestTimeout
+        if NetworkKillSwitch.shouldBlock(request: req) {
+            throw URLError(.notConnectedToInternet)
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = requestTimeout
+        configuration.timeoutIntervalForResource = resourceTimeout
+        configuration.waitsForConnectivity = false
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.connectionProxyDictionary = [AnyHashable: Any]()
+        let session = URLSession(configuration: configuration)
+        defer { session.finishTasksAndInvalidate() }
+        let (data, _) = try await session.data(for: req)
         return String(decoding: data, as: UTF8.self)
     }
 }

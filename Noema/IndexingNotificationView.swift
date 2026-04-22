@@ -1,338 +1,505 @@
-// IndexingNotificationView.swift
-#if canImport(UIKit)
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
 
 struct IndexingNotificationView: View {
     @ObservedObject var datasetManager: DatasetManager
-    @EnvironmentObject var chatVM: ChatVM
-    @State private var showCompletion = false
-    @State private var hideNotification = false
-    @State private var lastCompletedID: String?
-    @State private var isExpanded = true
-    @State private var didStartEmbedding = false
+
+    @Environment(\.locale) private var locale
+    @Environment(\.colorScheme) private var colorScheme
+
+    @State private var presentedBanner: PresentedBanner?
+    @State private var showBanner = false
+    @State private var isCollapsed = false
     @State private var showCancelConfirm = false
     @State private var showBatteryConfirm = false
-    private let stageSequence: [DatasetProcessingStage] = [.extracting, .compressing, .embedding]
-    
+    @State private var dismissTask: Task<Void, Never>?
+
+    private let pillWidth: CGFloat = {
+        #if canImport(UIKit)
+        return UIDevice.current.userInterfaceIdiom == .pad ? 460 : 0
+        #else
+        return 420
+        #endif
+    }()
+
+    private let outerHorizontalPadding: CGFloat = {
+        #if canImport(UIKit)
+        return UIDevice.current.userInterfaceIdiom == .pad ? 0 : 16
+        #else
+        return 0
+        #endif
+    }()
+
+    private let collapsedPillWidth: CGFloat = {
+        #if canImport(UIKit)
+        return UIDevice.current.userInterfaceIdiom == .pad ? 260 : 208
+        #else
+        return 244
+        #endif
+    }()
+
+    private var activeBanner: PresentedBanner? {
+        guard
+            let id = datasetManager.indexingDatasetID,
+            let dataset = datasetManager.datasets.first(where: { $0.datasetID == id }),
+            let status = datasetManager.processingStatus[id]
+        else {
+            return nil
+        }
+        return PresentedBanner(dataset: dataset, status: status)
+    }
+
+    private var bannerSignature: BannerSignature? {
+        guard let banner = activeBanner else { return nil }
+        return BannerSignature(
+            datasetID: banner.dataset.datasetID,
+            stage: banner.status.stage,
+            progressStep: Int((banner.status.progress * 1000).rounded()),
+            message: banner.status.message ?? ""
+        )
+    }
+
     var body: some View {
-        content
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        if let id = datasetManager.indexingDatasetID {
-            if let ds = datasetManager.datasets.first(where: { $0.datasetID == id }) {
-                if let status = datasetManager.processingStatus[id] {
-                    let needsConfirm = (status.stage == .embedding && status.progress <= 0.0001 && !didStartEmbedding)
-                    if hideNotification && !needsConfirm {
-                        EmptyView()
-                    } else {
-                        viewBody(id: id, ds: ds, status: status)
-                    }
-                } else { EmptyView() }
-            } else { EmptyView() }
-        } else { EmptyView() }
-    }
-
-    @ViewBuilder
-    private func viewBody(id: String, ds: LocalDataset, status: DatasetProcessingStatus) -> some View {
-        VStack(spacing: 8) {
-            // Compact step indicator
-            HStack(spacing: 8) {
-                ForEach(stageSequence.indices, id: \.self) { index in
-                    let stage = stageSequence[index]
-                    Circle()
-                        .fill(stageColor(stage, current: status.stage, isCompleted: showCompletion))
-                        .frame(width: 12, height: 12)
-                        .scaleEffect(showCompletion ? 1.2 : 1.0)
-                        .animation(.spring(response: 0.3, dampingFraction: 0.6).delay(Double(index) * 0.1), value: showCompletion)
-                    if index < 2 {
-                        Rectangle()
-                            .fill(stageLineColor(index, current: status.stage, isCompleted: showCompletion))
-                            .frame(width: 16, height: 1)
-                            .animation(.easeInOut(duration: 0.3), value: status.stage)
-                    }
-                }
-            }
-            // Progress details or completion message
-            if showCompletion {
-                HStack(spacing: 4) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 14))
-                        .foregroundColor(.green)
-                        .transition(.scale.combined(with: .opacity))
-                    Text("Done!")
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.green)
-                    Text("Dataset ready to use")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
-            } else {
-                HStack(spacing: 8) {
-                    Text("\(stageVerb(status.stage)) \(ds.name)")
-                        .font(.caption)
-                        .fontWeight(.medium)
-                    Text("•")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    if status.stage == .failed {
-                        Text(isExpanded ? (status.message ?? stageLabel(.failed)) : (status.message ?? shortStageLabel(.failed)))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text(isExpanded ? stageLabel(status.stage) : shortStageLabel(status.stage))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    Text("•")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    if isExpanded {
-                        Text("\(Int(status.progress * 100))% · \(etaString(status.etaSeconds))")
-                            .font(.caption2)
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                // Confirmation gate for embedding step
-                if status.stage == .embedding && status.progress <= 0.0001 && !didStartEmbedding {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 8) {
-                            Button {
-                                if isPluggedIn() {
-                                    didStartEmbedding = true
-                                    Task {
-                                        await chatVM.unload()
-                                        self.datasetManager.startEmbeddingForID(ds.datasetID)
-                                    }
-                                } else {
-                                    showBatteryConfirm = true
-                                }
-                            } label: {
-                                Text("Confirm and Start Embedding")
-                                    .font(.caption)
-                                    .fontWeight(.semibold)
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .background(Color.blue.opacity(0.15))
-                                    .foregroundColor(.blue)
-                                    .cornerRadius(8)
-                            }
-                            .confirmationDialog("Proceed on battery power?", isPresented: $showBatteryConfirm, titleVisibility: .visible) {
-                                Button("Proceed") {
-                                    didStartEmbedding = true
-                                    Task {
-                                        await chatVM.unload()
-                                        self.datasetManager.startEmbeddingForID(ds.datasetID)
-                                    }
-                                }
-                                Button("Cancel", role: .cancel) {}
-                            } message: {
-                                Text("Embedding is resource intensive. For best performance, plug in your phone. Do you want to proceed on battery?")
-                            }
-                            Button {
-                                showCancelConfirm = true
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundColor(.red)
-                            }
-                            .buttonStyle(.plain)
-                            .confirmationDialog("Cancel Embedding?", isPresented: $showCancelConfirm, titleVisibility: .visible) {
-                                Button("Cancel Embedding", role: .destructive) {
-                                    didStartEmbedding = false
-                                    hideNotification = false
-                                    datasetManager.processingStatus[ds.datasetID] = nil
-                                    datasetManager.indexingDatasetID = nil
-                                }
-                                Button("Continue", role: .cancel) {}
-                            } message: { Text("You can restart this process in the dataset settings any time.") }
-                        }
-                        Text("For best performance, please plug in your phone until this completes.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            // Compact progress bar (hidden when completed)
-            if !showCompletion {
-                ModernProgressView(value: status.progress, tint: .blue, height: 3)
+        Group {
+            if let banner = presentedBanner {
+                pill(for: banner)
+                    .scaleEffect(showBanner ? 1.0 : 0.94)
+                    .opacity(showBanner ? 1.0 : 0.0)
+                    .animation(.spring(response: 0.28, dampingFraction: 0.82), value: showBanner)
                     .transition(.opacity)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .frame(maxWidth: UIDevice.current.userInterfaceIdiom == .pad ? 460 : .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: UIDevice.current.userInterfaceIdiom == .pad ? 16 : 12)
-                .fill(.thinMaterial)
-                .shadow(color: .black.opacity(0.1), radius: 8, x: 0, y: 4)
-        )
+        .onAppear {
+            syncPresentedBanner()
+        }
+        .onDisappear {
+            dismissTask?.cancel()
+        }
+        .onChangeCompat(of: bannerSignature) { _, _ in
+            syncPresentedBanner()
+        }
+    }
+
+    @ViewBuilder
+    private func pill(for banner: PresentedBanner) -> some View {
+        let presentation = DatasetIndexingPresentation.make(for: banner.status, locale: locale)
+
+        Group {
+            if isCollapsed {
+                HStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    collapsedPill(for: banner, presentation: presentation)
+                        .transition(
+                            .asymmetric(
+                                insertion: .opacity.combined(with: .scale(scale: 0.92, anchor: .trailing)),
+                                removal: .opacity.combined(with: .scale(scale: 0.96, anchor: .trailing))
+                            )
+                        )
+                }
+            } else {
+                expandedPill(for: banner, presentation: presentation)
+                    .transition(
+                        .asymmetric(
+                            insertion: .opacity.combined(with: .scale(scale: 0.97, anchor: .topTrailing)),
+                            removal: .opacity.combined(with: .scale(scale: 0.94, anchor: .topTrailing))
+                        )
+                    )
+            }
+        }
+        .frame(maxWidth: pillWidth == 0 ? .infinity : pillWidth, alignment: isCollapsed ? .trailing : .center)
+        .padding(.horizontal, outerHorizontalPadding)
+        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: isCollapsed)
         .contextMenu {
             Button(role: .destructive) {
-                withAnimation(.easeInOut(duration: 0.3)) { hideNotification = true }
-            } label: { Label("Dismiss", systemImage: "xmark.circle") }
-        }
-        .opacity(1.0)
-        .padding(.horizontal, UIDevice.current.userInterfaceIdiom == .pad ? 0 : 16)
-        .opacity(isExpanded ? 1 : 0)
-        .animation(.easeInOut(duration: 0.25), value: isExpanded)
-        .overlay(alignment: .topLeading) {
-            Button(action: { withAnimation(.easeInOut(duration: 0.25)) { isExpanded = true } }) {
-                ZStack {
-                    Circle().fill(Color.blue.opacity(0.9)).frame(width: 28, height: 28)
-                    Text("\(Int(status.progress * 100))")
-                        .font(.system(size: 11)).bold().monospacedDigit()
-                        .foregroundColor(.white)
-                }
+                dismissCurrentBanner()
+            } label: {
+                Label(LocalizedStringKey("Dismiss"), systemImage: "xmark.circle")
             }
-            .padding(6)
-            .opacity(isExpanded ? 0 : 1)
-            .animation(.easeInOut(duration: 0.25), value: isExpanded)
         }
-        .onChange(of: status.stage) { newStage in
-            if newStage == .embedding {
-                if status.progress <= 0.0001 {
-                    withAnimation(.spring()) {
-                        hideNotification = false
-                        isExpanded = true
+    }
+
+    private func expandedPill(for banner: PresentedBanner, presentation: DatasetIndexingPresentation) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                collapseBanner()
+            } label: {
+                VStack(alignment: .leading, spacing: 10) {
+                    headerRow(
+                        datasetName: banner.dataset.name,
+                        presentation: presentation,
+                        toggleSystemImage: "chevron.right"
+                    )
+
+                    Group {
+                        if presentation.showsProgressBar {
+                            NotificationProgressBar(value: banner.status.progress, height: 7)
+                        } else {
+                            Capsule()
+                                .fill(successTrackColor(for: presentation))
+                                .frame(height: 7)
+                        }
+                    }
+
+                    statusRow(presentation: presentation)
+                }
+                .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+            .buttonStyle(.plain)
+
+            actionRow(for: banner, presentation: presentation)
+                .frame(height: 34)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .frame(maxWidth: pillWidth == 0 ? .infinity : pillWidth)
+        .glassPill(cornerRadius: 20)
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.white.opacity(colorScheme == .dark ? 0.16 : 0.24), lineWidth: 0.8)
+        )
+    }
+
+    private func collapsedPill(for banner: PresentedBanner, presentation: DatasetIndexingPresentation) -> some View {
+        Button {
+            expandBanner()
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: presentation.systemImage)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(iconColor(for: presentation))
+                    .frame(width: 16, height: 16)
+
+                Text(banner.dataset.name)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(primaryTextColor)
+                    .compactStatusText(minimumScaleFactor: 0.74)
+
+                Spacer(minLength: 6)
+
+                Text(collapsedProgressText(for: banner, presentation: presentation))
+                    .font(.caption2)
+                    .monospacedDigit()
+                    .foregroundStyle(secondaryTextColor)
+                    .compactStatusText(minimumScaleFactor: 0.76)
+
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(width: collapsedPillWidth)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .glassPill(cornerRadius: 18)
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(colorScheme == .dark ? 0.16 : 0.24), lineWidth: 0.8)
+        )
+    }
+
+    private func headerRow(
+        datasetName: String,
+        presentation: DatasetIndexingPresentation,
+        toggleSystemImage: String
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: presentation.systemImage)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(iconColor(for: presentation))
+                .frame(width: 18, height: 18)
+
+            Text(datasetName)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(primaryTextColor)
+                .compactStatusText(minimumScaleFactor: 0.76)
+
+            Spacer(minLength: 8)
+
+            ZStack(alignment: .trailing) {
+                Text("100% · ~88m 88s")
+                    .font(.caption2)
+                    .monospacedDigit()
+                    .compactStatusText(minimumScaleFactor: 0.72)
+                    .hidden()
+
+                Text(presentation.progressText)
+                    .font(.caption2)
+                    .monospacedDigit()
+                    .foregroundStyle(secondaryTextColor)
+                    .compactStatusText(minimumScaleFactor: 0.72)
+            }
+
+            Image(systemName: toggleSystemImage)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private func statusRow(presentation: DatasetIndexingPresentation) -> some View {
+        HStack(spacing: 6) {
+            Text(presentation.title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(titleColor(for: presentation))
+                .compactStatusText(minimumScaleFactor: 0.78)
+
+            Text("•")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+
+            Text(presentation.message)
+                .font(.caption2)
+                .foregroundStyle(secondaryTextColor)
+                .compactStatusText(minimumScaleFactor: 0.78)
+        }
+    }
+
+    @ViewBuilder
+    private func actionRow(for banner: PresentedBanner, presentation: DatasetIndexingPresentation) -> some View {
+        switch presentation.actionState {
+        case .none:
+            Color.clear
+        case .cancelOnly:
+            HStack(spacing: 8) {
+                actionButton(
+                    title: String(localized: "Stop", locale: locale),
+                    systemImage: "xmark.circle.fill",
+                    role: .destructive
+                ) {
+                    datasetManager.cancelProcessingForID(banner.dataset.datasetID)
+                }
+
+                Spacer(minLength: 0)
+            }
+        case .startAndCancel:
+            HStack(spacing: 8) {
+                actionButton(
+                    title: String(localized: "Confirm and Start Embedding", locale: locale),
+                    systemImage: "play.fill",
+                    role: nil
+                ) {
+                    if isPluggedIn() {
+                        datasetManager.startEmbeddingForID(banner.dataset.datasetID)
+                    } else {
+                        showBatteryConfirm = true
                     }
                 }
+                .confirmationDialog(
+                    LocalizedStringKey("Proceed on battery power?"),
+                    isPresented: $showBatteryConfirm,
+                    titleVisibility: .visible
+                ) {
+                    Button(LocalizedStringKey("Proceed")) {
+                        datasetManager.startEmbeddingForID(banner.dataset.datasetID)
+                    }
+                    Button(LocalizedStringKey("Cancel"), role: .cancel) {}
+                } message: {
+                    Text(LocalizedStringKey("Embedding is resource intensive. For best performance, plug in your device. Do you want to proceed on battery?"))
+                }
+
+                actionButton(
+                    title: String(localized: "Stop", locale: locale),
+                    systemImage: "xmark.circle.fill",
+                    role: .destructive
+                ) {
+                    showCancelConfirm = true
+                }
+                .confirmationDialog(
+                    LocalizedStringKey("Cancel Embedding?"),
+                    isPresented: $showCancelConfirm,
+                    titleVisibility: .visible
+                ) {
+                    Button(LocalizedStringKey("Cancel Embedding"), role: .destructive) {
+                        datasetManager.cancelProcessingForID(banner.dataset.datasetID)
+                    }
+                    Button(LocalizedStringKey("Continue"), role: .cancel) {}
+                } message: {
+                    Text(LocalizedStringKey("You can restart this process in the dataset details at any time."))
+                }
+
+                Spacer(minLength: 0)
             }
-        }
-        .onChange(of: id) { newID in
-            if newID != lastCompletedID {
-                hideNotification = false
-                showCompletion = false
-                isExpanded = true
-            }
-        }
-        .transition(.opacity)
-        .animation(.easeInOut(duration: 0.25), value: hideNotification)
-        .onTapGesture {
-            withAnimation(.easeInOut(duration: 0.25)) {
-                isExpanded = false
-            }
-        }
-    }
-    
-    private func stageVerb(_ stage: DatasetProcessingStage) -> String {
-        switch stage {
-        case .extracting: return "Extracting"
-        case .compressing: return "Compressing"
-        case .embedding: return "Embedding"
-        case .completed: return "Indexed"
-        case .failed: return "Failed"
         }
     }
 
-    private func stageColor(_ stage: DatasetProcessingStage, current: DatasetProcessingStage, isCompleted: Bool) -> Color {
-        if isCompleted {
-            return .green
+    private func actionButton(
+        title: String,
+        systemImage: String,
+        role: ButtonRole?,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(role: role, action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.caption.weight(.semibold))
+                .labelStyle(.titleAndIcon)
+                .compactStatusText(minimumScaleFactor: 0.72)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .frame(minHeight: 30)
         }
-        
-        switch (stage, current) {
-        case (.extracting, .extracting), (.compressing, .compressing), (.embedding, .embedding):
-            return .blue
-        case (.extracting, .compressing), (.extracting, .embedding), (.compressing, .embedding):
-            return .green
-        default:
-            return .gray.opacity(0.3)
-        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
     }
-    
-    private func stageLineColor(_ index: Int, current: DatasetProcessingStage, isCompleted: Bool) -> Color {
-        if isCompleted {
-            return .green
+
+    private func syncPresentedBanner() {
+        dismissTask?.cancel()
+
+        if let activeBanner {
+            let previousDatasetID = presentedBanner?.dataset.datasetID
+            presentedBanner = activeBanner
+            if previousDatasetID != activeBanner.dataset.datasetID || shouldAutoExpand(for: activeBanner.status) {
+                isCollapsed = false
+            }
+            if !showBanner {
+                DispatchQueue.main.async {
+                    showBanner = true
+                }
+            }
+
+            if activeBanner.status.stage == .completed || activeBanner.status.stage == .failed {
+                scheduleDismiss(after: activeBanner.status.stage == .completed ? 1.4 : 1.8)
+            }
+            return
         }
-        
-        switch (index, current) {
-        case (0, .compressing), (0, .embedding), (1, .embedding):
-            return .green
-        default:
-            return .gray.opacity(0.3)
+
+        guard let lingering = presentedBanner else {
+            showBanner = false
+            return
         }
-    }
-    
-    private func stageLabel(_ stage: DatasetProcessingStage) -> String {
-        switch stage {
-        case .extracting: return "Extracting"
-        case .compressing: return "Compressing"
-        case .embedding: return "Embedding"
-        case .completed: return "Ready"
-        case .failed: return "Failed"
+
+        if lingering.status.stage == .completed || lingering.status.stage == .failed {
+            scheduleDismiss(after: lingering.status.stage == .completed ? 1.2 : 1.6)
+        } else {
+            dismissCurrentBanner()
         }
     }
 
-    private func shortStageLabel(_ stage: DatasetProcessingStage) -> String {
-        switch stage {
-        case .extracting: return "Extract"
-        case .compressing: return "Compress"
-        case .embedding: return "Embed"
-        case .completed: return "Done"
-        case .failed: return "Error"
+    private func scheduleDismiss(after delay: TimeInterval) {
+        dismissTask?.cancel()
+        dismissTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            dismissCurrentBanner()
         }
     }
 
-    private func etaString(_ etaSeconds: Double?) -> String {
-        if let e = etaSeconds, e > 0 {
-            return String(format: "~%dm %02ds", Int(e)/60, Int(e)%60)
+    private func dismissCurrentBanner() {
+        dismissTask?.cancel()
+        withAnimation(.easeOut(duration: 0.22)) {
+            showBanner = false
         }
-        return "…"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
+            presentedBanner = nil
+            isCollapsed = false
+        }
     }
+
+    private func collapseBanner() {
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+            isCollapsed = true
+        }
+    }
+
+    private func expandBanner() {
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+            isCollapsed = false
+        }
+    }
+
+    private func shouldAutoExpand(for status: DatasetProcessingStatus) -> Bool {
+        switch DatasetIndexingPresentation.make(for: status, locale: locale).actionState {
+        case .startAndCancel:
+            return true
+        case .none:
+            return status.stage == .completed || status.stage == .failed
+        case .cancelOnly:
+            return false
+        }
+    }
+
+    private func collapsedProgressText(
+        for banner: PresentedBanner,
+        presentation: DatasetIndexingPresentation
+    ) -> String {
+        switch banner.status.stage {
+        case .completed, .failed:
+            return presentation.progressText
+        case .extracting, .compressing, .embedding:
+            return "\(Int(max(0, min(1, banner.status.progress)) * 100))%"
+        }
+    }
+
+    private func iconColor(for presentation: DatasetIndexingPresentation) -> Color {
+        switch presentation.tone {
+        case .active:
+            return Color(red: 0.07, green: 0.56, blue: 1.0)
+        case .success:
+            return .green
+        case .failure:
+            return .orange
+        }
+    }
+
+    private func titleColor(for presentation: DatasetIndexingPresentation) -> Color {
+        switch presentation.tone {
+        case .active:
+            return primaryTextColor
+        case .success:
+            return .green
+        case .failure:
+            return .orange
+        }
+    }
+
+    private func successTrackColor(for presentation: DatasetIndexingPresentation) -> Color {
+        switch presentation.tone {
+        case .success:
+            return .green.opacity(0.28)
+        case .failure:
+            return .orange.opacity(0.28)
+        case .active:
+            return .clear
+        }
+    }
+
+    private var primaryTextColor: Color {
+        #if os(macOS)
+        Color(nsColor: .labelColor)
+        #else
+        Color.primary
+        #endif
+    }
+
+    private var secondaryTextColor: Color {
+        #if os(macOS)
+        Color(nsColor: .secondaryLabelColor)
+        #else
+        Color.secondary
+        #endif
+    }
+}
+
+private struct PresentedBanner: Equatable {
+    let dataset: LocalDataset
+    let status: DatasetProcessingStatus
+}
+
+private struct BannerSignature: Equatable {
+    let datasetID: String
+    let stage: DatasetProcessingStage
+    let progressStep: Int
+    let message: String
 }
 
 @MainActor
 private func isPluggedIn() -> Bool {
+    #if canImport(UIKit)
     UIDevice.current.isBatteryMonitoringEnabled = true
     let state = UIDevice.current.batteryState
     return state == .charging || state == .full
+    #else
+    return true
+    #endif
 }
-
-#elseif os(macOS)
-
-import SwiftUI
-
-struct IndexingNotificationView: View {
-    @ObservedObject var datasetManager: DatasetManager
-
-    private var activeStatus: (dataset: LocalDataset, status: DatasetProcessingStatus)? {
-        guard let id = datasetManager.indexingDatasetID,
-              let dataset = datasetManager.datasets.first(where: { $0.datasetID == id }),
-              let status = datasetManager.processingStatus[id] else {
-            return nil
-        }
-        return (dataset, status)
-    }
-
-    var body: some View {
-        if let info = activeStatus {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    ProgressView(value: info.status.progress)
-                        .progressViewStyle(.linear)
-                        .frame(maxWidth: 140)
-                    Text("\(Int(info.status.progress * 100))%")
-                        .font(.caption)
-                        .monospacedDigit()
-                }
-                Text("Indexing \(info.dataset.name)")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                Text(info.status.message ?? info.status.stage.rawValue.capitalized)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(12)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(.thinMaterial)
-            )
-        }
-    }
-}
-
-#endif

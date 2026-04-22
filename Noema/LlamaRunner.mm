@@ -21,6 +21,16 @@
 #import "llama.h"
 #endif
 
+// Avoid hard-linking against ggml backend symbols. Some builds intentionally hide ggml
+// exports (e.g. the loopback server framework) to prevent collisions with an in-process
+// llama framework. Resolve at runtime when available and gracefully fall back when not.
+static ggml_backend_dev_t noema_try_ggml_backend_dev_by_type(enum ggml_backend_dev_type type) {
+  using fn_t = ggml_backend_dev_t (*)(enum ggml_backend_dev_type);
+  static fn_t fn = (fn_t) dlsym(RTLD_DEFAULT, "ggml_backend_dev_by_type");
+  if (!fn) { return NULL; }
+  return fn(type);
+}
+
 // Intentionally avoid including example vision headers (llava/clip/mtmd). We rely solely on
 // the public C API in llama.h. If vision is needed, higher layers should prefer the server
 // route that accepts base64 image URLs.
@@ -450,10 +460,14 @@ static inline bool noema_env_bool(const char *key, bool defv) {
   mparams.main_gpu = 0;
   static ggml_backend_dev_t cpu_devices[2];
   if (nGpu <= 0) {
-    ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
-    cpu_devices[0] = cpu;
-    cpu_devices[1] = NULL;
-    mparams.devices = cpu_devices;
+    ggml_backend_dev_t cpu = noema_try_ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    if (cpu) {
+      cpu_devices[0] = cpu;
+      cpu_devices[1] = NULL;
+      mparams.devices = cpu_devices;
+    } else {
+      mparams.devices = NULL;
+    }
   }
   // Default to mmap on unless explicitly disabled via environment
 #if defined(LLAMA_MODEL_PARAMS_HAS_USE_MMAP)
@@ -592,10 +606,14 @@ static inline bool noema_env_bool(const char *key, bool defv) {
   mparams.main_gpu = 0;
   static ggml_backend_dev_t cpu_devices[2];
   if (nGpu <= 0) {
-    ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
-    cpu_devices[0] = cpu;
-    cpu_devices[1] = NULL;
-    mparams.devices = cpu_devices;
+    ggml_backend_dev_t cpu = noema_try_ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    if (cpu) {
+      cpu_devices[0] = cpu;
+      cpu_devices[1] = NULL;
+      mparams.devices = cpu_devices;
+    } else {
+      mparams.devices = NULL;
+    }
   }
   // Default to mmap on unless explicitly disabled via environment
 #if defined(LLAMA_MODEL_PARAMS_HAS_USE_MMAP)
@@ -662,11 +680,12 @@ static inline bool noema_env_bool(const char *key, bool defv) {
   noema_apply_flash_and_kv_params(cparams, self.kvConfig, &resolvedK, &resolvedV, &usedMerged, &mergedType);
   // Summarize resolved KV and flash settings
   {
-    const char *flashStr = "auto";
+    const char *flashStr = nullptr;
     switch (cparams.flash_attn_type) {
       case LLAMA_FLASH_ATTN_TYPE_AUTO: flashStr = "auto"; break;
       case LLAMA_FLASH_ATTN_TYPE_ENABLED: flashStr = "on"; break;
       case LLAMA_FLASH_ATTN_TYPE_DISABLED: flashStr = "off"; break;
+      default: flashStr = "auto"; break;
     }
     NSLog(@"[LlamaRunner] KV K=%s V=%s flash=%s",
           noema_kv_type_name(resolvedK), noema_kv_type_name(resolvedV), flashStr);

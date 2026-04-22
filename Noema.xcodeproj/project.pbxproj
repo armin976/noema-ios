@@ -12,18 +12,12 @@
 		173B500E616CE0C8720732B4 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 035AB236448800F41072CFF7 /* MLXLMCommon */; };
 		36F3CC4A934A927DB446262C /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = A75FE0F413B83C5653A358FA /* MLXLMCommon */; };
 		5A799E3027157C932A64382B /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 89508E8A4241F3F06F767D32 /* MLXLMCommon */; };
-		6426A0162ED7B84400615267 /* MLXMNIST in Frameworks */ = {isa = PBXBuildFile; productRef = 6426A0152ED7B84400615267 /* MLXMNIST */; };
-		644228FD2EBEBC2D00422935 /* FacebookBasics in Frameworks */ = {isa = PBXBuildFile; productRef = 644228FC2EBEBC2D00422935 /* FacebookBasics */; };
-		644228FF2EBEBC2D00422935 /* FacebookCore in Frameworks */ = {isa = PBXBuildFile; productRef = 644228FE2EBEBC2D00422935 /* FacebookCore */; };
 		64431EBB2E5E2F5E00BD5E8C /* SwiftMath in Frameworks */ = {isa = PBXBuildFile; productRef = 64431EBA2E5E2F5E00BD5E8C /* SwiftMath */; };
-		6458090C2EBEA4110034074C /* LeapModelDownloader in Frameworks */ = {isa = PBXBuildFile; productRef = 6458090B2EBEA4110034074C /* LeapModelDownloader */; };
-		6458090E2EBEA4110034074C /* LeapSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 6458090D2EBEA4110034074C /* LeapSDK */; };
 		646E49E42E8EDF51004C5BD8 /* MLXRandom in Frameworks */ = {isa = PBXBuildFile; productRef = 646E49D32E8EDF51004C5BD8 /* MLXRandom */; };
 		646E49E52E8EDF51004C5BD8 /* MLXOptimizers in Frameworks */ = {isa = PBXBuildFile; productRef = 646E49D22E8EDF51004C5BD8 /* MLXOptimizers */; };
 		646E49E62E8EDF51004C5BD8 /* MLXNN in Frameworks */ = {isa = PBXBuildFile; productRef = 646E49D12E8EDF51004C5BD8 /* MLXNN */; };
 		646E49E72E8EDF51004C5BD8 /* MLXLinalg in Frameworks */ = {isa = PBXBuildFile; productRef = 646E49D02E8EDF51004C5BD8 /* MLXLinalg */; };
 		646E49E92E8EDF51004C5BD8 /* MLXFast in Frameworks */ = {isa = PBXBuildFile; productRef = 646E49CF2E8EDF51004C5BD8 /* MLXFast */; };
-		646E49EB2E8EDF51004C5BD8 /* MLXMNIST in Frameworks */ = {isa = PBXBuildFile; productRef = 646E49D92E8EDF51004C5BD8 /* MLXMNIST */; };
 		646E49ED2E8EDF51004C5BD8 /* MLXFFT in Frameworks */ = {isa = PBXBuildFile; productRef = 646E49CE2E8EDF51004C5BD8 /* MLXFFT */; };
 		646E49EE2E8EDF51004C5BD8 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 646E49CC2E8EDF51004C5BD8 /* MLX */; };
 		646E49EF2E8EDF51004C5BD8 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64ABE8E02E494DCE00821D00 /* Metal.framework */; };
@@ -37,7 +31,6 @@
 		647D61AA2E955AEA003DC7F3 /* MLXNN in Frameworks */ = {isa = PBXBuildFile; productRef = 647D61932E955AEA003DC7F3 /* MLXNN */; };
 		647D61AB2E955AEA003DC7F3 /* MLXLinalg in Frameworks */ = {isa = PBXBuildFile; productRef = 647D61922E955AEA003DC7F3 /* MLXLinalg */; };
 		647D61AD2E955AEA003DC7F3 /* MLXFast in Frameworks */ = {isa = PBXBuildFile; productRef = 647D61912E955AEA003DC7F3 /* MLXFast */; };
-		647D61AF2E955AEA003DC7F3 /* MLXMNIST in Frameworks */ = {isa = PBXBuildFile; productRef = 647D619B2E955AEA003DC7F3 /* MLXMNIST */; };
 		647D61B22E955AEA003DC7F3 /* MLXFFT in Frameworks */ = {isa = PBXBuildFile; productRef = 647D61902E955AEA003DC7F3 /* MLXFFT */; };
 		647D61B32E955AEA003DC7F3 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 647D618E2E955AEA003DC7F3 /* MLX */; };
 		647D61B42E955AEA003DC7F3 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 64ABE8E02E494DCE00821D00 /* Metal.framework */; };
@@ -53,9 +46,19 @@
 		64F1A0B92F00000000000001 /* RelayKit in Frameworks */ = {isa = PBXBuildFile; productRef = 64F1A0B82F00000000000000 /* RelayKit */; };
 		64F1A0BA2F00000000000001 /* RelayKit in Frameworks */ = {isa = PBXBuildFile; productRef = 64F1A0B82F00000000000000 /* RelayKit */; };
 		64F1A0BB2F00000000000001 /* RelayKit in Frameworks */ = {isa = PBXBuildFile; productRef = 64F1A0B82F00000000000000 /* RelayKit */; };
+		6A5D1F062F35A00000A10001 /* Tokenizers in Frameworks */ = {isa = PBXBuildFile; productRef = 6A5D1F022F35A00000A10001 /* Tokenizers */; };
+		6A5D1F072F35A00000A10001 /* Transformers in Frameworks */ = {isa = PBXBuildFile; productRef = 6A5D1F032F35A00000A10001 /* Transformers */; };
+		6A5D1F082F35A00000A10001 /* Tokenizers in Frameworks */ = {isa = PBXBuildFile; productRef = 6A5D1F042F35A00000A10001 /* Tokenizers */; };
+		6A5D1F092F35A00000A10001 /* Transformers in Frameworks */ = {isa = PBXBuildFile; productRef = 6A5D1F052F35A00000A10001 /* Transformers */; };
 		761B93CC43210A77C5F2C3EF /* MLXVLM in Frameworks */ = {isa = PBXBuildFile; productRef = 9671064702E2AE64A359AADF /* MLXVLM */; };
 		7BF8CC40DD072A43B16A07C2 /* MLXVLM in Frameworks */ = {isa = PBXBuildFile; productRef = 417AB310C4DB5F8DFE71956C /* MLXVLM */; };
 		88B93A66A8F06F7EAA21C91A /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = B6CF4E9B49381B893090A7F0 /* MLXLLM */; };
+		A10000012F40000100000011 /* Frameworks/Python-iOS.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000012F40000100000001 /* Frameworks/Python-iOS.xcframework */; };
+		A10000012F40000100000012 /* Frameworks/Python-visionOS.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000012F40000100000002 /* Frameworks/Python-visionOS.xcframework */; };
+		A10000012F40000100000013 /* Frameworks/Python-macOS.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000012F40000100000003 /* Frameworks/Python-macOS.xcframework */; };
+		A10000012F40000100000021 /* Frameworks/Python-iOS.xcframework in Embed Python Frameworks */ = {isa = PBXBuildFile; fileRef = A10000012F40000100000001 /* Frameworks/Python-iOS.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		A10000012F40000100000022 /* Frameworks/Python-visionOS.xcframework in Embed Python Frameworks */ = {isa = PBXBuildFile; fileRef = A10000012F40000100000002 /* Frameworks/Python-visionOS.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		A10000012F40000100000023 /* Frameworks/Python-macOS.xcframework in Embed Python Frameworks */ = {isa = PBXBuildFile; fileRef = A10000012F40000100000003 /* Frameworks/Python-macOS.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A8259F0A2A424CF1B4856CCF /* NoemaPackages in Frameworks */ = {isa = PBXBuildFile; productRef = 21FF187598A740D3901EFE90 /* NoemaPackages */; };
 		BFDB12BA4EAF40FB69496641 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 06EF816A0080BF19C8D0E0E4 /* MLXLLM */; };
 /* End PBXBuildFile section */
@@ -69,6 +72,13 @@
 			remoteInfo = Noema;
 		};
 		642CDB522E231968009017C6 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 642CDB2D2E231965009017C6 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 647D618D2E955AEA003DC7F3;
+			remoteInfo = NoemaMac;
+		};
+		A20000012F41000100000001 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 642CDB2D2E231965009017C6 /* Project object */;
 			proxyType = 1;
@@ -108,12 +118,45 @@
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A10000012F40000100000031 /* Embed Python Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				A10000012F40000100000021 /* Frameworks/Python-iOS.xcframework in Embed Python Frameworks */,
+			);
+			name = "Embed Python Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A10000012F40000100000032 /* Embed Python Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				A10000012F40000100000022 /* Frameworks/Python-visionOS.xcframework in Embed Python Frameworks */,
+			);
+			name = "Embed Python Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A10000012F40000100000033 /* Embed Python Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				A10000012F40000100000023 /* Frameworks/Python-macOS.xcframework in Embed Python Frameworks */,
+			);
+			name = "Embed Python Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		642CDB352E231965009017C6 /* Noema.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Noema.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		642CDB472E231968009017C6 /* NoemaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; name = NoemaTests.xctest; path = Noema.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		642CDB512E231968009017C6 /* NoemaUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; name = NoemaUITests.xctest; path = Noema.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		642CDB472E231968009017C6 /* NoemaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NoemaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		642CDB512E231968009017C6 /* NoemaUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NoemaUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		643392BC2E5E228B004C2269 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
 		643392BE2E5E229E004C2269 /* CoreText.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreText.framework; path = System/Library/Frameworks/CoreText.framework; sourceTree = SDKROOT; };
 		643392C02E5E22A4004C2269 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
@@ -129,6 +172,10 @@
 		64ABE8E02E494DCE00821D00 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
 		64ABE8E12E494DCE00821D00 /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
 		64D5069D2E53BFB30022E586 /* CryptoKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CryptoKit.framework; path = System/Library/Frameworks/CryptoKit.framework; sourceTree = SDKROOT; };
+		A10000012F40000100000001 /* Frameworks/Python-iOS.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = "Frameworks/Python-iOS.xcframework"; sourceTree = SOURCE_ROOT; };
+		A10000012F40000100000002 /* Frameworks/Python-visionOS.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = "Frameworks/Python-visionOS.xcframework"; sourceTree = SOURCE_ROOT; };
+		A10000012F40000100000003 /* Frameworks/Python-macOS.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = "Frameworks/Python-macOS.xcframework"; sourceTree = SOURCE_ROOT; };
+		A20000012F41000100000002 /* NoemaiOSUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NoemaiOSUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -185,6 +232,11 @@
 			path = NoemaEmbeddingActivity;
 			sourceTree = "<group>";
 		};
+		A20000012F41000100000003 /* NoemaiOSUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = NoemaiOSUITests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -192,20 +244,18 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A10000012F40000100000011 /* Frameworks/Python-iOS.xcframework in Frameworks */,
 				36F3CC4A934A927DB446262C /* MLXLMCommon in Frameworks */,
 				054606C8C278AD20251A8DE3 /* MLXLLM in Frameworks */,
 				7BF8CC40DD072A43B16A07C2 /* MLXVLM in Frameworks */,
-				644228FD2EBEBC2D00422935 /* FacebookBasics in Frameworks */,
-				6458090E2EBEA4110034074C /* LeapSDK in Frameworks */,
 				64ABE8E22E494DCE00821D00 /* Metal.framework in Frameworks */,
-				6426A0162ED7B84400615267 /* MLXMNIST in Frameworks */,
-				6458090C2EBEA4110034074C /* LeapModelDownloader in Frameworks */,
-				644228FF2EBEBC2D00422935 /* FacebookCore in Frameworks */,
 				64ABE8E32E494DCE00821D00 /* MetalKit.framework in Frameworks */,
 				64ABE8DF2E494DC700821D00 /* Accelerate.framework in Frameworks */,
 				64D5069E2E53BFB30022E586 /* CryptoKit.framework in Frameworks */,
 				A8259F0A2A424CF1B4856CCF /* NoemaPackages in Frameworks */,
 				64431EBB2E5E2F5E00BD5E8C /* SwiftMath in Frameworks */,
+				6A5D1F062F35A00000A10001 /* Tokenizers in Frameworks */,
+				6A5D1F072F35A00000A10001 /* Transformers in Frameworks */,
 				64F1A0B92F00000000000001 /* RelayKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -228,6 +278,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A10000012F40000100000012 /* Frameworks/Python-visionOS.xcframework in Frameworks */,
 				646E49E42E8EDF51004C5BD8 /* MLXRandom in Frameworks */,
 				646E49E52E8EDF51004C5BD8 /* MLXOptimizers in Frameworks */,
 				646E49E62E8EDF51004C5BD8 /* MLXNN in Frameworks */,
@@ -236,7 +287,6 @@
 				0958C14A15754DABA9706146 /* MLXVLM in Frameworks */,
 				646E49E72E8EDF51004C5BD8 /* MLXLinalg in Frameworks */,
 				646E49E92E8EDF51004C5BD8 /* MLXFast in Frameworks */,
-				646E49EB2E8EDF51004C5BD8 /* MLXMNIST in Frameworks */,
 				646E49ED2E8EDF51004C5BD8 /* MLXFFT in Frameworks */,
 				646E49EE2E8EDF51004C5BD8 /* MLX in Frameworks */,
 				646E49EF2E8EDF51004C5BD8 /* Metal.framework in Frameworks */,
@@ -245,6 +295,8 @@
 				646E49F22E8EDF51004C5BD8 /* CryptoKit.framework in Frameworks */,
 				646E49F32E8EDF51004C5BD8 /* NoemaPackages in Frameworks */,
 				646E49F42E8EDF51004C5BD8 /* SwiftMath in Frameworks */,
+				6A5D1F082F35A00000A10001 /* Tokenizers in Frameworks */,
+				6A5D1F092F35A00000A10001 /* Transformers in Frameworks */,
 				64F1A0BA2F00000000000001 /* RelayKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -253,6 +305,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A10000012F40000100000013 /* Frameworks/Python-macOS.xcframework in Frameworks */,
 				647D61A82E955AEA003DC7F3 /* MLXRandom in Frameworks */,
 				647D61A92E955AEA003DC7F3 /* MLXOptimizers in Frameworks */,
 				647D61AA2E955AEA003DC7F3 /* MLXNN in Frameworks */,
@@ -261,7 +314,6 @@
 				761B93CC43210A77C5F2C3EF /* MLXVLM in Frameworks */,
 				647D61AB2E955AEA003DC7F3 /* MLXLinalg in Frameworks */,
 				647D61AD2E955AEA003DC7F3 /* MLXFast in Frameworks */,
-				647D61AF2E955AEA003DC7F3 /* MLXMNIST in Frameworks */,
 				647D61B22E955AEA003DC7F3 /* MLXFFT in Frameworks */,
 				647D61B32E955AEA003DC7F3 /* MLX in Frameworks */,
 				647D61B42E955AEA003DC7F3 /* Metal.framework in Frameworks */,
@@ -274,6 +326,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A20000012F41000100000005 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -283,6 +342,7 @@
 				642CDB372E231965009017C6 /* Noema */,
 				642CDB4A2E231968009017C6 /* NoemaTests */,
 				642CDB542E231968009017C6 /* NoemaUITests */,
+				A20000012F41000100000003 /* NoemaiOSUITests */,
 				644184032E4CE8AD00C5E265 /* NoemaEmbeddingActivity */,
 				64AD2F612E26FE5F00BAE465 /* Frameworks */,
 				646E49FB2E8EDF51004C5BD8 /* Noema copy-Info.plist */,
@@ -297,6 +357,7 @@
 				642CDB352E231965009017C6 /* Noema.app */,
 				642CDB472E231968009017C6 /* NoemaTests.xctest */,
 				642CDB512E231968009017C6 /* NoemaUITests.xctest */,
+				A20000012F41000100000002 /* NoemaiOSUITests.xctest */,
 				646E49FA2E8EDF51004C5BD8 /* Noema.app */,
 				647D61BF2E955AEA003DC7F3 /* Noema.app */,
 			);
@@ -306,6 +367,9 @@
 		64AD2F612E26FE5F00BAE465 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				A10000012F40000100000001 /* Frameworks/Python-iOS.xcframework */,
+				A10000012F40000100000002 /* Frameworks/Python-visionOS.xcframework */,
+				A10000012F40000100000003 /* Frameworks/Python-macOS.xcframework */,
 				643392C42E5E22BB004C2269 /* UIKit.framework */,
 				643392C22E5E22AE004C2269 /* QuartzCore.framework */,
 				643392C02E5E22A4004C2269 /* CoreGraphics.framework */,
@@ -331,8 +395,10 @@
 				642CDB312E231965009017C6 /* Sources */,
 				642CDB322E231965009017C6 /* Frameworks */,
 				642CDB332E231965009017C6 /* Resources */,
-				64F9F0A02FA8F4AA00ABCDEF /* Re-sign llama.framework */,
+				A10000012F40000100000041 /* Install Python Runtime Support */,
+				A10000012F40000100000031 /* Embed Python Frameworks */,
 				644184182E4CE8AF00C5E265 /* Embed Foundation Extensions */,
+				A10000012F40000100000044 /* Normalize Bundle Executable Bits */,
 			);
 			buildRules = (
 			);
@@ -346,14 +412,11 @@
 				21FF187598A740D3901EFE90 /* NoemaPackages */,
 				64F1A0B82F00000000000000 /* RelayKit */,
 				64431EBA2E5E2F5E00BD5E8C /* SwiftMath */,
-				6458090B2EBEA4110034074C /* LeapModelDownloader */,
-				6458090D2EBEA4110034074C /* LeapSDK */,
-				644228FC2EBEBC2D00422935 /* FacebookBasics */,
-				644228FE2EBEBC2D00422935 /* FacebookCore */,
 				A75FE0F413B83C5653A358FA /* MLXLMCommon */,
 				096DFC38282AE7CC1CBC47D0 /* MLXLLM */,
 				417AB310C4DB5F8DFE71956C /* MLXVLM */,
-				6426A0152ED7B84400615267 /* MLXMNIST */,
+				6A5D1F022F35A00000A10001 /* Tokenizers */,
+				6A5D1F032F35A00000A10001 /* Transformers */,
 			);
 			productName = Noema;
 			productReference = 642CDB352E231965009017C6 /* Noema.app */;
@@ -412,9 +475,10 @@
 				646E49E02E8EDF51004C5BD8 /* Sources */,
 				646E49E12E8EDF51004C5BD8 /* Frameworks */,
 				646E49F52E8EDF51004C5BD8 /* Resources */,
-				64F9F0B42FA9000000ABCDE3 /* Embed llama.framework (copy) */,
-				64F9F0A12FA8F4AA00ABCDE0 /* Re-sign llama.framework */,
+				A10000012F40000100000042 /* Install Python Runtime Support */,
+				A10000012F40000100000032 /* Embed Python Frameworks */,
 				646E49F62E8EDF51004C5BD8 /* Embed Foundation Extensions */,
+				A10000012F40000100000045 /* Normalize Bundle Executable Bits */,
 			);
 			buildRules = (
 			);
@@ -437,8 +501,9 @@
 				646E49D32E8EDF51004C5BD8 /* MLXRandom */,
 				646E49D42E8EDF51004C5BD8 /* NoemaPackages */,
 				64F1A0B82F00000000000000 /* RelayKit */,
-				646E49D92E8EDF51004C5BD8 /* MLXMNIST */,
 				646E49DB2E8EDF51004C5BD8 /* SwiftMath */,
+				6A5D1F042F35A00000A10001 /* Tokenizers */,
+				6A5D1F052F35A00000A10001 /* Transformers */,
 			);
 			productName = Noema;
 			productReference = 646E49FA2E8EDF51004C5BD8 /* Noema.app */;
@@ -451,8 +516,8 @@
 				647D61A42E955AEA003DC7F3 /* Sources */,
 				647D61A52E955AEA003DC7F3 /* Frameworks */,
 				647D61BA2E955AEA003DC7F3 /* Resources */,
-				64F9F0B42FA9000000ABCDE3 /* Embed llama.framework (copy) */,
-				64F9F0A22FA8F4AA00ABCDE1 /* Re-sign llama.framework */,
+				A10000012F40000100000033 /* Embed Python Frameworks */,
+				A10000012F40000100000043 /* Sanitize Embedded Python Framework */,
 				647D61BB2E955AEA003DC7F3 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
@@ -476,12 +541,34 @@
 				647D61952E955AEA003DC7F3 /* MLXRandom */,
 				647D61962E955AEA003DC7F3 /* NoemaPackages */,
 				64F1A0B82F00000000000000 /* RelayKit */,
-				647D619B2E955AEA003DC7F3 /* MLXMNIST */,
 				647D619D2E955AEA003DC7F3 /* SwiftMath */,
 			);
 			productName = Noema;
 			productReference = 647D61BF2E955AEA003DC7F3 /* Noema.app */;
 			productType = "com.apple.product-type.application";
+		};
+		A20000012F41000100000004 /* NoemaiOSUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A20000012F4100010000000B /* Build configuration list for PBXNativeTarget "NoemaiOSUITests" */;
+			buildPhases = (
+				A20000012F41000100000007 /* Sources */,
+				A20000012F41000100000005 /* Frameworks */,
+				A20000012F41000100000006 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A20000012F41000100000008 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A20000012F41000100000003 /* NoemaiOSUITests */,
+			);
+			name = NoemaiOSUITests;
+			packageProductDependencies = (
+			);
+			productName = NoemaiOSUITests;
+			productReference = A20000012F41000100000002 /* NoemaiOSUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 /* End PBXNativeTarget section */
 
@@ -502,6 +589,10 @@
 						TestTargetID = 642CDB342E231965009017C6;
 					};
 					642CDB502E231968009017C6 = {
+						CreatedOnToolsVersion = 16.4;
+						TestTargetID = 647D618D2E955AEA003DC7F3;
+					};
+					A20000012F41000100000004 = {
 						CreatedOnToolsVersion = 16.4;
 						TestTargetID = 642CDB342E231965009017C6;
 					};
@@ -528,10 +619,8 @@
 			packageReferences = (
 				2FB3F4F8C56943ACAEC3C135 /* XCLocalSwiftPackageReference "." */,
 				64431EB92E5E2F5E00BD5E8C /* XCRemoteSwiftPackageReference "SwiftMath" */,
-				6458090A2EBEA4110034074C /* XCRemoteSwiftPackageReference "leap-ios" */,
-				644228FB2EBEBC2D00422935 /* XCRemoteSwiftPackageReference "facebook-ios-sdk" */,
 				53802217708316E36FDFDC47 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */,
-				6426A0142ED7B84400615267 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */,
+				6A5D1F012F35A00000A10001 /* XCRemoteSwiftPackageReference "swift-transformers" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 642CDB362E231965009017C6 /* Products */;
@@ -542,6 +631,7 @@
 				646E49CB2E8EDF51004C5BD8 /* NoemaVisionOS */,
 				642CDB462E231968009017C6 /* NoemaTests */,
 				642CDB502E231968009017C6 /* NoemaUITests */,
+				A20000012F41000100000004 /* NoemaiOSUITests */,
 				647D618D2E955AEA003DC7F3 /* NoemaMac */,
 			);
 		};
@@ -583,10 +673,17 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A20000012F41000100000006 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		64F9F0A02FA8F4AA00ABCDEF /* Re-sign llama.framework */ = {
+		A10000012F40000100000041 /* Install Python Runtime Support */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -594,23 +691,19 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
-				"${PROJECT_DIR}/scripts/resign-llama.sh",
-				"${BUILT_PRODUCTS_DIR}/llama.framework",
-				"${BUILT_PRODUCTS_DIR}/PackageFrameworks/llama.framework",
-				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/llama.framework",
-				"${CODESIGNING_FOLDER_PATH}/Frameworks/llama.framework",
+				"$(PROJECT_DIR)/Frameworks/Python-iOS.xcframework",
 			);
-			name = "Re-sign llama.framework";
+			name = "Install Python Runtime Support";
 			outputFileListPaths = (
 			);
 			outputPaths = (
-				"${DERIVED_FILE_DIR}/resign-llama.stamp",
+				"$(TARGET_BUILD_DIR)/$(FULL_PRODUCT_NAME)/python/.noema-python-runtime-stamp",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "\"${PROJECT_DIR}/scripts/resign-llama.sh\"\n";
+			shellScript = "set -e\nsource \"$PROJECT_DIR/Frameworks/Python-iOS.xcframework/build/utils.sh\"\n\nhas_python_origin_marker() {\n  framework_dir=\"$1\"\n  for origin_marker in \"$framework_dir\"/*.origin; do\n    if [ -f \"$origin_marker\" ]; then\n      return 0\n    fi\n  done\n  return 1\n}\n\ncleanup_generated_python_extension_frameworks() {\n  frameworks_dir=\"$CODESIGNING_FOLDER_PATH/Frameworks\"\n  if [ ! -d \"$frameworks_dir\" ]; then\n    return 0\n  fi\n\n  for framework_dir in \"$frameworks_dir\"/*.framework; do\n    if [ ! -d \"$framework_dir\" ]; then\n      continue\n    fi\n    if has_python_origin_marker \"$framework_dir\"; then\n      echo \"Removing stale generated Python extension framework: ${framework_dir##*/}\"\n      rm -rf \"$framework_dir\"\n    fi\n  done\n}\n\nvalidate_generated_python_extension_frameworks() {\n  frameworks_dir=\"$CODESIGNING_FOLDER_PATH/Frameworks\"\n  if [ ! -d \"$frameworks_dir\" ]; then\n    return 0\n  fi\n\n  for framework_dir in \"$frameworks_dir\"/*.framework; do\n    if [ ! -d \"$framework_dir\" ]; then\n      continue\n    fi\n    if has_python_origin_marker \"$framework_dir\"; then\n      plist=\"$framework_dir/Info.plist\"\n      package_type=\"$(/usr/libexec/PlistBuddy -c 'Print :CFBundlePackageType' \"$plist\" 2>/dev/null || true)\"\n      if [ \"$package_type\" != \"FMWK\" ]; then\n        echo \"error: Generated Python extension framework has CFBundlePackageType=$package_type: $framework_dir\"\n        exit 1\n      fi\n    fi\n  done\n}\n\ncleanup_generated_python_extension_frameworks\ninstall_python \"Frameworks/Python-iOS.xcframework\"\nvalidate_generated_python_extension_frameworks\nmkdir -p \"$CODESIGNING_FOLDER_PATH/python\"\ntouch \"$CODESIGNING_FOLDER_PATH/python/.noema-python-runtime-stamp\"\n";
 		};
-		64F9F0A12FA8F4AA00ABCDE0 /* Re-sign llama.framework */ = {
+		A10000012F40000100000042 /* Install Python Runtime Support */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -618,23 +711,19 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
-				"${PROJECT_DIR}/scripts/resign-llama.sh",
-				"${BUILT_PRODUCTS_DIR}/llama.framework",
-				"${BUILT_PRODUCTS_DIR}/PackageFrameworks/llama.framework",
-				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/llama.framework",
-				"${CODESIGNING_FOLDER_PATH}/Frameworks/llama.framework",
+				"$(PROJECT_DIR)/Frameworks/Python-visionOS.xcframework",
 			);
-			name = "Re-sign llama.framework";
+			name = "Install Python Runtime Support";
 			outputFileListPaths = (
 			);
 			outputPaths = (
-				"${DERIVED_FILE_DIR}/resign-llama.stamp",
+				"$(TARGET_BUILD_DIR)/$(FULL_PRODUCT_NAME)/python/.noema-python-runtime-stamp",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "\"${PROJECT_DIR}/scripts/resign-llama.sh\"\n";
+			shellScript = "set -e\nsource \"$PROJECT_DIR/Frameworks/Python-visionOS.xcframework/build/utils.sh\"\n\nhas_python_origin_marker() {\n  framework_dir=\"$1\"\n  for origin_marker in \"$framework_dir\"/*.origin; do\n    if [ -f \"$origin_marker\" ]; then\n      return 0\n    fi\n  done\n  return 1\n}\n\ncleanup_generated_python_extension_frameworks() {\n  frameworks_dir=\"$CODESIGNING_FOLDER_PATH/Frameworks\"\n  if [ ! -d \"$frameworks_dir\" ]; then\n    return 0\n  fi\n\n  for framework_dir in \"$frameworks_dir\"/*.framework; do\n    if [ ! -d \"$framework_dir\" ]; then\n      continue\n    fi\n    if has_python_origin_marker \"$framework_dir\"; then\n      echo \"Removing stale generated Python extension framework: ${framework_dir##*/}\"\n      rm -rf \"$framework_dir\"\n    fi\n  done\n}\n\nvalidate_generated_python_extension_frameworks() {\n  frameworks_dir=\"$CODESIGNING_FOLDER_PATH/Frameworks\"\n  if [ ! -d \"$frameworks_dir\" ]; then\n    return 0\n  fi\n\n  for framework_dir in \"$frameworks_dir\"/*.framework; do\n    if [ ! -d \"$framework_dir\" ]; then\n      continue\n    fi\n    if has_python_origin_marker \"$framework_dir\"; then\n      plist=\"$framework_dir/Info.plist\"\n      package_type=\"$(/usr/libexec/PlistBuddy -c 'Print :CFBundlePackageType' \"$plist\" 2>/dev/null || true)\"\n      if [ \"$package_type\" != \"FMWK\" ]; then\n        echo \"error: Generated Python extension framework has CFBundlePackageType=$package_type: $framework_dir\"\n        exit 1\n      fi\n    fi\n  done\n}\n\ncleanup_generated_python_extension_frameworks\ninstall_python \"Frameworks/Python-visionOS.xcframework\"\nvalidate_generated_python_extension_frameworks\nmkdir -p \"$CODESIGNING_FOLDER_PATH/python\"\ntouch \"$CODESIGNING_FOLDER_PATH/python/.noema-python-runtime-stamp\"\n";
 		};
-		64F9F0A22FA8F4AA00ABCDE1 /* Re-sign llama.framework */ = {
+		A10000012F40000100000043 /* Sanitize Embedded Python Framework */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -642,23 +731,17 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
-				"${PROJECT_DIR}/scripts/resign-llama.sh",
-				"${BUILT_PRODUCTS_DIR}/llama.framework",
-				"${BUILT_PRODUCTS_DIR}/PackageFrameworks/llama.framework",
-				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/llama.framework",
-				"${CODESIGNING_FOLDER_PATH}/Frameworks/llama.framework",
 			);
-			name = "Re-sign llama.framework";
+			name = "Sanitize Embedded Python Framework";
 			outputFileListPaths = (
 			);
 			outputPaths = (
-				"${DERIVED_FILE_DIR}/resign-llama.stamp",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "\"${PROJECT_DIR}/scripts/resign-llama.sh\"\n";
+			shellScript = "set -e\nPYTHON_FRAMEWORK_ROOT=\"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/Python.framework/Versions/Current\"\nif [ ! -d \"$PYTHON_FRAMEWORK_ROOT\" ]; then\n  exit 0\nfi\nif [ -d \"$PYTHON_FRAMEWORK_ROOT/lib\" ]; then\n  find \"$PYTHON_FRAMEWORK_ROOT/lib\" \\( -name '*.o' -o -name '*.a' \\) -type f -delete\n  find \"$PYTHON_FRAMEWORK_ROOT/lib\" -type d -path '*/config-*-darwin' -exec rm -rf {} +\nfi\n";
 		};
-		64F9F0B42FA9000000ABCDE3 /* Embed llama.framework (copy) */ = {
+		A10000012F40000100000044 /* Normalize Bundle Executable Bits */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -666,19 +749,45 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
-				"${PROJECT_DIR}/scripts/embed-llama.sh",
-				"${BUILT_PRODUCTS_DIR}/PackageFrameworks/llama.framework",
-				"${BUILT_PRODUCTS_DIR}/llama.framework",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/NoemaPackages_NoemaPackages.bundle",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/SwiftMath_SwiftMath.bundle",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/mlx-swift_Cmlx.bundle",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/swift-crypto_Crypto.bundle",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/swift-transformers_Hub.bundle",
 			);
-			name = "Embed llama.framework (copy)";
+			name = "Normalize Bundle Executable Bits";
 			outputFileListPaths = (
 			);
 			outputPaths = (
-				"${DERIVED_FILE_DIR}/embed-llama.stamp",
+				"$(TARGET_BUILD_DIR)/$(FULL_PRODUCT_NAME)/.noema-executable-bit-normalized",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "\"${PROJECT_DIR}/scripts/embed-llama.sh\"\n";
+			shellScript = "set -e\nif [ ! -d \"$CODESIGNING_FOLDER_PATH\" ]; then\n  exit 0\nfi\nfind \"$CODESIGNING_FOLDER_PATH\" -type f -perm -111 -exec sh -c '\n  for path do\n    case \"$(file -b \"$path\")\" in\n      Mach-O*) ;;\n      *)\n        echo \"Clearing executable bit on non-Mach-O bundle file: ${path#$CODESIGNING_FOLDER_PATH/}\"\n        chmod a-x \"$path\"\n        ;;\n    esac\n  done\n' sh {} +\ntouch \"$CODESIGNING_FOLDER_PATH/.noema-executable-bit-normalized\"\n";
+		};
+		A10000012F40000100000045 /* Normalize Bundle Executable Bits */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/NoemaPackages_NoemaPackages.bundle",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/SwiftMath_SwiftMath.bundle",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/mlx-swift_Cmlx.bundle",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/swift-crypto_Crypto.bundle",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/swift-transformers_Hub.bundle",
+			);
+			name = "Normalize Bundle Executable Bits";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(FULL_PRODUCT_NAME)/.noema-executable-bit-normalized",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nif [ ! -d \"$CODESIGNING_FOLDER_PATH\" ]; then\n  exit 0\nfi\nfind \"$CODESIGNING_FOLDER_PATH\" -type f -perm -111 -exec sh -c '\n  for path do\n    case \"$(file -b \"$path\")\" in\n      Mach-O*) ;;\n      *)\n        echo \"Clearing executable bit on non-Mach-O bundle file: ${path#$CODESIGNING_FOLDER_PATH/}\"\n        chmod a-x \"$path\"\n        ;;\n    esac\n  done\n' sh {} +\ntouch \"$CODESIGNING_FOLDER_PATH/.noema-executable-bit-normalized\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -718,6 +827,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A20000012F41000100000007 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -728,8 +844,13 @@
 		};
 		642CDB532E231968009017C6 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 642CDB342E231965009017C6 /* Noema */;
+			target = 647D618D2E955AEA003DC7F3 /* NoemaMac */;
 			targetProxy = 642CDB522E231968009017C6 /* PBXContainerItemProxy */;
+		};
+		A20000012F41000100000008 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 642CDB342E231965009017C6 /* Noema */;
+			targetProxy = A20000012F41000100000001 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -771,6 +892,7 @@
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = XX3Z6V9TU9;
+				ENABLE_CODE_COVERAGE = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -788,7 +910,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
@@ -838,6 +960,7 @@
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = XX3Z6V9TU9;
+				ENABLE_CODE_COVERAGE = NO;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -849,7 +972,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
@@ -875,7 +998,14 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = XX3Z6V9TU9;
-				ENABLE_PREVIEWS = YES;
+				ENABLE_CODE_COVERAGE = NO;
+				ENABLE_DEBUG_DYLIB = NO;
+				ENABLE_PREVIEWS = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Frameworks",
+				);
 				GCC_C_LANGUAGE_STANDARD = c23;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"GGML_USE_ACCELERATE=1",
@@ -885,7 +1015,7 @@
 					"GGML_COMMIT=\"local\"",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				HEADER_SEARCH_PATHS = "";
+				HEADER_SEARCH_PATHS = "$(inherited)";
 				INFOPLIST_FILE = Noema/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Noema;
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
@@ -901,7 +1031,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 2;
+				MARKETING_VERSION = 2.2;
 				OTHER_CFLAGS = (
 					"-O3",
 					"-DGGML_USE_ACCELERATE",
@@ -944,7 +1074,14 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = XX3Z6V9TU9;
-				ENABLE_PREVIEWS = YES;
+				ENABLE_CODE_COVERAGE = NO;
+				ENABLE_DEBUG_DYLIB = NO;
+				ENABLE_PREVIEWS = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Frameworks",
+				);
 				GCC_C_LANGUAGE_STANDARD = c23;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"GGML_USE_ACCELERATE=1",
@@ -954,7 +1091,7 @@
 					"GGML_COMMIT=\"local\"",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				HEADER_SEARCH_PATHS = "";
+				HEADER_SEARCH_PATHS = "$(inherited)";
 				INFOPLIST_FILE = Noema/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Noema;
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
@@ -970,7 +1107,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 2;
+				MARKETING_VERSION = 2.2;
 				OTHER_CFLAGS = (
 					"-O3",
 					"-DGGML_USE_ACCELERATE",
@@ -1004,11 +1141,13 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = arminproducts.NoemaTests;
-				PRODUCT_NAME = Noema;
+				PRODUCT_MODULE_NAME = NoemaTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_OBJC_INTEROP_MODE = objcxx;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Noema.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Noema";
@@ -1022,11 +1161,13 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = arminproducts.NoemaTests;
-				PRODUCT_NAME = Noema;
+				PRODUCT_MODULE_NAME = NoemaTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_OBJC_INTEROP_MODE = objcxx;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Noema.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Noema";
@@ -1037,15 +1178,18 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 7;
 				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = arminproducts.NoemaUITests;
-				PRODUCT_NAME = Noema;
+				PRODUCT_MODULE_NAME = NoemaUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = macosx;
 				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_OBJC_INTEROP_MODE = objcxx;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_TARGET_NAME = Noema;
+				TEST_TARGET_NAME = NoemaMac;
 			};
 			name = Debug;
 		};
@@ -1053,15 +1197,18 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 7;
 				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = arminproducts.NoemaUITests;
-				PRODUCT_NAME = Noema;
+				PRODUCT_MODULE_NAME = NoemaUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = macosx;
 				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_OBJC_INTEROP_MODE = objcxx;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_TARGET_NAME = Noema;
+				TEST_TARGET_NAME = NoemaMac;
 			};
 			name = Release;
 		};
@@ -1081,6 +1228,10 @@
 				DEVELOPMENT_TEAM = XX3Z6V9TU9;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Frameworks",
+				);
 				GCC_C_LANGUAGE_STANDARD = c23;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"GGML_USE_ACCELERATE=1",
@@ -1090,7 +1241,7 @@
 					"GGML_COMMIT=\"local\"",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				HEADER_SEARCH_PATHS = "";
+				HEADER_SEARCH_PATHS = "$(inherited)";
 				INFOPLIST_FILE = "Noema copy-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = NoemaVisionOS;
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
@@ -1100,13 +1251,13 @@
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
-				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 2;
+				MARKETING_VERSION = 2.2;
 				OTHER_CFLAGS = (
 					"-O3",
 					"-DGGML_USE_ACCELERATE",
@@ -1150,6 +1301,10 @@
 				DEVELOPMENT_TEAM = XX3Z6V9TU9;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Frameworks",
+				);
 				GCC_C_LANGUAGE_STANDARD = c23;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"GGML_USE_ACCELERATE=1",
@@ -1159,7 +1314,7 @@
 					"GGML_COMMIT=\"local\"",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				HEADER_SEARCH_PATHS = "";
+				HEADER_SEARCH_PATHS = "$(inherited)";
 				INFOPLIST_FILE = "Noema copy-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = NoemaVisionOS;
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
@@ -1169,13 +1324,13 @@
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
-				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 2;
+				MARKETING_VERSION = 2.2;
 				OTHER_CFLAGS = (
 					"-O3",
 					"-DGGML_USE_ACCELERATE",
@@ -1214,7 +1369,7 @@
 				CODE_SIGN_ENTITLEMENTS = Noema/RelayServer.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 8;
 				DEVELOPMENT_TEAM = XX3Z6V9TU9;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1232,6 +1387,10 @@
 				ENABLE_RESOURCE_ACCESS_USB = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_USER_SELECTED_FILES = readwrite;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Frameworks",
+				);
 				GCC_C_LANGUAGE_STANDARD = c23;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"GGML_USE_ACCELERATE=1",
@@ -1241,7 +1400,7 @@
 					"GGML_COMMIT=\"local\"",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				HEADER_SEARCH_PATHS = "";
+				HEADER_SEARCH_PATHS = "$(inherited)";
 				INFOPLIST_FILE = "Noema copy2-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Noema;
 				INFOPLIST_KEY_CFBundleName = Noema;
@@ -1252,14 +1411,14 @@
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
-				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 2;
+				MARKETING_VERSION = 2.2;
 				OTHER_CFLAGS = (
 					"-O3",
 					"-DGGML_USE_ACCELERATE",
@@ -1306,10 +1465,14 @@
 				CODE_SIGN_ENTITLEMENTS = Noema/RelayServer.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 8;
 				DEVELOPMENT_TEAM = XX3Z6V9TU9;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Frameworks",
+				);
 				GCC_C_LANGUAGE_STANDARD = c23;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"GGML_USE_ACCELERATE=1",
@@ -1319,7 +1482,7 @@
 					"GGML_COMMIT=\"local\"",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				HEADER_SEARCH_PATHS = "";
+				HEADER_SEARCH_PATHS = "$(inherited)";
 				INFOPLIST_FILE = "Noema copy2-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Noema;
 				INFOPLIST_KEY_CFBundleName = Noema;
@@ -1330,14 +1493,14 @@
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
-				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 2;
+				MARKETING_VERSION = 2.2;
 				OTHER_CFLAGS = (
 					"-O3",
 					"-DGGML_USE_ACCELERATE",
@@ -1360,6 +1523,46 @@
 				SWIFT_OBJC_INTEROP_MODE = objcxx;
 				SWIFT_VERSION = 6.0;
 				XROS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Release;
+		};
+		A20000012F41000100000009 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = arminproducts.NoemaiOSUITests;
+				PRODUCT_MODULE_NAME = NoemaiOSUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_OBJC_INTEROP_MODE = objcxx;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Noema;
+			};
+			name = Debug;
+		};
+		A20000012F4100010000000A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = arminproducts.NoemaiOSUITests;
+				PRODUCT_MODULE_NAME = NoemaiOSUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_OBJC_INTEROP_MODE = objcxx;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Noema;
 			};
 			name = Release;
 		};
@@ -1420,6 +1623,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		A20000012F4100010000000B /* Build configuration list for PBXNativeTarget "NoemaiOSUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A20000012F41000100000009 /* Debug */,
+				A20000012F4100010000000A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -1446,22 +1658,6 @@
 				kind = branch;
 			};
 		};
-		6426A0142ED7B84400615267 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/ml-explore/mlx-swift-examples";
-			requirement = {
-				branch = main;
-				kind = branch;
-			};
-		};
-		644228FB2EBEBC2D00422935 /* XCRemoteSwiftPackageReference "facebook-ios-sdk" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/facebook/facebook-ios-sdk";
-			requirement = {
-				branch = main;
-				kind = branch;
-			};
-		};
 		64431EB92E5E2F5E00BD5E8C /* XCRemoteSwiftPackageReference "SwiftMath" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/mgriebling/SwiftMath.git";
@@ -1470,25 +1666,9 @@
 				kind = branch;
 			};
 		};
-		6458090A2EBEA4110034074C /* XCRemoteSwiftPackageReference "leap-ios" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/Liquid4All/leap-ios.git";
-			requirement = {
-				branch = main;
-				kind = branch;
-			};
-		};
 		646E49CD2E8EDF51004C5BD8 /* XCRemoteSwiftPackageReference "mlx-swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/ml-explore/mlx-swift.git";
-			requirement = {
-				branch = main;
-				kind = branch;
-			};
-		};
-		646E49D72E8EDF51004C5BD8 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/ml-explore/mlx-swift-examples";
 			requirement = {
 				branch = main;
 				kind = branch;
@@ -1510,20 +1690,20 @@
 				kind = branch;
 			};
 		};
-		647D61992E955AEA003DC7F3 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/ml-explore/mlx-swift-examples";
-			requirement = {
-				branch = main;
-				kind = branch;
-			};
-		};
 		647D619E2E955AEA003DC7F3 /* XCRemoteSwiftPackageReference "SwiftMath" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/mgriebling/SwiftMath.git";
 			requirement = {
 				branch = main;
 				kind = branch;
+			};
+		};
+		6A5D1F012F35A00000A10001 /* XCRemoteSwiftPackageReference "swift-transformers" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/huggingface/swift-transformers";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.1.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
@@ -1554,35 +1734,10 @@
 			package = 53802217708316E36FDFDC47 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
 			productName = MLXVLM;
 		};
-		6426A0152ED7B84400615267 /* MLXMNIST */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 6426A0142ED7B84400615267 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
-			productName = MLXMNIST;
-		};
-		644228FC2EBEBC2D00422935 /* FacebookBasics */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 644228FB2EBEBC2D00422935 /* XCRemoteSwiftPackageReference "facebook-ios-sdk" */;
-			productName = FacebookBasics;
-		};
-		644228FE2EBEBC2D00422935 /* FacebookCore */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 644228FB2EBEBC2D00422935 /* XCRemoteSwiftPackageReference "facebook-ios-sdk" */;
-			productName = FacebookCore;
-		};
 		64431EBA2E5E2F5E00BD5E8C /* SwiftMath */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 64431EB92E5E2F5E00BD5E8C /* XCRemoteSwiftPackageReference "SwiftMath" */;
 			productName = SwiftMath;
-		};
-		6458090B2EBEA4110034074C /* LeapModelDownloader */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 6458090A2EBEA4110034074C /* XCRemoteSwiftPackageReference "leap-ios" */;
-			productName = LeapModelDownloader;
-		};
-		6458090D2EBEA4110034074C /* LeapSDK */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 6458090A2EBEA4110034074C /* XCRemoteSwiftPackageReference "leap-ios" */;
-			productName = LeapSDK;
 		};
 		646E49CC2E8EDF51004C5BD8 /* MLX */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -1623,11 +1778,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 646E49D52E8EDF51004C5BD8 /* XCLocalSwiftPackageReference "." */;
 			productName = NoemaPackages;
-		};
-		646E49D92E8EDF51004C5BD8 /* MLXMNIST */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 646E49D72E8EDF51004C5BD8 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
-			productName = MLXMNIST;
 		};
 		646E49DB2E8EDF51004C5BD8 /* SwiftMath */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -1674,11 +1824,6 @@
 			package = 647D61972E955AEA003DC7F3 /* XCLocalSwiftPackageReference "." */;
 			productName = NoemaPackages;
 		};
-		647D619B2E955AEA003DC7F3 /* MLXMNIST */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 647D61992E955AEA003DC7F3 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
-			productName = MLXMNIST;
-		};
 		647D619D2E955AEA003DC7F3 /* SwiftMath */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 647D619E2E955AEA003DC7F3 /* XCRemoteSwiftPackageReference "SwiftMath" */;
@@ -1688,6 +1833,26 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 2FB3F4F8C56943ACAEC3C135 /* XCLocalSwiftPackageReference "." */;
 			productName = RelayKit;
+		};
+		6A5D1F022F35A00000A10001 /* Tokenizers */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6A5D1F012F35A00000A10001 /* XCRemoteSwiftPackageReference "swift-transformers" */;
+			productName = Tokenizers;
+		};
+		6A5D1F032F35A00000A10001 /* Transformers */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6A5D1F012F35A00000A10001 /* XCRemoteSwiftPackageReference "swift-transformers" */;
+			productName = Transformers;
+		};
+		6A5D1F042F35A00000A10001 /* Tokenizers */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6A5D1F012F35A00000A10001 /* XCRemoteSwiftPackageReference "swift-transformers" */;
+			productName = Tokenizers;
+		};
+		6A5D1F052F35A00000A10001 /* Transformers */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6A5D1F012F35A00000A10001 /* XCRemoteSwiftPackageReference "swift-transformers" */;
+			productName = Transformers;
 		};
 		89508E8A4241F3F06F767D32 /* MLXLMCommon */ = {
 			isa = XCSwiftPackageProductDependency;

@@ -3,7 +3,9 @@ import SwiftUI
 
 struct SettingsWebSearchSection: View {
     @ObservedObject private var settings = SettingsStore.shared
+    @AppStorage("isAdvancedMode") private var isAdvancedMode = false
     @State private var showInfo = false
+    @FocusState private var customURLFocused: Bool
 
     var body: some View {
         Section(header: Text("Search")) {
@@ -18,23 +20,57 @@ struct SettingsWebSearchSection: View {
                 }
             }
             .onChangeCompat(of: settings.webSearchEnabled) { _, on in
-                if !on { settings.webSearchArmed = false }
+                if !on {
+                    settings.webSearchArmed = false
+                    customURLFocused = false
+                }
+            }
+            .onChange(of: isAdvancedMode) { isAdvanced in
+                if !isAdvanced { customURLFocused = false }
             }
             .tint(.blue)
 
             if settings.webSearchEnabled {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("SearXNG web search is enabled for this device.")
-                        .font(.subheadline)
-                        .foregroundStyle(.primary)
-                    Text("Search requests are proxied through https://search.noemaai.com and are available without quotas.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if isAdvancedMode {
+                        Text("Custom SearXNG URL")
+                            .foregroundStyle(.primary)
+                        TextField("https://search.noemaai.com", text: $settings.customSearXNGURL)
+                            .platformKeyboardType(.url)
+                            .autocorrectionDisabled(true)
+                            .platformAutocapitalization(.never)
+                            .textFieldStyle(.roundedBorder)
+                            .focused($customURLFocused)
+#if canImport(UIKit)
+                            .submitLabel(.done)
+#endif
+                            .onSubmit { customURLFocused = false }
+                        if settings.customSearXNGURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Text("Using default: https://search.noemaai.com. Search requests are available without quotas.")
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            Text("Using custom instance: \(settings.customSearXNGURL)")
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    } else {
+                        Text("Using default: https://search.noemaai.com. Search requests are available without quotas.")
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 .padding(.vertical, 4)
             }
         }
+#if os(iOS)
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") { customURLFocused = false }
+            }
+        }
+#endif
         .alert("Web Search button", isPresented: $showInfo) {
             Button("OK", role: .cancel) { }
         } message: {

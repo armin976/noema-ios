@@ -6,6 +6,7 @@ import Foundation
 final class CombinedRegistry: ModelRegistry, @unchecked Sendable {
     private let primary: ModelRegistry
     private let extras: [ModelRegistry]
+    private let afmRegistry = AppleFoundationModelRegistry()
 
     init(primary: ModelRegistry, extras: [ModelRegistry]) {
         self.primary = primary
@@ -17,14 +18,25 @@ final class CombinedRegistry: ModelRegistry, @unchecked Sendable {
         var results: [ModelRecord] = []
 
         for reg in extras {
-            do { results += try await reg.curated() } catch {}
+            do {
+                results += try await reg.curated().filter { $0.id != AppleFoundationModelRegistry.modelID }
+            } catch {}
         }
         return results
     }
 
 
-    func searchStream(query: String, page: Int, includeVisionModels: Bool, visionOnly: Bool) -> AsyncThrowingStream<ModelRecord, Error> {
-        primary.searchStream(query: query, page: page, includeVisionModels: includeVisionModels, visionOnly: visionOnly)
+    func searchStream(query: String, page: Int, format: ModelFormat?, includeVisionModels: Bool, visionOnly: Bool) -> AsyncThrowingStream<ModelRecord, Error> {
+        if format == .afm {
+            return afmRegistry.searchStream(
+                query: query,
+                page: page,
+                format: format,
+                includeVisionModels: includeVisionModels,
+                visionOnly: visionOnly
+            )
+        }
+        return primary.searchStream(query: query, page: page, format: format, includeVisionModels: includeVisionModels, visionOnly: visionOnly)
     }
 
     func details(for id: String) async throws -> ModelDetails {

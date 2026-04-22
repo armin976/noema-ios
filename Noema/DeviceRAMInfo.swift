@@ -208,6 +208,7 @@ struct DeviceRAMInfo {
         "iPhone17,2": ("iPhone 16 Pro Max", "8 GB", "~7 GB", nil),
         "iPhone17,5": ("iPhone 16e", "8 GB", "~7 GB", Int64(7000) * Int64(1024) * Int64(1024)),
         "iPhone18,3": ("iPhone 17", "8 GB", "~7 GB", nil),
+        "iPhone18,5": ("iPhone 17e", "8 GB", "~7 GB", nil),
 
         // 12 GB RAM devices
         "iPhone18,1": ("iPhone 17 Pro", "12 GB", "~11 GB", nil),
@@ -258,6 +259,10 @@ struct DeviceRAMInfo {
         "iPad14,9": ("iPad Air 11\" (6th gen)", "8 GB", "~7 GB", nil),
         "iPad14,10": ("iPad Air 13\" (6th gen)", "8 GB", "~7 GB", nil),
         "iPad14,11": ("iPad Air 13\" (6th gen)", "8 GB", "~7 GB", nil),
+        "iPad16,8": ("iPad Air 11-inch (M4, Wi-Fi)", "12 GB", "~11 GB", nil),
+        "iPad16,9": ("iPad Air 11-inch (M4, Cellular)", "12 GB", "~11 GB", nil),
+        "iPad16,10": ("iPad Air 13-inch (M4, Wi-Fi)", "12 GB", "~11 GB", nil),
+        "iPad16,11": ("iPad Air 13-inch (M4, Cellular)", "12 GB", "~11 GB", nil),
         
         // iPad (7th gen and newer)
         "iPad7,11": ("iPad (7th gen)", "3 GB", "~2.5 GB", nil),

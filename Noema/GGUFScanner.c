@@ -53,12 +53,8 @@ struct gguf_moe_scan_result {
 
 static uint32_t read_u32(FILE *f) {
     uint32_t v = 0;
-    long pos = ftell(f);
     if (fread(&v, sizeof(v), 1, f) != 1) {
         clearerr(f);
-        if (pos >= 0) {
-            fseek(f, pos, SEEK_SET);
-        }
         return 0;
     }
     return v;
@@ -66,12 +62,8 @@ static uint32_t read_u32(FILE *f) {
 
 static uint64_t read_u64(FILE *f) {
     uint64_t v = 0;
-    long pos = ftell(f);
     if (fread(&v, sizeof(v), 1, f) != 1) {
         clearerr(f);
-        if (pos >= 0) {
-            fseek(f, pos, SEEK_SET);
-        }
         return 0;
     }
     return v;
@@ -231,12 +223,45 @@ static int32_t gguf_read_i32_flexible(const struct gguf_context *ctx, int64_t ke
 
 static int parse_block_index(const char *name) {
     if (name == NULL) { return -1; }
-    if (strncmp(name, "blk.", 4) != 0) { return -1; }
-    const char *cursor = name + 4;
-    char *endptr = NULL;
-    long value = strtol(cursor, &endptr, 10);
-    if (endptr == cursor || value < 0) { return -1; }
-    return (int)value;
+    const struct { const char *prefix; size_t len; } prefixes[] = {
+        { "blk.",   4 },
+        { "layers.", 7 },
+    };
+    for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i) {
+        const char *prefix = prefixes[i].prefix;
+        const size_t len = prefixes[i].len;
+        if (strncmp(name, prefix, len) != 0) { continue; }
+        const char *cursor = name + len;
+        char *endptr = NULL;
+        long value = strtol(cursor, &endptr, 10);
+        if (endptr == cursor || value < 0) { continue; }
+        return (int)value;
+    }
+    return -1;
+}
+
+static int is_moe_tensor_name(const char *name) {
+    if (name == NULL) { return 0; }
+    // MoE-related tensor suffixes used across llama.cpp architectures.
+    static const char *suffixes[] = {
+        ".ffn_gate_inp.weight",
+        ".ffn_gate_inp_shexp.weight",
+        ".ffn_gate_exps.weight",
+        ".ffn_up_exps.weight",
+        ".ffn_down_exps.weight",
+        ".ffn_norm_exps.weight",
+        ".ffn_gate_chexps.weight",
+        ".ffn_up_chexps.weight",
+        ".ffn_down_chexps.weight",
+    };
+    for (size_t i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]); ++i) {
+        const char *suffix = suffixes[i];
+        const char *pos = strstr(name, suffix);
+        if (pos != NULL && strcmp(pos, suffix) == 0) {
+            return 1;
+        }
+    }
+    return 0;
 }
 #endif
 
@@ -255,12 +280,8 @@ int32_t gguf_layer_count(const char *path) {
         uint64_t key_len = read_u64(f);
         if (key_len > 1024) { fclose(f); return 0; }
         char key[1025];
-        long pos = ftell(f);
         if (fread(key, 1, key_len, f) != key_len) {
             clearerr(f);
-            if (pos >= 0) {
-                fseek(f, pos, SEEK_SET);
-            }
             fclose(f);
             return 0;
         }
@@ -376,7 +397,12 @@ int gguf_moe_scan(const char *path, struct gguf_moe_scan_result *out_result) {
         for (int64_t i = 0; i < kv_total; ++i) {
             const char *name = gguf_get_key(ctx, i);
             if (!name) { continue; }
-            if (result.expert_count <= 0 && (has_suffix(name, "expert_count") || strstr(name, "num_experts") != NULL)) {
+            if (result.expert_count <= 0 && (
+                has_suffix(name, "expert_count") ||
+                strstr(name, "num_experts") != NULL ||
+                has_suffix(name, "n_expert") ||
+                has_suffix(name, "n_experts")
+            )) {
                 int32_t value = gguf_read_i32_flexible(ctx, i);
                 if (value > result.expert_count) {
                     result.expert_count = value;
@@ -385,7 +411,12 @@ int gguf_moe_scan(const char *path, struct gguf_moe_scan_result *out_result) {
                     result.is_moe = 1;
                 }
             }
-            if (result.expert_used_count <= 0 && (has_suffix(name, "expert_used_count") || strstr(name, "active_experts") != NULL)) {
+            if (result.expert_used_count <= 0 && (
+                has_suffix(name, "expert_used_count") ||
+                strstr(name, "active_experts") != NULL ||
+                strstr(name, "experts_per_token") != NULL ||
+                has_suffix(name, "n_expert_used")
+            )) {
                 int32_t value = gguf_read_i32_flexible(ctx, i);
                 if (value > 0) {
                     result.expert_used_count = value;
@@ -430,7 +461,9 @@ int gguf_moe_scan(const char *path, struct gguf_moe_scan_result *out_result) {
         result.vocab_size = gguf_read_i32_flexible(ctx, key);
     }
 
-    int moe_layers = 0;
+    int *moe_blocks = NULL;
+    size_t moe_blocks_count = 0;
+    size_t moe_blocks_cap = 0;
     int max_block_index = -1;
     const int64_t tensor_count = gguf_get_n_tensors(ctx);
     for (int64_t i = 0; i < tensor_count; ++i) {
@@ -442,10 +475,26 @@ int gguf_moe_scan(const char *path, struct gguf_moe_scan_result *out_result) {
             max_block_index = block_index;
         }
 
-        if (block_index >= 0) {
-            const char *suffix = strstr(name, ".ffn_gate_inp.weight");
-            if (suffix != NULL && strcmp(suffix, ".ffn_gate_inp.weight") == 0) {
-                ++moe_layers;
+        if (block_index >= 0 && is_moe_tensor_name(name)) {
+            int seen = 0;
+            for (size_t j = 0; j < moe_blocks_count; ++j) {
+                if (moe_blocks[j] == block_index) { seen = 1; break; }
+            }
+            if (!seen) {
+                if (moe_blocks_count == moe_blocks_cap) {
+                    const size_t new_cap = moe_blocks_cap == 0 ? 16 : moe_blocks_cap * 2;
+                    int *new_buf = (int *)realloc(moe_blocks, new_cap * sizeof(int));
+                    if (new_buf == NULL) {
+                        free(moe_blocks);
+                        gguf_free(ctx);
+                        result.status = -1;
+                        *out_result = result;
+                        return -1;
+                    }
+                    moe_blocks = new_buf;
+                    moe_blocks_cap = new_cap;
+                }
+                moe_blocks[moe_blocks_count++] = block_index;
             }
         }
     }
@@ -454,8 +503,11 @@ int gguf_moe_scan(const char *path, struct gguf_moe_scan_result *out_result) {
         result.total_layer_count = max_block_index + 1;
     }
 
+    const int moe_layers = (int)moe_blocks_count;
+    free(moe_blocks);
     if (moe_layers > 0) {
         result.moe_layer_count = moe_layers;
+        result.is_moe = 1;
     }
 
     gguf_free(ctx);
@@ -505,8 +557,5 @@ size_t app_available_memory(void) {
 #else
     size_t avail = os_proc_available_memory();
 #endif
-    // Always print available memory to the console for diagnostics.
-    // Use fprintf to stderr to ensure it appears in console logs.
-    fprintf(stderr, "[GGUFScanner] app_available_memory: %zu bytes\n", avail);
     return avail;
 }

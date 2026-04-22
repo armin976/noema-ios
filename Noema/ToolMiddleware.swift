@@ -8,6 +8,7 @@ actor ToolScanRegistry {
     static let shared = ToolScanRegistry()
     private var openTagLoggedForMessage: Set<Int> = []
     private var dispatchedSignaturesByMessage: [Int: Set<String>] = [:]
+    private var placeholderSignaturesByMessage: [Int: Set<String>] = [:]
 
     func shouldLogOpenTagOnce(messageIndex: Int?) -> Bool {
         guard let idx = messageIndex else { return false }
@@ -26,6 +27,29 @@ actor ToolScanRegistry {
         var set = dispatchedSignaturesByMessage[idx] ?? []
         set.insert(signature)
         dispatchedSignaturesByMessage[idx] = set
+    }
+
+    func shouldInsertPlaceholder(_ signature: String, for messageIndex: Int?) -> Bool {
+        guard let idx = messageIndex else { return false }
+        var set = placeholderSignaturesByMessage[idx] ?? []
+        if set.contains(signature) { return false }
+        set.insert(signature)
+        placeholderSignaturesByMessage[idx] = set
+        return true
+    }
+
+    func clearPlaceholder(_ signature: String, for messageIndex: Int?) {
+        guard let idx = messageIndex else { return }
+        var set = placeholderSignaturesByMessage[idx] ?? []
+        set.remove(signature)
+        placeholderSignaturesByMessage[idx] = set
+    }
+
+    func clearPlaceholderSignatures(withPrefix prefix: String, for messageIndex: Int?) {
+        guard let idx = messageIndex else { return }
+        var set = placeholderSignaturesByMessage[idx] ?? []
+        set = set.filter { !$0.hasPrefix(prefix) }
+        placeholderSignaturesByMessage[idx] = set
     }
 }
 
@@ -52,6 +76,8 @@ struct ToolMetadata {
 
 private let toolMetadataMap: [String: ToolMetadata] = [
     "noema.web.retrieve": ToolMetadata(displayName: "Web Search", iconName: "globe"),
+    "noema.python.execute": ToolMetadata(displayName: "Python", iconName: "chevron.left.forwardslash.chevron.right"),
+    "noema.memory": ToolMetadata(displayName: "Memory", iconName: "bookmark"),
     "noema.dataset.search": ToolMetadata(displayName: "Dataset Search", iconName: "doc.text.magnifyingglass"),
     "noema.code.analyze": ToolMetadata(displayName: "Code Analysis", iconName: "curlybraces"),
     "noema.math.calculate": ToolMetadata(displayName: "Calculator", iconName: "function"),
@@ -62,13 +88,27 @@ private let toolMetadataMap: [String: ToolMetadata] = [
 
 // Normalize various aliases emitted by different models to our canonical names
 private func normalizeToolName(_ raw: String) -> String {
+    // Web search aliases
     if raw == "noema.web.retrieve" { return "noema.web.retrieve" }
     if raw == "noema_web_retrieve" { return "noema.web.retrieve" }
-    // Common SLM/SDK aliases
     if raw == "Web_Search" || raw == "WEB_SEARCH" { return "noema.web.retrieve" }
+    // Python aliases
+    if raw == "noema.python.execute" { return "noema.python.execute" }
+    if raw == "noema_python_execute" { return "noema.python.execute" }
+    if raw == "noema.memory" { return "noema.memory" }
+    if raw == "noema_memory" { return "noema.memory" }
     let lower = raw.lowercased()
     if lower == "web_search" || lower == "web.search" || lower == "websearch" || lower == "web-search" {
         return "noema.web.retrieve"
+    }
+    if lower == "python" || lower == "python_execute" || lower == "code_execute"
+        || lower == "run_python" || lower == "execute_python" || lower == "python.execute"
+        || lower == "code_interpreter" || lower == "code-interpreter" {
+        return "noema.python.execute"
+    }
+    if lower == "memory" || lower == "memory_tool" || lower == "memorytool"
+        || lower == "persistent_memory" || lower == "persistent-memory" {
+        return "noema.memory"
     }
     return raw
 }
@@ -79,6 +119,312 @@ private func getToolMetadata(_ toolName: String) -> ToolMetadata {
         displayName: canonical.components(separatedBy: ".").last?.capitalized ?? "Tool",
         iconName: "wrench.and.screwdriver"
     )
+}
+
+private enum ToolRequestStatus {
+    case requesting
+    case ready
+    case failed
+}
+
+private func normalizedRequestStatus(from raw: String?) -> ToolRequestStatus? {
+    guard let raw else { return nil }
+    switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "requesting":
+        return .requesting
+    case "ready", "executing", "complete", "completed", "success", "succeeded":
+        return .ready
+    case "failed", "failure", "error":
+        return .failed
+    default:
+        return nil
+    }
+}
+
+enum EmbeddedToolHandlingMode: Equatable {
+    case dispatchIfAllowed
+    case scrubOnly
+}
+
+struct EmbeddedToolInterceptResult {
+    let token: String?
+    // When `token` is non-nil, `cleanedText` preserves the tool position by
+    // inserting `noemaToolAnchorToken` at the removal site. Scrub-only results
+    // never inject a new anchor.
+    let cleanedText: String
+}
+
+func isDanglingPlaceholderToolCall(_ call: ChatVM.Msg.ToolCall) -> Bool {
+    call.phase == .requesting &&
+    call.externalToolCallID == nil &&
+    call.requestParams.isEmpty &&
+    call.result == nil &&
+    call.error == nil
+}
+
+private func removingLastToolAnchors(from text: String, count: Int) -> String {
+    guard count > 0 else { return text }
+    var output = text
+    var remaining = count
+    while remaining > 0,
+          let range = output.range(of: noemaToolAnchorToken, options: .backwards) {
+        output.removeSubrange(range)
+        remaining -= 1
+    }
+    return output
+}
+
+@MainActor
+@discardableResult
+func pruneDanglingPlaceholderToolCalls(
+    messageIndex: Int?,
+    chatVM: ChatVM?,
+    preferredText: String? = nil
+) async -> String? {
+    guard let messageIndex,
+          let chatVM,
+          chatVM.streamMsgs.indices.contains(messageIndex) else {
+        return preferredText
+    }
+
+    let originalToolCalls = chatVM.streamMsgs[messageIndex].toolCalls ?? []
+    let danglingPlaceholders = originalToolCalls.filter(isDanglingPlaceholderToolCall)
+    let baseText = preferredText ?? chatVM.streamMsgs[messageIndex].text
+
+    guard !danglingPlaceholders.isEmpty else {
+        if let preferredText {
+            chatVM.streamMsgs[messageIndex].text = preferredText
+            return preferredText
+        }
+        return baseText
+    }
+
+    for call in danglingPlaceholders {
+        await ToolScanRegistry.shared.clearPlaceholderSignatures(
+            withPrefix: normalizeToolName(call.toolName),
+            for: messageIndex
+        )
+    }
+
+    let filteredToolCalls = originalToolCalls.filter { !isDanglingPlaceholderToolCall($0) }
+    let cleanedText = removingLastToolAnchors(from: baseText, count: danglingPlaceholders.count)
+
+    chatVM.streamMsgs[messageIndex].toolCalls = filteredToolCalls.isEmpty ? nil : filteredToolCalls
+    chatVM.streamMsgs[messageIndex].text = cleanedText
+    return cleanedText
+}
+
+private let placeholderMetadataKeys: Set<String> = [
+    "tool", "tool_name", "name",
+    "arguments", "args",
+    "id", "tool_call_id", "toolCallID",
+    "request_status", "requestStatus", "phase",
+    "error"
+]
+
+private func placeholderSignature(
+    for canonicalTool: String,
+    externalToolCallID: String? = nil,
+    arguments: [String: Any] = [:]
+) -> String {
+    if let externalToolCallID,
+       !externalToolCallID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        return "\(canonicalTool)#id=\(externalToolCallID)"
+    }
+    let keys = arguments.keys.sorted()
+    if keys.isEmpty { return canonicalTool }
+    return "\(canonicalTool)#keys=\(keys.joined(separator: ","))"
+}
+
+private func extractPlaceholderArgumentKeys(from rawFragment: String) -> [String] {
+    guard let regex = try? NSRegularExpression(pattern: #""([^"]+)"\s*:"#) else { return [] }
+    let nsRange = NSRange(rawFragment.startIndex..., in: rawFragment)
+    let keys = regex.matches(in: rawFragment, range: nsRange).compactMap { match -> String? in
+        guard match.numberOfRanges > 1,
+              let range = Range(match.range(at: 1), in: rawFragment) else { return nil }
+        let key = String(rawFragment[range])
+        return placeholderMetadataKeys.contains(key) ? nil : key
+    }
+    return Array(Set(keys)).sorted()
+}
+
+private func placeholderSignature(
+    for canonicalTool: String,
+    rawFragment: String
+) -> String {
+    let keys = extractPlaceholderArgumentKeys(from: rawFragment)
+    if keys.isEmpty { return canonicalTool }
+    return "\(canonicalTool)#keys=\(keys.joined(separator: ","))"
+}
+
+@MainActor
+private func insertToolPlaceholderIfNeeded(
+    messageIndex: Int?,
+    chatVM: ChatVM?,
+    toolName: String,
+    rawFragment: String,
+    externalToolCallID: String? = nil
+) async {
+    let signature: String
+    if let externalToolCallID,
+       !externalToolCallID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        signature = placeholderSignature(for: toolName, externalToolCallID: externalToolCallID)
+    } else {
+        signature = placeholderSignature(for: toolName, rawFragment: rawFragment)
+    }
+    guard await ToolScanRegistry.shared.shouldInsertPlaceholder(signature, for: messageIndex) else { return }
+    _ = upsertToolCall(
+        messageIndex: messageIndex,
+        chatVM: chatVM,
+        toolName: toolName,
+        requestParams: [:],
+        phase: .requesting
+    )
+    await logger.log("[Tool] Placeholder tool box inserted for \(toolName)")
+}
+
+@MainActor
+@discardableResult
+private func upsertToolCall(
+    messageIndex: Int?,
+    chatVM: ChatVM?,
+    toolName: String,
+    requestParams: [String: AnyCodable],
+    phase: ChatVM.Msg.ToolCallPhase,
+    externalToolCallID: String? = nil,
+    result: String? = nil,
+    error: String? = nil
+) -> ChatVM.Msg.ToolCall? {
+    guard let messageIndex,
+          let chatVM,
+          chatVM.streamMsgs.indices.contains(messageIndex) else {
+        return nil
+    }
+
+    if chatVM.streamMsgs[messageIndex].toolCalls == nil {
+        chatVM.streamMsgs[messageIndex].toolCalls = []
+    }
+
+    let metadata = getToolMetadata(toolName)
+    var toolCalls = chatVM.streamMsgs[messageIndex].toolCalls ?? []
+    let existingIndex: Int? = {
+        if let externalToolCallID, !externalToolCallID.isEmpty,
+           let matched = toolCalls.lastIndex(where: { $0.externalToolCallID == externalToolCallID }) {
+            return matched
+        }
+        return toolCalls.lastIndex(where: {
+            ($0.toolName == toolName || $0.toolName == "tool.call") &&
+            $0.phase.isInFlight
+        })
+    }()
+
+    let existing = existingIndex.flatMap { toolCalls[$0] }
+    if let existing,
+       (existing.phase == .completed || existing.phase == .failed),
+       phase.isInFlight {
+        return existing
+    }
+
+    if existingIndex == nil,
+       phase.isInFlight,
+       let terminalMatchIndex = toolCalls.lastIndex(where: {
+           $0.toolName == toolName &&
+           $0.requestParams == requestParams &&
+           ($0.phase == .completed || $0.phase == .failed)
+       }) {
+        return toolCalls[terminalMatchIndex]
+    }
+
+    var mergedParams = existing?.requestParams ?? [:]
+    for (key, value) in requestParams {
+        mergedParams[key] = value
+    }
+
+    let updated = ChatVM.Msg.ToolCall(
+        id: existing?.id ?? UUID(),
+        toolName: toolName,
+        displayName: metadata.displayName,
+        iconName: metadata.iconName,
+        requestParams: mergedParams,
+        phase: phase,
+        externalToolCallID: externalToolCallID ?? existing?.externalToolCallID,
+        result: result,
+        error: error,
+        timestamp: existing?.timestamp ?? Date()
+    )
+
+    if let existingIndex {
+        toolCalls[existingIndex] = updated
+    } else {
+        toolCalls.append(updated)
+        chatVM.streamMsgs[messageIndex].text.append(noemaToolAnchorToken)
+    }
+    chatVM.streamMsgs[messageIndex].toolCalls = toolCalls
+    return updated
+}
+
+private func displayParams(from arguments: [String: Any]) -> [String: AnyCodable] {
+    arguments.reduce(into: [:]) { acc, pair in
+        acc[pair.key] = AnyCodable(pair.value)
+    }
+}
+
+private func normalizedDisplayArguments(_ arguments: [String: Any]) -> [String: Any] {
+    var normalizedArgs = arguments
+    if let topk = normalizedArgs.removeValue(forKey: "top_k") { normalizedArgs["count"] = topk }
+    if let safeSearch = normalizedArgs.removeValue(forKey: "safe_search") { normalizedArgs["safesearch"] = safeSearch }
+    return normalizedArgs
+}
+
+@MainActor
+private func finalizedExecutionArguments(
+    for canonicalTool: String,
+    from displayArguments: [String: Any],
+    messageIndex: Int?,
+    chatVM: ChatVM?
+) -> [String: Any]? {
+    var normalizedArgs = displayArguments
+
+    if canonicalTool == "noema.web.retrieve" {
+        if normalizedArgs["count"] == nil { normalizedArgs["count"] = 3 }
+        if normalizedArgs["safesearch"] == nil { normalizedArgs["safesearch"] = "moderate" }
+        if let s = normalizedArgs["safesearch"] as? String {
+            let allowed = ["off", "moderate", "strict"]
+            if !allowed.contains(s.lowercased()) { normalizedArgs["safesearch"] = "moderate" }
+        }
+        if normalizedArgs["query"] == nil || (normalizedArgs["query"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+            if let chatVM, let idx = messageIndex {
+                var i = idx
+                var priorUser = ""
+                while i >= 0 {
+                    if chatVM.streamMsgs.indices.contains(i) {
+                        let role = chatVM.streamMsgs[i].role.lowercased()
+                        if role == "user" || role == "🧑‍💻" {
+                            priorUser = chatVM.streamMsgs[i].text
+                            break
+                        }
+                    }
+                    i -= 1
+                }
+                if !priorUser.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    normalizedArgs["query"] = priorUser
+                }
+            }
+        }
+        if let q = normalizedArgs["query"] as? String {
+            let trimmed = q.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed == "..." { return nil }
+        }
+    }
+
+    if canonicalTool == "noema.python.execute" {
+        guard let code = normalizedArgs["code"] as? String,
+              !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+    }
+
+    return normalizedArgs
 }
 
 @MainActor
@@ -99,7 +445,61 @@ func interceptToolCallIfPresent(_ line: String, messageIndex: Int? = nil, chatVM
 
     await logger.log("[Tool] TOOL_CALL detected: \(jsonPart)")
 
-    struct Call: Decodable { let tool: String; let args: [String: AnyCodable] }
+    struct Call: Decodable {
+        let tool: String
+        let args: [String: AnyCodable]
+        let externalToolCallID: String?
+        let requestStatus: ToolRequestStatus?
+        let error: String?
+
+        enum CodingKeys: String, CodingKey {
+            case tool
+            case toolName
+            case name
+            case args
+            case arguments
+            case id
+            case toolCallID
+            case requestStatus
+            case phase
+            case error
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            if let tool = try container.decodeIfPresent(String.self, forKey: .tool) {
+                self.tool = tool
+            } else if let toolName = try container.decodeIfPresent(String.self, forKey: .toolName) {
+                self.tool = toolName
+            } else {
+                self.tool = try container.decode(String.self, forKey: .name)
+            }
+
+            let externalToolCallID =
+                try container.decodeIfPresent(String.self, forKey: .toolCallID)
+                ?? container.decodeIfPresent(String.self, forKey: .id)
+            self.externalToolCallID = externalToolCallID
+
+            let statusRaw =
+                try container.decodeIfPresent(String.self, forKey: .requestStatus)
+                ?? container.decodeIfPresent(String.self, forKey: .phase)
+            requestStatus = normalizedRequestStatus(from: statusRaw)
+            error = try container.decodeIfPresent(String.self, forKey: .error)
+
+            if let args = try container.decodeIfPresent([String: AnyCodable].self, forKey: .args) {
+                self.args = args
+            } else if let args = try container.decodeIfPresent([String: AnyCodable].self, forKey: .arguments) {
+                self.args = args
+            } else if let argsString = try container.decodeIfPresent(String.self, forKey: .args)
+                        ?? container.decodeIfPresent(String.self, forKey: .arguments),
+                      let data = argsString.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                self.args = obj.mapValues(AnyCodable.init)
+            } else {
+                self.args = [:]
+            }
+        }
+    }
     guard let data = jsonPart.data(using: .utf8) else {
         return ("TOOL_RESULT: {\"code\":\"PARSE\",\"message\":\"Invalid encoding\"}", trailing.isEmpty ? nil : trailing)
     }
@@ -107,110 +507,84 @@ func interceptToolCallIfPresent(_ line: String, messageIndex: Int? = nil, chatVM
     do {
         let call = try JSONDecoder().decode(Call.self, from: data)
         let canonicalTool = normalizeToolName(call.tool)
-        let metadata = getToolMetadata(canonicalTool)
-
-        // Normalize common argument aliases before dispatch (e.g., top_k -> count, safe_search -> safesearch)
-        var normalizedArgs = call.args.mapValues { $0.value }
-        if let topk = normalizedArgs.removeValue(forKey: "top_k") { normalizedArgs["count"] = topk }
-        if let safeSearch = normalizedArgs.removeValue(forKey: "safe_search") { normalizedArgs["safesearch"] = safeSearch }
-
-        // For Leap SLM calls the model often omits optional params. Provide user-facing defaults
-        // so the UI mirrors MLX/GGUF behavior.
-        if canonicalTool == "noema.web.retrieve" {
-            if normalizedArgs["count"] == nil { normalizedArgs["count"] = 3 }
-            if normalizedArgs["safesearch"] == nil { normalizedArgs["safesearch"] = "moderate" }
-            // Clamp invalid safesearch values to moderate
-            if let s = normalizedArgs["safesearch"] as? String {
-                let allowed = ["off", "moderate", "strict"]
-                if !allowed.contains(s.lowercased()) { normalizedArgs["safesearch"] = "moderate" }
-            }
-            // If query is missing or invalid, fall back to the latest user message.
-            if normalizedArgs["query"] == nil || (normalizedArgs["query"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
-                if let chatVM, let idx = messageIndex {
-                    // Look backwards for the nearest user message before or equal to this index
-                    var i = idx
-                    var priorUser: String = ""
-                    while i >= 0 {
-                        if chatVM.streamMsgs.indices.contains(i) {
-                            let r = chatVM.streamMsgs[i].role.lowercased()
-                            if r == "user" || r == "🧑‍💻" { priorUser = chatVM.streamMsgs[i].text; break }
-                        }
-                        i -= 1
-                    }
-                    if !priorUser.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        normalizedArgs["query"] = priorUser
-                    }
-                }
-            }
-            // Guard against prompt-echo example calls like query: "..."
-            if let q = normalizedArgs["query"] as? String {
-                let tq = q.trimmingCharacters(in: .whitespacesAndNewlines)
-                if tq.isEmpty || tq == "..." { return nil }
-            }
-        }
-
-        // Prepare params for UI display as [String: AnyCodable]
-        let displayParams: [String: AnyCodable] = normalizedArgs.reduce(into: [:]) { acc, pair in
-            acc[pair.key] = AnyCodable(pair.value)
-        }
-
-        // Create or update the tool call entry for the UI using normalized/display params
-        var toolCall = ChatVM.Msg.ToolCall(
-            toolName: canonicalTool,
-            displayName: metadata.displayName,
-            iconName: metadata.iconName,
-            requestParams: displayParams
+        let requestStatus = call.requestStatus
+        let displayArguments = normalizedDisplayArguments(call.args.mapValues { $0.value })
+        let placeholderSig = placeholderSignature(
+            for: canonicalTool,
+            externalToolCallID: call.externalToolCallID,
+            arguments: displayArguments
         )
-        
-        // Add or update tool call to the message if we have the context
-        if let messageIndex = messageIndex, let chatVM = chatVM {
-            if chatVM.streamMsgs.indices.contains(messageIndex) {
-                if chatVM.streamMsgs[messageIndex].toolCalls == nil {
-                    chatVM.streamMsgs[messageIndex].toolCalls = []
-                }
-                // Deduplicate: if the last call has the same canonical tool name and no result yet,
-                // update it in place rather than appending a second entry.
-                if var existing = chatVM.streamMsgs[messageIndex].toolCalls, let lastIndex = existing.indices.last,
-                   existing[lastIndex].toolName == toolCall.toolName,
-                   existing[lastIndex].result == nil && existing[lastIndex].error == nil {
-                    let currentId = existing[lastIndex].id
-                    toolCall = ChatVM.Msg.ToolCall(
-                        id: currentId,
-                        toolName: toolCall.toolName,
-                        displayName: toolCall.displayName,
-                        iconName: toolCall.iconName,
-                        requestParams: toolCall.requestParams,
-                        result: nil,
-                        error: nil
-                    )
-                    existing[lastIndex] = toolCall
-                    chatVM.streamMsgs[messageIndex].toolCalls = existing
-                } else {
-                    chatVM.streamMsgs[messageIndex].toolCalls?.append(toolCall)
-                }
+        let initialDisplayParams = displayParams(from: displayArguments)
+
+        let initialPhase: ChatVM.Msg.ToolCallPhase = {
+            switch requestStatus {
+            case .requesting:
+                return .requesting
+            case .failed:
+                return .failed
+            case .ready, .none:
+                return .executing
             }
+        }()
+
+        let toolCall = upsertToolCall(
+            messageIndex: messageIndex,
+            chatVM: chatVM,
+            toolName: canonicalTool,
+            requestParams: initialDisplayParams,
+            phase: initialPhase,
+            externalToolCallID: call.externalToolCallID,
+            result: nil,
+            error: requestStatus == .failed ? (call.error ?? "Tool request failed") : nil
+        )
+
+        if requestStatus != .requesting {
+            await ToolScanRegistry.shared.clearPlaceholder(placeholderSig, for: messageIndex)
         }
-        
+
+        if requestStatus == .requesting {
+            return nil
+        }
+
+        if requestStatus == .failed {
+            await ToolScanRegistry.shared.clearPlaceholder(placeholderSig, for: messageIndex)
+            return nil
+        }
+
+        guard let normalizedArgs = finalizedExecutionArguments(
+            for: canonicalTool,
+            from: displayArguments,
+            messageIndex: messageIndex,
+            chatVM: chatVM
+        ) else {
+            return nil
+        }
+
+        let displayParamsForExecution = displayParams(from: normalizedArgs)
+        _ = upsertToolCall(
+            messageIndex: messageIndex,
+            chatVM: chatVM,
+            toolName: canonicalTool,
+            requestParams: displayParamsForExecution,
+            phase: .executing,
+            externalToolCallID: call.externalToolCallID,
+            result: nil,
+            error: nil
+        ) ?? toolCall
+
         guard let tool = ToolRegistry.shared.tool(named: canonicalTool) else {
             await logger.log("[Tool] Unknown tool: \(canonicalTool)")
-            
-            // Update tool call with error
-            if let messageIndex = messageIndex, let chatVM = chatVM,
-               chatVM.streamMsgs.indices.contains(messageIndex),
-               var toolCalls = chatVM.streamMsgs[messageIndex].toolCalls,
-               let lastIndex = toolCalls.indices.last {
-                toolCalls[lastIndex] = ChatVM.Msg.ToolCall(
-                    id: toolCall.id,
-                    toolName: toolCall.toolName,
-                    displayName: toolCall.displayName,
-                    iconName: toolCall.iconName,
-                    requestParams: toolCall.requestParams,
-                    result: nil,
-                    error: "Tool not registered"
-                )
-                chatVM.streamMsgs[messageIndex].toolCalls = toolCalls
-            }
-            
+            _ = upsertToolCall(
+                messageIndex: messageIndex,
+                chatVM: chatVM,
+                toolName: canonicalTool,
+                requestParams: displayParamsForExecution,
+                phase: .failed,
+                externalToolCallID: call.externalToolCallID,
+                result: nil,
+                error: "Tool not registered"
+            )
+            await ToolScanRegistry.shared.clearPlaceholder(placeholderSig, for: messageIndex)
             return ("TOOL_RESULT: {\"code\":\"UNKNOWN_TOOL\",\"message\":\"Tool not registered\"}", trailing.isEmpty ? nil : trailing)
         }
         
@@ -232,15 +606,18 @@ func interceptToolCallIfPresent(_ line: String, messageIndex: Int? = nil, chatVM
         }
         await logger.log("[Tool] Invoking \(canonicalTool) with args: \(clampedArgs)")
         let argsData = try JSONSerialization.data(withJSONObject: clampedArgs)
-        
+
         // Respect cancellation before starting any tool work
         if Task.isCancelled { return nil }
+        await Task.yield()
 
         // Check for direct handler for faster execution
         let outData: Data
         if canonicalTool == "noema.web.retrieve" {
             let contextLimit = chatVM?.contextLimit ?? 4096
             outData = await handle_noema_web_retrieve(argsData, contextLimit: contextLimit)
+        } else if canonicalTool == "noema.python.execute" {
+            outData = try await tool.call(args: argsData)
         } else {
             outData = try await tool.call(args: argsData)
         }
@@ -254,45 +631,42 @@ func interceptToolCallIfPresent(_ line: String, messageIndex: Int? = nil, chatVM
         }
         
         // Update tool call with result
-        if let messageIndex = messageIndex, let chatVM = chatVM,
-           chatVM.streamMsgs.indices.contains(messageIndex),
-           var toolCalls = chatVM.streamMsgs[messageIndex].toolCalls,
-           let lastIndex = toolCalls.indices.last {
-            toolCalls[lastIndex] = ChatVM.Msg.ToolCall(
-                id: toolCall.id,
-                toolName: toolCall.toolName,
-                displayName: toolCall.displayName,
-                iconName: toolCall.iconName,
-                requestParams: toolCall.requestParams,
-                result: outString,
-                error: nil
-            )
-            chatVM.streamMsgs[messageIndex].toolCalls = toolCalls
-        }
+        _ = upsertToolCall(
+            messageIndex: messageIndex,
+            chatVM: chatVM,
+            toolName: canonicalTool,
+            requestParams: displayParamsForExecution,
+            phase: .completed,
+            externalToolCallID: call.externalToolCallID,
+            result: outString,
+            error: nil
+        )
+        await ToolScanRegistry.shared.clearPlaceholder(placeholderSig, for: messageIndex)
 
         // If this is the web search tool, optionally update the message's
         // webHits/webError so the UI transitions from "Searching the web…".
-        // Skip this UI injection for SLM flows — we want zero UI-level context injection.
         if Task.isCancelled { return nil }
         if canonicalTool == "noema.web.retrieve",
            let messageIndex = messageIndex,
            let chatVM = chatVM,
            chatVM.streamMsgs.indices.contains(messageIndex) {
-            let isSLM = (chatVM.currentModelFormat == .slm)
-            if !isSLM {
-                await logger.log("[Tool][UI] Applying web search result to message state")
-                chatVM.streamMsgs[messageIndex].usedWebSearch = true
-                // Milestone: record web search usage for in‑app review gating
-                ReviewPrompter.shared.noteWebSearchUsed()
-                if let data = outString.data(using: .utf8) {
-                    struct SimpleWebHit: Decodable {
-                        let title: String
-                        let url: String
-                        let snippet: String
-                        let engine: String?
-                        let score: Double?
-                    }
-                    if let hits = try? JSONDecoder().decode([SimpleWebHit].self, from: data) {
+            await logger.log("[Tool][UI] Applying web search result to message state")
+            chatVM.streamMsgs[messageIndex].usedWebSearch = true
+            // Milestone: record web search usage for in‑app review gating
+            ReviewPrompter.shared.noteWebSearchUsed()
+            if let data = outString.data(using: .utf8) {
+                struct SimpleWebHit: Decodable {
+                    let title: String
+                    let url: String
+                    let snippet: String
+                    let engine: String?
+                    let score: Double?
+                }
+                if let hits = try? JSONDecoder().decode([SimpleWebHit].self, from: data) {
+                    if hits.isEmpty {
+                        chatVM.streamMsgs[messageIndex].webError = "No results found"
+                        chatVM.streamMsgs[messageIndex].webHits = nil
+                    } else {
                         chatVM.streamMsgs[messageIndex].webError = nil
                         chatVM.streamMsgs[messageIndex].webHits = hits.enumerated().map { (i, h) in
                             let engine = h.engine?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -306,22 +680,22 @@ func interceptToolCallIfPresent(_ line: String, messageIndex: Int? = nil, chatVM
                                 score: h.score ?? 0
                             )
                         }
-                    } else if let any = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                        let err: String? = {
-                            if let e = any["error"] as? String { return e }
-                            if let msg = any["message"] as? String { return msg }
-                            if let code = any["code"] { return "Error: \(code)" }
-                            return nil
-                        }()
-                        if let err = err, !err.isEmpty {
-                            chatVM.streamMsgs[messageIndex].webError = err
-                            chatVM.streamMsgs[messageIndex].webHits = nil
-                        }
+                    }
+                } else if let any = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    let err: String? = {
+                        if let e = any["error"] as? String { return e }
+                        if let msg = any["message"] as? String { return msg }
+                        if let code = any["code"] { return "Error: \(code)" }
+                        return nil
+                    }()
+                    if let err = err, !err.isEmpty {
+                        chatVM.streamMsgs[messageIndex].webError = err
+                        chatVM.streamMsgs[messageIndex].webHits = nil
                     }
                 }
-                // Try prompting after success moments (guarded: never during active streaming)
-                ReviewPrompter.shared.safeMaybePromptIfEligible(chatVM: chatVM)
             }
+            // Try prompting after success moments (guarded: never during active streaming)
+            ReviewPrompter.shared.safeMaybePromptIfEligible(chatVM: chatVM)
         }
         
         if Task.isCancelled { return nil }
@@ -329,22 +703,20 @@ func interceptToolCallIfPresent(_ line: String, messageIndex: Int? = nil, chatVM
     } catch {
         if (error as? CancellationError) != nil { return nil }
         await logger.log("[Tool] Parse/dispatch error: \(error.localizedDescription)")
-        
-        // Update tool call with error if we have the context
-        if let messageIndex = messageIndex, let chatVM = chatVM,
-           chatVM.streamMsgs.indices.contains(messageIndex),
-           var toolCalls = chatVM.streamMsgs[messageIndex].toolCalls,
-           let lastIndex = toolCalls.indices.last {
-            toolCalls[lastIndex] = ChatVM.Msg.ToolCall(
-                id: toolCalls[lastIndex].id,
-                toolName: toolCalls[lastIndex].toolName,
-                displayName: toolCalls[lastIndex].displayName,
-                iconName: toolCalls[lastIndex].iconName,
-                requestParams: toolCalls[lastIndex].requestParams,
+        if let toolName = extractToolName(from: jsonPart).map(normalizeToolName) {
+            _ = upsertToolCall(
+                messageIndex: messageIndex,
+                chatVM: chatVM,
+                toolName: toolName,
+                requestParams: [:],
+                phase: .failed,
                 result: nil,
                 error: error.localizedDescription
             )
-            chatVM.streamMsgs[messageIndex].toolCalls = toolCalls
+            await ToolScanRegistry.shared.clearPlaceholder(
+                placeholderSignature(for: toolName, rawFragment: jsonPart),
+                for: messageIndex
+            )
         }
         
         if Task.isCancelled { return nil }
@@ -361,8 +733,9 @@ func interceptToolCallIfPresent(_ line: String, messageIndex: Int? = nil, chatVM
 func interceptEmbeddedToolCallIfPresent(
     in textBuffer: String,
     messageIndex: Int? = nil,
-    chatVM: ChatVM? = nil
-) async -> (token: String, cleanedText: String)? {
+    chatVM: ChatVM? = nil,
+    handlingMode: EmbeddedToolHandlingMode = .dispatchIfAllowed
+) async -> EmbeddedToolInterceptResult? {
     // Guard: Do NOT process tool calls if we're inside an unclosed <think> block.
     // The model should only call tools OUTSIDE of thinking.
     let lastThinkOpen = textBuffer.range(of: "<think>", options: .backwards)
@@ -383,6 +756,83 @@ func interceptEmbeddedToolCallIfPresent(
         return nil
     }
 
+    var didLogScrub = false
+    func scrubResult(cleanedText: String) async -> EmbeddedToolInterceptResult {
+        if !didLogScrub {
+            await logger.log("[Tool][Scan] Tool artifact scrubbed without dispatch")
+            didLogScrub = true
+        }
+        return EmbeddedToolInterceptResult(token: nil, cleanedText: cleanedText)
+    }
+
+    func combinedCleanedText(
+        before: String,
+        after: String,
+        preserveToolPosition: Bool
+    ) -> String {
+        if preserveToolPosition {
+            return before + noemaToolAnchorToken + after
+        }
+        return before + after
+    }
+
+    func finalizeCandidate(
+        jsonString: String,
+        before: String,
+        after: String,
+        logPrefix: String? = nil
+    ) async -> EmbeddedToolInterceptResult? {
+        switch handlingMode {
+        case .dispatchIfAllowed:
+            if let logPrefix {
+                await logger.log(logPrefix)
+            }
+            if let token = await dispatchParsedToolCallJSON(
+                jsonString: jsonString,
+                messageIndex: messageIndex,
+                chatVM: chatVM
+            ) {
+                return EmbeddedToolInterceptResult(
+                    token: token,
+                    cleanedText: combinedCleanedText(
+                        before: before,
+                        after: after,
+                        preserveToolPosition: true
+                    )
+                )
+            }
+            return nil
+        case .scrubOnly:
+            return await scrubResult(
+                cleanedText: combinedCleanedText(
+                    before: before,
+                    after: after,
+                    preserveToolPosition: false
+                )
+            )
+        }
+    }
+
+    if let toolCallRange = textBuffer.range(of: "TOOL_CALL:") {
+        let afterPrefix = String(textBuffer[toolCallRange.upperBound...])
+        if let open = afterPrefix.firstIndex(of: "{"),
+           let close = findMatchingBrace(in: afterPrefix, startingFrom: open) {
+            let candidate = String(afterPrefix[open...close])
+            let before = String(textBuffer[..<toolCallRange.lowerBound])
+            let after = String(afterPrefix[afterPrefix.index(after: close)...])
+            if let result = await finalizeCandidate(
+                jsonString: candidate,
+                before: before,
+                after: after,
+                logPrefix: "[Tool] Attempting to parse TOOL_CALL payload: \(candidate.prefix(200))…"
+            ) {
+                return result
+            }
+        } else if handlingMode == .scrubOnly {
+            return await scrubResult(cleanedText: String(textBuffer[..<toolCallRange.lowerBound]))
+        }
+    }
+
     // 1) Try bare JSON around specific web tool name (or aliases) to quickly dispatch
     let webAliases = [
         "noema.web.retrieve",
@@ -395,18 +845,22 @@ func interceptEmbeddedToolCallIfPresent(
        let close = findMatchingBrace(in: textBuffer, startingFrom: open) {
         let candidate = String(textBuffer[open...close])
         if (candidate.contains("\"arguments\"") || candidate.contains("\"args\"")) {
-            await logger.log("[Tool] Attempting to parse JSON around web tool: \(candidate.prefix(200))…")
-            if let token = await dispatchParsedToolCallJSON(jsonString: candidate, messageIndex: messageIndex, chatVM: chatVM) {
-                let before = String(textBuffer[..<open])
-                var afterStart = textBuffer.index(after: close)
-                while afterStart < textBuffer.endIndex && textBuffer[afterStart].isWhitespace {
-                    afterStart = textBuffer.index(after: afterStart)
-                }
-                if afterStart < textBuffer.endIndex && textBuffer[afterStart] == "}" {
-                    afterStart = textBuffer.index(after: afterStart)
-                }
-                let after = String(textBuffer[afterStart...])
-                return (token, before + after)
+            let before = String(textBuffer[..<open])
+            var afterStart = textBuffer.index(after: close)
+            while afterStart < textBuffer.endIndex && textBuffer[afterStart].isWhitespace {
+                afterStart = textBuffer.index(after: afterStart)
+            }
+            if afterStart < textBuffer.endIndex && textBuffer[afterStart] == "}" {
+                afterStart = textBuffer.index(after: afterStart)
+            }
+            let after = String(textBuffer[afterStart...])
+            if let result = await finalizeCandidate(
+                jsonString: candidate,
+                before: before,
+                after: after,
+                logPrefix: "[Tool] Attempting to parse JSON around web tool: \(candidate.prefix(200))…"
+            ) {
+                return result
             }
         }
     }
@@ -419,43 +873,46 @@ func interceptEmbeddedToolCallIfPresent(
             let candidate = String(textBuffer[startIndex...endIndex])
             if (candidate.contains("\"tool_name\"") || candidate.contains("\"name\"") || candidate.contains("\"tool\"")) &&
                (candidate.contains("\"arguments\"") || candidate.contains("\"args\"")) {
-                await logger.log("[Tool] Attempting to parse JSON: \(candidate.prefix(200))…")
-                if let token = await dispatchParsedToolCallJSON(jsonString: candidate, messageIndex: messageIndex, chatVM: chatVM) {
-                    var removalStart = startIndex
-                    var removalEnd = endIndex
-                    if let fenceStart = textBuffer[..<startIndex].range(of: "```json", options: .backwards)?.lowerBound {
-                        removalStart = fenceStart
-                    } else if let fenceStart = textBuffer[..<startIndex].range(of: "```", options: .backwards)?.lowerBound {
-                        removalStart = fenceStart
-                    }
-                    let afterEnd = textBuffer.index(after: endIndex)
-                    if let fenceEnd = textBuffer[afterEnd...].range(of: "```")?.upperBound {
-                        removalEnd = fenceEnd
-                    }
+                var removalStart = startIndex
+                var removalEnd = endIndex
+                if let fenceStart = textBuffer[..<startIndex].range(of: "```json", options: .backwards)?.lowerBound {
+                    removalStart = fenceStart
+                } else if let fenceStart = textBuffer[..<startIndex].range(of: "```", options: .backwards)?.lowerBound {
+                    removalStart = fenceStart
+                }
+                let afterEnd = textBuffer.index(after: endIndex)
+                if let fenceEnd = textBuffer[afterEnd...].range(of: "```")?.upperBound {
+                    removalEnd = fenceEnd
+                }
 
-                    // If JSON was emitted inside <tool_call> tags, remove the tags too
-                    if let tagOpen = textBuffer[..<removalStart].range(of: "<tool_call>", options: .backwards) {
-                        removalStart = tagOpen.lowerBound
-                        if let tagClose = textBuffer[removalEnd...].range(of: "</tool_call>") {
-                            removalEnd = tagClose.upperBound
-                        }
+                if let tagOpen = textBuffer[..<removalStart].range(of: "<tool_call>", options: .backwards) {
+                    removalStart = tagOpen.lowerBound
+                    if let tagClose = textBuffer[removalEnd...].range(of: "</tool_call>") {
+                        removalEnd = tagClose.upperBound
                     }
+                }
 
-                    let before = String(textBuffer[..<removalStart])
-                    var afterStart: String.Index
-                    if removalEnd == endIndex {
-                        afterStart = textBuffer.index(after: removalEnd)
-                    } else {
-                        afterStart = removalEnd
-                    }
-                    while afterStart < textBuffer.endIndex && textBuffer[afterStart].isWhitespace {
-                        afterStart = textBuffer.index(after: afterStart)
-                    }
-                    if afterStart < textBuffer.endIndex && textBuffer[afterStart] == "}" {
-                        afterStart = textBuffer.index(after: afterStart)
-                    }
-                    let after = String(textBuffer[afterStart...])
-                    return (token, before + after)
+                let before = String(textBuffer[..<removalStart])
+                var afterStart: String.Index
+                if removalEnd == endIndex {
+                    afterStart = textBuffer.index(after: removalEnd)
+                } else {
+                    afterStart = removalEnd
+                }
+                while afterStart < textBuffer.endIndex && textBuffer[afterStart].isWhitespace {
+                    afterStart = textBuffer.index(after: afterStart)
+                }
+                if afterStart < textBuffer.endIndex && textBuffer[afterStart] == "}" {
+                    afterStart = textBuffer.index(after: afterStart)
+                }
+                let after = String(textBuffer[afterStart...])
+                if let result = await finalizeCandidate(
+                    jsonString: candidate,
+                    before: before,
+                    after: after,
+                    logPrefix: "[Tool] Attempting to parse JSON: \(candidate.prefix(200))…"
+                ) {
+                    return result
                 }
             }
             searchIndex = textBuffer.index(after: endIndex)
@@ -463,22 +920,17 @@ func interceptEmbeddedToolCallIfPresent(
             let remainder = String(textBuffer[startIndex...])
             if (remainder.contains("\"tool_name\"") || remainder.contains("\"name\"") || remainder.contains("\"tool\"")) &&
                (remainder.contains("\"arguments\"") || remainder.contains("\"args\"")) {
-                if let messageIndex = messageIndex, let chatVM = chatVM, chatVM.streamMsgs.indices.contains(messageIndex) {
-                    var existing = chatVM.streamMsgs[messageIndex].toolCalls ?? []
-                    let alreadyPending = existing.last?.result == nil && existing.last?.error == nil
-                    if !alreadyPending {
-                        let toolName = extractToolName(from: remainder) ?? "tool.call"
-                        let meta = getToolMetadata(toolName)
-                        let placeholder = ChatVM.Msg.ToolCall(
-                            toolName: toolName,
-                            displayName: meta.displayName,
-                            iconName: meta.iconName,
-                            requestParams: [:]
-                        )
-                        existing.append(placeholder)
-                        chatVM.streamMsgs[messageIndex].toolCalls = existing
-                        await logger.log("[Tool] Placeholder tool box inserted for \(toolName)")
-                    }
+                if let extractedToolName = extractToolName(from: remainder) {
+                    let toolName = normalizeToolName(extractedToolName)
+                    await insertToolPlaceholderIfNeeded(
+                        messageIndex: messageIndex,
+                        chatVM: chatVM,
+                        toolName: toolName,
+                        rawFragment: remainder
+                    )
+                }
+                if handlingMode == .scrubOnly {
+                    return await scrubResult(cleanedText: String(textBuffer[..<startIndex]))
                 }
             }
             break
@@ -508,35 +960,29 @@ func interceptEmbeddedToolCallIfPresent(
             let lower = jsonString.lowercased()
             let looksLikeResultOnly = lower.contains("\"result\"") && !(lower.contains("\"tool_name\"") || lower.contains("\"name\"") || lower.contains("\"tool\""))
             if !looksLikeResultOnly {
-                await logger.log("[Tool][Scan] Extracted candidate inside <tool_call>: \(jsonString.prefix(220))…")
-                if let token = await dispatchParsedToolCallJSON(jsonString: jsonString, messageIndex: messageIndex, chatVM: chatVM) {
-                    let before = String(textBuffer[..<start.lowerBound])
-                    var after = String(textBuffer[end.upperBound...])
-                    while after.first?.isWhitespace == true { after.removeFirst() }
-                    return (token, before + after)
+                let before = String(textBuffer[..<start.lowerBound])
+                var after = String(textBuffer[end.upperBound...])
+                while after.first?.isWhitespace == true { after.removeFirst() }
+                if let result = await finalizeCandidate(
+                    jsonString: jsonString,
+                    before: before,
+                    after: after,
+                    logPrefix: "[Tool][Scan] Extracted candidate inside <tool_call>: \(jsonString.prefix(220))…"
+                ) {
+                    return result
                 } else {
                     let trimmed = jsonString.trimmingCharacters(in: .whitespacesAndNewlines)
                     let hasBraces = trimmed.contains("{") && trimmed.contains("}")
                     if hasBraces {
                         await logger.log("[Tool][Scan] JSON inside <tool_call> could not be parsed; leaving for fallback scan")
-                        if let messageIndex = messageIndex,
-                           let chatVM = chatVM,
-                           chatVM.streamMsgs.indices.contains(messageIndex) {
-                            var existing = chatVM.streamMsgs[messageIndex].toolCalls ?? []
-                            let alreadyPending = existing.last?.result == nil && existing.last?.error == nil
-                            if !alreadyPending {
-                                let toolName = extractToolName(from: trimmed) ?? "tool.call"
-                                let meta = getToolMetadata(toolName)
-                                let placeholder = ChatVM.Msg.ToolCall(
-                                    toolName: toolName,
-                                    displayName: meta.displayName,
-                                    iconName: meta.iconName,
-                                    requestParams: [:]
-                                )
-                                existing.append(placeholder)
-                                chatVM.streamMsgs[messageIndex].toolCalls = existing
-                                await logger.log("[Tool] Placeholder tool box inserted for \(toolName)")
-                            }
+                        if let extractedToolName = extractToolName(from: trimmed) {
+                            let toolName = normalizeToolName(extractedToolName)
+                            await insertToolPlaceholderIfNeeded(
+                                messageIndex: messageIndex,
+                                chatVM: chatVM,
+                                toolName: toolName,
+                                rawFragment: trimmed
+                            )
                         }
                     } else {
                         await logger.log("[Tool][Scan] Incomplete JSON inside <tool_call>; continuing to scan for bare JSON")
@@ -551,38 +997,35 @@ func interceptEmbeddedToolCallIfPresent(
             if let firstBrace = tail.firstIndex(of: "{"),
                let lastBrace = findMatchingBrace(in: tail, startingFrom: firstBrace) {
                 let candidate = String(tail[firstBrace...lastBrace])
-                await logger.log("[Tool][Scan] Found JSON after open <tool_call> (no close yet): \(candidate.prefix(220))…")
-                if let token = await dispatchParsedToolCallJSON(jsonString: candidate, messageIndex: messageIndex, chatVM: chatVM) {
-                    let before = String(textBuffer[..<start.lowerBound])
-                    var afterStart = tail.index(after: lastBrace)
-                    while afterStart < tail.endIndex && tail[afterStart].isWhitespace { afterStart = tail.index(after: afterStart) }
-                    let after = String(tail[afterStart...])
-                    return (token, before + after)
+                let before = String(textBuffer[..<start.lowerBound])
+                var afterStart = tail.index(after: lastBrace)
+                while afterStart < tail.endIndex && tail[afterStart].isWhitespace { afterStart = tail.index(after: afterStart) }
+                let after = String(tail[afterStart...])
+                if let result = await finalizeCandidate(
+                    jsonString: candidate,
+                    before: before,
+                    after: after,
+                    logPrefix: "[Tool][Scan] Found JSON after open <tool_call> (no close yet): \(candidate.prefix(220))…"
+                ) {
+                    return result
                 } else {
                     await logger.log("[Tool][Scan] dispatchParsedToolCallJSON returned nil for JSON after open tag")
                 }
             } else {
                 // Provide a placeholder tool box so the UI reflects the pending call even if
                 // the JSON body is still streaming from a slower backend.
-                if let messageIndex = messageIndex,
-                   let chatVM = chatVM,
-                   chatVM.streamMsgs.indices.contains(messageIndex) {
-                    var existing = chatVM.streamMsgs[messageIndex].toolCalls ?? []
-                    let alreadyPending = existing.last?.result == nil && existing.last?.error == nil
-                    if !alreadyPending {
-                        let snippet = String(tail.prefix(160))
-                        let toolName = extractToolName(from: snippet) ?? "tool.call"
-                        let meta = getToolMetadata(toolName)
-                        let placeholder = ChatVM.Msg.ToolCall(
-                            toolName: toolName,
-                            displayName: meta.displayName,
-                            iconName: meta.iconName,
-                            requestParams: [:]
-                        )
-                        existing.append(placeholder)
-                        chatVM.streamMsgs[messageIndex].toolCalls = existing
-                        await logger.log("[Tool] Placeholder tool box inserted for \(toolName)")
-                    }
+                let snippet = String(tail.prefix(160))
+                if let extractedToolName = extractToolName(from: snippet) {
+                    let toolName = normalizeToolName(extractedToolName)
+                    await insertToolPlaceholderIfNeeded(
+                        messageIndex: messageIndex,
+                        chatVM: chatVM,
+                        toolName: toolName,
+                        rawFragment: snippet
+                    )
+                }
+                if handlingMode == .scrubOnly {
+                    return await scrubResult(cleanedText: String(textBuffer[..<start.lowerBound]))
                 }
             }
             // If we can't find a complete object yet, keep scanning for a bare JSON

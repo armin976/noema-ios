@@ -7,11 +7,99 @@ import AppKit
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
 private extension Color {
-    static var rollingThoughtBackground: Color {
+    static var rollingThoughtSurface: Color {
 #if os(macOS)
-        return Color(nsColor: NSColor.windowBackgroundColor)
+        return Color(white: 0.15)
 #else
-        return Color(.systemGray6)
+        return Color(white: 0.97)
+#endif
+    }
+
+    static var rollingThoughtPillBackground: Color {
+#if os(macOS)
+        return Color.white.opacity(0.1)
+#else
+        return Color.black.opacity(0.05)
+#endif
+    }
+
+    static var rollingThoughtPillForeground: Color {
+#if os(macOS)
+        return Color.black.opacity(0.88)
+#else
+        return Color.white.opacity(0.96)
+#endif
+    }
+
+    static var rollingThoughtSecondaryPillBackground: Color {
+#if os(macOS)
+        return Color.white.opacity(0.08)
+#else
+        return Color.white.opacity(0.72)
+#endif
+    }
+
+    static var rollingThoughtSecondaryPillForeground: Color {
+#if os(macOS)
+        return Color.white.opacity(0.6)
+#else
+        return Color.black.opacity(0.5)
+#endif
+    }
+
+    static var rollingThoughtText: Color {
+#if os(macOS)
+        return Color.white.opacity(0.92)
+#else
+        return Color.black.opacity(0.86)
+#endif
+    }
+
+    static var rollingThoughtSubtext: Color {
+#if os(macOS)
+        return Color.white.opacity(0.62)
+#else
+        return Color.black.opacity(0.54)
+#endif
+    }
+
+    static var rollingThoughtInset: Color {
+#if os(macOS)
+        return Color.white.opacity(0.05)
+#else
+        return Color.white.opacity(0.72)
+#endif
+    }
+
+    static var rollingThoughtBorder: Color {
+#if os(macOS)
+        return Color.white.opacity(0.1)
+#else
+        return Color.black.opacity(0.08)
+#endif
+    }
+
+    static var rollingThoughtShadow: Color {
+#if os(macOS)
+        return Color.black.opacity(0.1)
+#else
+        return Color.black.opacity(0.04)
+#endif
+    }
+
+    static var rollingThoughtWarningBackground: Color {
+#if os(macOS)
+        return Color(nsColor: NSColor.systemOrange.withAlphaComponent(0.10))
+#else
+        return Color.orange.opacity(0.08)
+#endif
+    }
+
+    static var rollingThoughtWarningBorder: Color {
+#if os(macOS)
+        return Color(nsColor: NSColor.systemOrange).opacity(0.25)
+#else
+        return Color.orange.opacity(0.22)
 #endif
     }
 }
@@ -53,6 +141,8 @@ public final class RollingThoughtViewModel: ObservableObject {
     public var isLogicallyComplete: Bool { didReachLogicalCompletion }
     // If true, automatically call finish() once the currently running token stream ends
     private var shouldFinishWhenStreamEnds: Bool = false
+    /// Whether the view model is waiting for its token stream to end before marking complete.
+    public var isPendingCompletion: Bool { shouldFinishWhenStreamEnds }
     
     // Configuration
     public let rollingLineLimit = 3
@@ -268,7 +358,9 @@ public final class RollingThoughtViewModel: ObservableObject {
 @available(macOS 11.0, iOS 14.0, tvOS 14.0, watchOS 7.0, *)
 public struct RollingThoughtBox: View {
     @ObservedObject public var viewModel: RollingThoughtViewModel
+    @Environment(\.colorScheme) private var colorScheme
     @Namespace private var namespace
+    @State private var isAppearing = false
     @State private var shouldAutoScroll: Bool = true
 
     public init(viewModel: RollingThoughtViewModel) {
@@ -285,63 +377,113 @@ public struct RollingThoughtBox: View {
         CGFloat(streamingLineCount) * 14.0
     }
 
+    private var thoughtSurfaceBackground: Color {
+        .rollingThoughtSurface
+    }
+
+    private var thoughtSurfaceBorder: Color {
+        .rollingThoughtBorder
+    }
+
+    private var thoughtPillBackground: Color {
+        .rollingThoughtPillBackground
+    }
+
+    private var thoughtPillForeground: Color {
+        .rollingThoughtPillForeground
+    }
+
+    private var thoughtSecondaryPillBackground: Color {
+        .rollingThoughtSecondaryPillBackground
+    }
+
+    private var thoughtSecondaryPillForeground: Color {
+        .rollingThoughtSecondaryPillForeground
+    }
+
+    private var thoughtTextColor: Color {
+        .rollingThoughtText
+    }
+
+    private var thoughtSubtextColor: Color {
+        .rollingThoughtSubtext
+    }
+
+    private var thoughtInsetBackground: Color {
+        .rollingThoughtInset
+    }
+
+    private var cardCornerRadius: CGFloat {
+        18
+    }
+
+    private var insetCornerRadius: CGFloat {
+        14
+    }
+
     public var body: some View {
         ZStack {
-            switch viewModel.phase {
-            case .idle:
-                EmptyView()
-                
-            case .streaming:
-                streamingView
-                    .transition(.asymmetric(
-                        insertion: .scale(scale: 0.9, anchor: .leading).combined(with: .opacity),
-                        removal: .identity
-                    ))
-                
-            case .expanded:
-                expandedView
-                    .transition(.identity)
+            ZStack {
+                switch viewModel.phase {
+                case .idle:
+                    EmptyView()
+                    
+                case .streaming:
+                    streamingView
+                        .transition(.asymmetric(
+                            insertion: .scale(scale: 0.9, anchor: .leading).combined(with: .opacity),
+                            removal: .identity
+                        ))
+                    
+                case .expanded:
+                    expandedView
+                        .transition(.identity)
 
-            case .complete:
-                if viewModel.showCollapseLabelWhenComplete {
-                    completeView
+                case .complete:
+                    if viewModel.showCollapseLabelWhenComplete {
+                        completeView
+                            .transition(.asymmetric(
+                                insertion: .scale(scale: 0.9, anchor: .center).combined(with: .opacity),
+                                removal: .identity
+                            ))
+                    } else {
+                        // Keep a minimal placeholder to prevent layout jump when box completes
+                        Color.clear.frame(height: 1)
+                    }
+
+                case .interrupted:
+                    interruptedView
                         .transition(.asymmetric(
                             insertion: .scale(scale: 0.9, anchor: .center).combined(with: .opacity),
                             removal: .identity
                         ))
-                } else {
-                    // Keep a minimal placeholder to prevent layout jump when box completes
-                    Color.clear.frame(height: 1)
                 }
-
-            case .interrupted:
-                interruptedView
-                    .transition(.asymmetric(
-                        insertion: .scale(scale: 0.9, anchor: .center).combined(with: .opacity),
-                        removal: .identity
-                    ))
+            }
+            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: viewModel.phase)
+            .id(viewModel.phase) // Force view identity update on phase change
+        }
+        .opacity(isAppearing ? 1 : 0)
+        .scaleEffect(isAppearing ? 1 : 0.98)
+        .onAppear {
+            guard !isAppearing else { return }
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                isAppearing = true
             }
         }
-        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: viewModel.phase)
-        .id(viewModel.phase) // Force view identity update on phase change
     }
     
     private var streamingView: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Header similar to web search
             HStack(spacing: 8) {
-                HStack(spacing: 4) {
+                HStack(spacing: 6) {
                     Image(systemName: "brain")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Text("Thinking")
-                        .font(.caption2.weight(.medium))
-                        .foregroundColor(.secondary)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(thoughtSubtextColor)
+                    Text("THINKING")
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .tracking(0.5)
+                        .foregroundColor(thoughtSubtextColor)
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color.rollingThoughtBackground)
-                .clipShape(Capsule())
                 
                 Spacer()
             }
@@ -355,7 +497,7 @@ public struct RollingThoughtBox: View {
                             Text(l.isEmpty ? " " : l)
                                 .id("rt-line-\(i)")
                                 .font(.system(size: 11, weight: .regular, design: .monospaced))
-                                .foregroundColor(Color.primary.opacity(0.8))
+                                .foregroundColor(thoughtTextColor.opacity(0.82))
                                 .lineLimit(1)
                                 .truncationMode(.tail)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -392,7 +534,7 @@ public struct RollingThoughtBox: View {
                     if viewModel.phase == .streaming && viewModel.fullText.isEmpty {
                         Text("• • •")
                             .font(.system(size: 11, weight: .regular, design: .monospaced))
-                            .foregroundColor(Color.secondary.opacity(0.6))
+                            .foregroundColor(thoughtSubtextColor)
                     }
                 }
                 .mask(
@@ -408,13 +550,14 @@ public struct RollingThoughtBox: View {
                 )
             }
         }
-        .padding(12)
-        .background(Color.rollingThoughtBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(14)
+        .background(thoughtSurfaceBackground)
+        .clipShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.gray.opacity(0.3), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
+                .strokeBorder(thoughtSurfaceBorder, lineWidth: 0.6)
         )
+        .shadow(color: .rollingThoughtShadow, radius: 8, x: 0, y: 4)
         .contentShape(Rectangle())
         .onTapGesture {
             viewModel.toggleExpanded()
@@ -425,31 +568,25 @@ public struct RollingThoughtBox: View {
     private var expandedView: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                HStack(spacing: 4) {
+                HStack(spacing: 6) {
                     Image(systemName: "brain")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Text("Chain of Thought")
-                        .font(.caption2.weight(.medium))
-                        .foregroundColor(.secondary)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(thoughtSubtextColor)
+                    Text("CHAIN OF THOUGHT")
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .tracking(0.5)
+                        .foregroundColor(thoughtSubtextColor)
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color.rollingThoughtBackground)
-                .clipShape(Capsule())
                 
                 Spacer()
-                
                 Button(action: { viewModel.toggleExpanded() }) {
                     Text("Collapse")
-                        .font(.caption2.weight(.medium))
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
                 }
                 .buttonStyle(.plain)
-                .foregroundColor(.primary)
+                .foregroundColor(thoughtSecondaryPillForeground)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
-                .background(Color.rollingThoughtBackground)
-                .clipShape(Capsule())
             }
             
             ScrollViewReader { proxy in
@@ -457,7 +594,7 @@ public struct RollingThoughtBox: View {
                     VStack(alignment: .leading, spacing: 0) {
                         Text(viewModel.fullText.isEmpty ? "Waiting for thoughts..." : viewModel.fullText)
                             .font(.system(size: 11, weight: .regular, design: .monospaced))
-                            .foregroundColor(.primary)
+                            .foregroundColor(thoughtTextColor)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .textSelection(.enabled)
                             .padding(8)
@@ -469,8 +606,12 @@ public struct RollingThoughtBox: View {
                     }
                 }
                 .frame(maxHeight: 200)
-                .background(Color.rollingThoughtBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .background(thoughtInsetBackground)
+                .clipShape(RoundedRectangle(cornerRadius: insetCornerRadius, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: insetCornerRadius, style: .continuous)
+                        .stroke(thoughtSurfaceBorder, lineWidth: 0.6)
+                )
                 .simultaneousGesture(DragGesture().onChanged { _ in shouldAutoScroll = false })
                 .overlay(alignment: .bottomTrailing) {
                     if !shouldAutoScroll && viewModel.phase == .streaming {
@@ -482,8 +623,9 @@ public struct RollingThoughtBox: View {
                         } label: {
                             Image(systemName: "arrow.down")
                                 .font(.caption)
-                                .padding(8)
-                                .background(.thinMaterial)
+                                .padding(6)
+                                .foregroundColor(thoughtSubtextColor)
+                                .background(thoughtSecondaryPillBackground)
                                 .clipShape(Circle())
                         }
                         .padding(8)
@@ -507,86 +649,92 @@ public struct RollingThoughtBox: View {
                 }
             }
         }
-        .padding(12)
-        .background(Color.rollingThoughtBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.gray.opacity(0.3), lineWidth: 0.5)
+        .padding(14)
+        .background(
+            LinearGradient(
+                colors: [
+                    thoughtSurfaceBackground,
+                    thoughtSurfaceBackground.opacity(colorScheme == .dark ? 0.92 : 0.98)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
         )
+        .clipShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
+                .strokeBorder(thoughtSurfaceBorder, lineWidth: 0.6)
+        )
+        .shadow(color: .rollingThoughtShadow, radius: 16, x: 0, y: 10)
     }
     
     private var completeView: some View {
         HStack(spacing: 8) {
-            HStack(spacing: 4) {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.caption)
-                    .foregroundColor(.green)
-                Text("Thought complete")
-                    .font(.caption2.weight(.medium))
-                    .foregroundColor(.secondary)
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(thoughtSubtextColor)
+                Text("THOUGHT COMPLETE")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .tracking(0.5)
+                    .foregroundColor(thoughtSubtextColor)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Color.rollingThoughtBackground)
-            .clipShape(Capsule())
             
             Spacer()
             
             Button(action: { viewModel.toggleExpanded() }) {
                 Text("View")
-                    .font(.caption2.weight(.medium))
-                    .foregroundColor(.primary)
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundColor(thoughtSecondaryPillForeground)
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(Color.rollingThoughtBackground)
-            .clipShape(Capsule())
         }
-        .padding(8)
-        .background(Color.rollingThoughtBackground.opacity(0.5))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(10)
+        .background(thoughtSurfaceBackground)
+        .clipShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.green.opacity(0.3), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
+                .strokeBorder(thoughtSurfaceBorder, lineWidth: 0.6)
         )
+        .shadow(color: .rollingThoughtShadow, radius: 4, x: 0, y: 2)
     }
 
     private var interruptedView: some View {
         HStack(spacing: 8) {
-            HStack(spacing: 4) {
+            HStack(spacing: 6) {
                 Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.caption)
+                    .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.orange)
-                Text("Thought interrupted")
-                    .font(.caption2.weight(.medium))
-                    .foregroundColor(.secondary)
+                Text("THOUGHT INTERRUPTED")
+                    .font(.system(size: 10, weight: .black, design: .rounded))
+                    .tracking(0.8)
+                    .foregroundColor(.orange)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(Color.rollingThoughtBackground)
+            .background(thoughtSecondaryPillBackground)
             .clipShape(Capsule())
 
             Spacer()
 
             Button(action: { viewModel.toggleExpanded() }) {
                 Text("View")
-                    .font(.caption2.weight(.medium))
-                    .foregroundColor(.primary)
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundColor(thoughtSecondaryPillForeground)
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(Color.rollingThoughtBackground)
-            .clipShape(Capsule())
         }
-        .padding(8)
-        .background(Color.rollingThoughtBackground.opacity(0.65))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(10)
+        .background(Color.rollingThoughtWarningBackground)
+        .clipShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.orange.opacity(0.3), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
+                .strokeBorder(Color.rollingThoughtWarningBorder, lineWidth: 0.6)
         )
+        .shadow(color: .rollingThoughtShadow, radius: 4, x: 0, y: 2)
     }
 }

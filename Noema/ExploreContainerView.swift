@@ -249,7 +249,7 @@ private struct ExploreChromeBar: View {
                 }
                 if chromeState.hasToggle {
                     Button(action: { chromeState.toggle() }) {
-                        Text(chromeState.searchMode.rawValue.uppercased())
+                        Text(chromeState.searchMode.displayName)
                             .font(.caption2.weight(.semibold))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
@@ -302,8 +302,12 @@ private struct ExploreChromeBar: View {
             return ModelFormat.gguf.tagGradient
         case .mlx:
             return ModelFormat.mlx.tagGradient
-        case .slm:
-            return ModelFormat.mlx.tagGradient
+        case .et:
+            return ModelFormat.et.tagGradient
+        case .ane:
+            return ModelFormat.ane.tagGradient
+        case .afm:
+            return ModelFormat.afm.tagGradient
         }
     }
 

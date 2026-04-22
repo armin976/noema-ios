@@ -41,6 +41,43 @@ private actor RelayManagementWorker {
     }
 }
 
+struct RelayWarmupHealth: Sendable {
+    let names: [String]
+    let offlineModelIDs: Set<String>
+
+    static let empty = RelayWarmupHealth(names: [], offlineModelIDs: [])
+}
+
+struct RelayLifecycleDependencies: Sendable {
+    var ensureLocalNetworkPermission: @Sendable () async -> Void
+    var makeHTTPServer: @Sendable (RelayServerEngine, RelayServerConfiguration) -> any RelayHTTPServing
+    var performHealthCheck: @Sendable (RelayManagementViewModel, UUID) async throws -> RelayWarmupHealth
+    var startCloudKitProcessing: @Sendable (InferenceProvider) async -> Void
+    var stopCloudKitProcessing: @Sendable () -> Void
+
+    static func live() -> RelayLifecycleDependencies {
+        RelayLifecycleDependencies(
+            ensureLocalNetworkPermission: {
+                await LocalNetworkPermissionRequester.shared.ensurePrompt()
+            },
+            makeHTTPServer: { engine, configuration in
+                RelayHTTPServer(engine: engine, configuration: configuration)
+            },
+            performHealthCheck: { viewModel, runID in
+                await viewModel.checkExposedEndpointsHealth(for: runID)
+            },
+            startCloudKitProcessing: { provider in
+                let containerID = RelayConfiguration.containerIdentifier
+                CloudKitRelay.shared.configure(containerIdentifier: containerID, provider: provider)
+                await CloudKitRelay.shared.startServerProcessing()
+            },
+            stopCloudKitProcessing: {
+                CloudKitRelay.shared.stopServerProcessing()
+            }
+        )
+    }
+}
+
 @MainActor
 final class RelayManagementViewModel: ObservableObject {
     @MainActor static let shared = RelayManagementViewModel()
@@ -73,6 +110,11 @@ final class RelayManagementViewModel: ObservableObject {
     @Published private(set) var connectedClients: [RelayServerEngine.ConnectedClient] = []
     @Published private(set) var loadedModels: [RelayServerEngine.ModelSnapshot] = []
     @Published private(set) var loadingModelIDs: Set<String> = []
+    private var relaySnapshots: [RelayServerEngine.ModelSnapshot] = []
+    private var appLoadedDescriptorID: String?
+    var relayHasLocalOwnership: Bool {
+        relaySnapshots.contains { $0.isLoaded && $0.descriptor.isLocal }
+    }
     @Published fileprivate var availableModels: [RelayModelDescriptor] = []
     @Published fileprivate var catalogEntries: [RelayCatalogEntry] = [] {
         didSet {
@@ -107,8 +149,11 @@ final class RelayManagementViewModel: ObservableObject {
     private let worker = RelayManagementWorker()
     private let catalogUpdateDebounceNanoseconds: UInt64 = 250_000_000
     private let hostDeviceID = RelayConfiguration.hostDeviceIdentifier
+    private let dependencies: RelayLifecycleDependencies
+    private var startupTask: Task<Void, Never>?
+    private var startupWarmupTask: Task<Void, Never>?
     private var serverTask: Task<Void, Never>?
-    private var httpServer: RelayHTTPServer?
+    private var httpServer: (any RelayHTTPServing)?
     private var commandListenerTask: Task<Void, Never>?
     private var catalogUpdateTask: Task<Void, Never>?
     private var loadedModelsMonitorTask: Task<Void, Never>?
@@ -121,14 +166,21 @@ final class RelayManagementViewModel: ObservableObject {
         .easeInOut(duration: 0.25)
     }
     private weak var modelManager: AppModelManager?
+    private weak var chatVM: ChatVM?
     private let serverEngine = RelayServerEngine()
     private var lastKnownLANAddress: String?
+    private var activeRunID = UUID()
 
     private static let catalogEntriesKey = "relay.catalog.entries"
     private static let activeModelKey = "relay.activeModelID"
     private static let ejectsOnDisconnectKey = "relay.ejectsOnDisconnect"
 
-    private init() {
+    convenience init() {
+        self.init(dependencies: .live())
+    }
+
+    init(dependencies: RelayLifecycleDependencies) {
+        self.dependencies = dependencies
         advertiser.$state
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in
@@ -147,6 +199,13 @@ final class RelayManagementViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 Task { await self?.refreshCloudKitAccountStatus() }
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: .relayWillLoadLocalModel)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.handleRelayWillLoadLocalModel()
             }
             .store(in: &cancellables)
 
@@ -217,6 +276,16 @@ final class RelayManagementViewModel: ObservableObject {
 #endif
     }
 
+    private func beginLifecycleRun() -> UUID {
+        let runID = UUID()
+        activeRunID = runID
+        return runID
+    }
+
+    private func isCurrentRun(_ runID: UUID) -> Bool {
+        activeRunID == runID
+    }
+
     // MARK: - Public model load/unload helpers
 
     func isModelLoaded(_ descriptorID: String) -> Bool {
@@ -256,6 +325,17 @@ final class RelayManagementViewModel: ObservableObject {
     func unloadModel(_ descriptorID: String) {
         Task { [weak self] in
             guard let self else { return }
+            let shouldUnloadAppModel = await MainActor.run { self.appLoadedDescriptorID == descriptorID }
+            if shouldUnloadAppModel {
+                if let chatVM = await MainActor.run(body: { self.chatVM as ChatVM? }) {
+                    await chatVM.unload()
+                }
+                await MainActor.run {
+                    self.modelManager?.loadedModel = nil
+                    self.appLoadedDescriptorID = nil
+                    self.recomputeLoadedModels()
+                }
+            }
             await self.serverEngine.unloadModel(descriptorID, reason: "manual unload")
             await self.refreshLoadedModelsSnapshot()
         }
@@ -265,23 +345,32 @@ final class RelayManagementViewModel: ObservableObject {
 #if os(macOS)
         RelayControlCenter.shared.unregister(self)
 #endif
+        startupTask?.cancel()
+        startupWarmupTask?.cancel()
+        serverTask?.cancel()
         commandListenerTask?.cancel()
     }
 
-    func bind(modelManager: AppModelManager) {
-        guard self.modelManager !== modelManager else { return }
+    func bind(modelManager: AppModelManager, chatVM: ChatVM) {
+        if self.modelManager === modelManager, self.chatVM === chatVM { return }
         self.modelManager = modelManager
+        self.chatVM = chatVM
         modelManagerCancellables.removeAll()
 
-        modelManager.$downloadedModels
-            .combineLatest(modelManager.$remoteBackends)
+        Publishers.CombineLatest3(
+            modelManager.$downloadedModels,
+            modelManager.$remoteBackends,
+            modelManager.$loadedModel
+        )
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] locals, remotes in
-                self?.refreshModels(localModels: locals, remoteBackends: remotes)
+            .sink { [weak self] locals, remotes, loaded in
+                self?.refreshModels(localModels: locals, remoteBackends: remotes, appLoadedModel: loaded)
             }
             .store(in: &modelManagerCancellables)
 
-        refreshModels(localModels: modelManager.downloadedModels, remoteBackends: modelManager.remoteBackends)
+        refreshModels(localModels: modelManager.downloadedModels,
+                      remoteBackends: modelManager.remoteBackends,
+                      appLoadedModel: modelManager.loadedModel)
     }
 
     private func configureCatalogPublisher() async {
@@ -348,13 +437,17 @@ final class RelayManagementViewModel: ObservableObject {
         }
     }
 
-    private func refreshModels(localModels: [LocalModel], remoteBackends: [RemoteBackend]) {
+    private func refreshModels(localModels: [LocalModel],
+                               remoteBackends: [RemoteBackend],
+                               appLoadedModel: LocalModel?) {
         let descriptors = buildDescriptors(localModels: localModels, remoteBackends: remoteBackends)
         availableModels = descriptors
 
         Task { await serverEngine.updateDescriptors(descriptors) }
 
         mergeCatalogEntries(with: descriptors)
+        appLoadedDescriptorID = descriptorID(for: appLoadedModel, in: descriptors)
+        recomputeLoadedModels()
 
         if let activeID = activeModelID, !descriptors.contains(where: { $0.id == activeID }) {
             activeModelID = descriptors.first(where: { descriptor in
@@ -363,7 +456,74 @@ final class RelayManagementViewModel: ObservableObject {
         }
 
         Task { await serverEngine.updateActiveModel(activeModelID) }
+        Task { await refreshLoadedModelsSnapshot() }
         refreshPayload()
+    }
+
+    private func descriptorID(for model: LocalModel?, in descriptors: [RelayModelDescriptor]) -> String? {
+        guard let model else { return nil }
+        return descriptors.first(where: { descriptor in
+            guard case .local(let local) = descriptor.kind else { return false }
+            if local.modelID == model.modelID && local.quant == model.quant {
+                return true
+            }
+            return local.url == model.url
+        })?.id
+    }
+
+    private func recomputeLoadedModels() {
+        var relayByID: [String: RelayServerEngine.ModelSnapshot] = [:]
+        for snapshot in relaySnapshots {
+            relayByID[snapshot.descriptor.id] = snapshot
+        }
+
+        loadedModels = availableModels.map { descriptor in
+            var snapshot = relayByID[descriptor.id] ?? RelayServerEngine.ModelSnapshot(
+                id: descriptor.identifier,
+                displayName: descriptor.displayName,
+                ownedBy: descriptor.provider.displayName,
+                created: catalogEntries.first(where: { $0.modelID == descriptor.id })?.lastChecked ?? Date(),
+                isLoaded: false,
+                contextLength: descriptor.context,
+                quant: descriptor.quant,
+                sizeBytes: descriptor.sizeBytes,
+                provider: descriptor.provider,
+                descriptor: descriptor
+            )
+            snapshot.id = descriptor.identifier
+            snapshot.displayName = descriptor.displayName
+            snapshot.ownedBy = descriptor.provider.displayName
+            snapshot.contextLength = descriptor.context
+            snapshot.quant = descriptor.quant
+            snapshot.sizeBytes = descriptor.sizeBytes
+            snapshot.provider = descriptor.provider
+            snapshot.descriptor = descriptor
+            snapshot.isLoaded = snapshot.isLoaded || (appLoadedDescriptorID == descriptor.id)
+            return snapshot
+        }
+    }
+
+    private func handleRelayWillLoadLocalModel() {
+        Task { [weak self] in
+            guard let self else { return }
+            let shouldPreempt = await MainActor.run { () -> Bool in
+                guard let manager = self.modelManager,
+                      let chatVM = self.chatVM else { return false }
+                if manager.loadedModel != nil { return true }
+                return chatVM.modelLoaded && chatVM.loadedModelURL != nil
+            }
+            guard shouldPreempt else { return }
+
+            if let chatVM = await MainActor.run(body: { self.chatVM as ChatVM? }) {
+                await chatVM.unload()
+            }
+
+            await MainActor.run {
+                self.modelManager?.loadedModel = nil
+                self.appLoadedDescriptorID = nil
+                self.recomputeLoadedModels()
+            }
+        }
     }
 
     func applySettings(_ settings: ModelSettings, forRelayModelID id: String) async {
@@ -371,7 +531,9 @@ final class RelayManagementViewModel: ObservableObject {
               let descriptor = availableModels.first(where: { $0.id == id }) else { return }
         guard case .local(let model) = descriptor.kind else { return }
         manager.updateSettings(settings, for: model)
-        refreshModels(localModels: manager.downloadedModels, remoteBackends: manager.remoteBackends)
+        refreshModels(localModels: manager.downloadedModels,
+                      remoteBackends: manager.remoteBackends,
+                      appLoadedModel: manager.loadedModel)
         scheduleCatalogUpdate()
         await serverEngine.updateDescriptors(availableModels)
         await serverEngine.unloadModel(id, reason: "model settings updated")
@@ -384,8 +546,7 @@ final class RelayManagementViewModel: ObservableObject {
                                 message: "Failed to reload \(descriptor.displayName) after settings update: \(error.localizedDescription)")
             }
         }
-        let snapshots = await serverEngine.modelSnapshots()
-        loadedModels = snapshots
+        await refreshLoadedModelsSnapshot()
     }
 
     func updateServerConfiguration(restartHTTP: Bool = false, _ transform: (inout RelayServerConfiguration) -> Void) {
@@ -406,7 +567,8 @@ final class RelayManagementViewModel: ObservableObject {
     }
 
     @MainActor
-    private func refreshHTTPServerState() async {
+    private func refreshHTTPServerState(for runID: UUID? = nil) async {
+        if let runID, !isCurrentRun(runID) { return }
         guard let httpServer else {
             httpServerState = nil
             lanReachableAddress = nil
@@ -1302,50 +1464,81 @@ final class RelayManagementViewModel: ObservableObject {
     }
 
     func start() {
+        guard serverState != .starting,
+              serverState != .running,
+              startupTask == nil,
+              serverTask == nil else { return }
         startLoadedModelsMonitor()
-        Task.detached(priority: .userInitiated) { [weak self] in
-            await self?.performStartSequence()
+        let runID = beginLifecycleRun()
+        setStatusMessage(
+            String(
+                localized: "Starting relay…",
+                locale: LocalizationManager.preferredLocale()
+            )
+        )
+        withAnimation(statusAnimation) {
+            serverState = .starting
+        }
+        isLANServerStarting = true
+
+        startupTask = Task(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            defer {
+                Task { @MainActor [weak self] in
+                    guard let self, self.isCurrentRun(runID) else { return }
+                    self.startupTask = nil
+                }
+            }
+            await self.performStartSequence(for: runID)
         }
     }
 
     // Runs the relay start-up away from the main actor; UI updates are bridged via MainActor.run.
-    nonisolated private func performStartSequence() async {
-        let hasServerTask = await MainActor.run { self.serverTask != nil }
-        guard !hasServerTask else { return }
-
-        await MainActor.run {
-            self.setStatusMessage(
-                String(
-                    localized: "Checking exposed endpoints…",
-                    locale: LocalizationManager.preferredLocale()
-                )
-            )
-            withAnimation(self.statusAnimation) {
-                self.serverState = .starting
-            }
-        }
-
-        // Permission prompt should finish before server start; run directly (actor handles its own isolation).
-        await LocalNetworkPermissionRequester.shared.ensurePrompt()
+    private func performStartSequence(for runID: UUID) async {
+        await dependencies.ensureLocalNetworkPermission()
+        guard !Task.isCancelled else { return }
+        let isCurrent = await MainActor.run { self.isCurrentRun(runID) }
+        guard isCurrent else { return }
 
         let configuration = await MainActor.run { self.serverConfiguration }
         let engine = await MainActor.run { self.serverEngine }
         var server = await MainActor.run { self.httpServer }
         if server == nil {
-            server = RelayHTTPServer(engine: engine, configuration: configuration)
+            server = dependencies.makeHTTPServer(engine, configuration)
         }
 
         await MainActor.run {
+            guard self.isCurrentRun(runID) else { return }
             self.httpServer = server
             self.isLANServerStarting = true
         }
 
         do {
             try await server?.start()
-            await refreshHTTPServerState()
-            await MainActor.run { self.isLANServerStarting = false }
+            await refreshHTTPServerState(for: runID)
+            guard !Task.isCancelled else { return }
+            let isStillCurrent = await MainActor.run { self.isCurrentRun(runID) }
+            guard isStillCurrent else { return }
+            await MainActor.run {
+                guard self.isCurrentRun(runID) else { return }
+                self.isLANServerStarting = false
+                self.relayIdentifier = UUID()
+                self.refreshPayload()
+                self.setStatusMessage(
+                    String(
+                        localized: "Listening for conversations… Checking sources…",
+                        locale: LocalizationManager.preferredLocale()
+                    )
+                )
+                withAnimation(self.statusAnimation) {
+                    self.serverState = .running
+                }
+                self.lastActivity = Date()
+                self.scheduleCatalogUpdate(statusOverride: .running)
+            }
         } catch {
             await MainActor.run {
+                guard self.isCurrentRun(runID) else { return }
                 self.isLANServerStarting = false
                 self.httpServer = nil
                 self.serverState = .error("LAN server failed: \(error.localizedDescription)")
@@ -1359,52 +1552,35 @@ final class RelayManagementViewModel: ObservableObject {
             return
         }
 
-        let health = await checkExposedEndpointsHealth()
-        await MainActor.run {
-            self.ensureActiveModelAvailable(excluding: health.offlineModelIDs)
-            if health.names.isEmpty {
-                self.setStatusMessage(
-                    String(
-                        localized: "Starting relay…",
-                        locale: LocalizationManager.preferredLocale()
-                    )
-                )
-            } else {
-                let list = health.names.joined(separator: ", ")
-                self.setStatusMessage(
-                    String.localizedStringWithFormat(
-                        String(
-                            localized: "Starting relay… Offline: %@",
-                            locale: LocalizationManager.preferredLocale()
-                        ),
-                        list
-                    )
-                )
-            }
-            self.relayIdentifier = UUID()
-            self.refreshPayload()
-            self.scheduleCatalogUpdate(statusOverride: .loading)
-        }
+        await refreshConnectedClientsSnapshot(for: runID)
+        let isStillCurrent = await MainActor.run { self.isCurrentRun(runID) }
+        guard isStillCurrent else { return }
 
-        await refreshConnectedClientsSnapshot()
-
-        // Update the active model and spin up the CloudKit relay loop off the main actor.
-        let loopTask = Task.detached(priority: .utility) { [weak self] in
+        let loopTask = Task(priority: .utility) { [weak self] in
             guard let self else { return }
             let active = await MainActor.run { self.activeModelID }
             await self.serverEngine.updateActiveModel(active)
-            await self.runRelayLoopDetached()
+            await self.runRelayLoopDetached(for: runID)
         }
         await MainActor.run {
+            guard self.isCurrentRun(runID) else {
+                loopTask.cancel()
+                return
+            }
             self.serverTask = loopTask
+        }
+
+        await MainActor.run {
+            guard self.isCurrentRun(runID) else { return }
+            self.launchStartupWarmup(for: runID)
         }
     }
 
     // Collects remote health on a background executor; only state mutations run on the main actor.
-    nonisolated private func checkExposedEndpointsHealth() async -> (names: [String], offlineModelIDs: Set<String>) {
+    nonisolated func checkExposedEndpointsHealth(for runID: UUID? = nil) async -> RelayWarmupHealth {
         let manager: AppModelManager? = await MainActor.run { self.modelManager }
         guard let manager else {
-            return ([], [])
+            return .empty
         }
 
         let descriptors: [RelayModelDescriptor] = await MainActor.run { self.availableModels }
@@ -1415,7 +1591,7 @@ final class RelayManagementViewModel: ObservableObject {
             }
         }
 
-        guard !backendIDs.isEmpty else { return ([], []) }
+        guard !backendIDs.isEmpty else { return .empty }
 
         let backendsToCheck: [RemoteBackend] = await MainActor.run {
             manager.remoteBackends.filter { backendIDs.contains($0.id) }
@@ -1424,6 +1600,7 @@ final class RelayManagementViewModel: ObservableObject {
 
         // Apply backend updates on the main actor to keep state in sync with the UI.
         await MainActor.run {
+            guard runID == nil || self.isCurrentRun(runID!) else { return }
             for (backendID, result) in results {
                 switch result {
                 case .success(let fetchResult):
@@ -1452,6 +1629,9 @@ final class RelayManagementViewModel: ObservableObject {
         }
 
         return await MainActor.run {
+            guard runID == nil || self.isCurrentRun(runID!) else {
+                return .empty
+            }
             var offlineBackends: [RemoteBackend.ID: Bool] = [:]
             var offlineNames: [String] = []
             var offlineModelIDs: Set<String> = []
@@ -1490,7 +1670,7 @@ final class RelayManagementViewModel: ObservableObject {
                 }
             }
 
-            return (offlineNames, offlineModelIDs)
+            return RelayWarmupHealth(names: offlineNames, offlineModelIDs: offlineModelIDs)
         }
     }
     
@@ -1533,18 +1713,23 @@ final class RelayManagementViewModel: ObservableObject {
     }
 
     func stop() {
+        activeRunID = UUID()
+        startupTask?.cancel()
+        startupWarmupTask?.cancel()
         serverTask?.cancel()
+        startupTask = nil
+        startupWarmupTask = nil
         serverTask = nil
-        if let httpServer {
-            Task { await httpServer.stop() }
-        }
-        httpServer = nil
+        let httpServer = httpServer
+        self.httpServer = nil
         httpServerState = nil
         lanReachableAddress = nil
+        lastKnownLANAddress = nil
         isLANServerStarting = false
+        payload = nil
         advertiser.stopAdvertising()
         stopLoadedModelsMonitor()
-        CloudKitRelay.shared.stopServerProcessing()
+        dependencies.stopCloudKitProcessing()
         withAnimation(statusAnimation) {
             serverState = .stopped
         }
@@ -1555,9 +1740,13 @@ final class RelayManagementViewModel: ObservableObject {
                 locale: LocalizationManager.preferredLocale()
             )
         )
-        loadedModels = []
+        relaySnapshots = []
+        recomputeLoadedModels()
         connectedClients = []
         scheduleCatalogUpdate(statusOverride: .idle)
+        if let httpServer {
+            Task { await httpServer.stop() }
+        }
         Task { await serverEngine.unloadAllClients() }
     }
 
@@ -1607,7 +1796,10 @@ final class RelayManagementViewModel: ObservableObject {
     /// Sync loaded model snapshots from server engine on-demand.
     nonisolated func refreshLoadedModelsSnapshot() async {
         let snapshots = await serverEngine.modelSnapshots()
-        await MainActor.run { self.loadedModels = snapshots }
+        await MainActor.run {
+            self.relaySnapshots = snapshots
+            self.recomputeLoadedModels()
+        }
     }
 
     private func startLoadedModelsMonitor() {
@@ -1616,7 +1808,10 @@ final class RelayManagementViewModel: ObservableObject {
             guard let self else { return }
             while !Task.isCancelled {
                 let snapshots = await self.serverEngine.modelSnapshots()
-                await MainActor.run { self.loadedModels = snapshots }
+                await MainActor.run {
+                    self.relaySnapshots = snapshots
+                    self.recomputeLoadedModels()
+                }
                 try? await Task.sleep(nanoseconds: 1_000_000_000) // 1s poll
             }
         }
@@ -1627,53 +1822,82 @@ final class RelayManagementViewModel: ObservableObject {
         loadedModelsMonitorTask = nil
     }
 
-    nonisolated func refreshConnectedClientsSnapshot() async {
+    nonisolated func refreshConnectedClientsSnapshot(for runID: UUID? = nil) async {
         let snapshot = await serverEngine.connectedClientsSnapshot()
-        await MainActor.run { self.connectedClients = snapshot }
+        await MainActor.run {
+            guard runID == nil || self.isCurrentRun(runID!) else { return }
+            self.connectedClients = snapshot
+        }
     }
 
-    nonisolated private func runRelayLoopDetached() async {
-        let containerID = RelayConfiguration.containerIdentifier
-        let inferenceProvider = await MainActor.run { makeProvider() }
-        let animation = await MainActor.run { statusAnimation }
-
-        CloudKitRelay.shared.configure(containerIdentifier: containerID, provider: inferenceProvider)
-
-        await MainActor.run {
-            setStatusMessage(
-                String(
-                    localized: "Listening for conversations…",
-                    locale: LocalizationManager.preferredLocale()
-                )
-            )
-            withAnimation(animation) {
-                serverState = .running
+    private func launchStartupWarmup(for runID: UUID) {
+        startupWarmupTask?.cancel()
+        startupWarmupTask = Task(priority: .utility) { [weak self] in
+            guard let self else { return }
+            defer {
+                Task { @MainActor [weak self] in
+                    guard let self, self.isCurrentRun(runID) else { return }
+                    self.startupWarmupTask = nil
+                }
             }
-            lastActivity = Date()
-            scheduleCatalogUpdate(statusOverride: .running)
-        }
 
-        // Begin push-driven processing and avoid constant CloudKit polling.
-        await CloudKitRelay.shared.startServerProcessing()
+            do {
+                let health = try await self.dependencies.performHealthCheck(self, runID)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard self.isCurrentRun(runID) else { return }
+                    self.ensureActiveModelAvailable(excluding: health.offlineModelIDs)
+                    if health.names.isEmpty {
+                        self.setStatusMessage(
+                            String(
+                                localized: "Listening for conversations…",
+                                locale: LocalizationManager.preferredLocale()
+                            )
+                        )
+                    } else {
+                        let list = health.names.joined(separator: ", ")
+                        self.setStatusMessage(
+                            String.localizedStringWithFormat(
+                                String(
+                                    localized: "Listening for conversations… Offline: %@",
+                                    locale: LocalizationManager.preferredLocale()
+                                ),
+                                list
+                            )
+                        )
+                    }
+                }
+            } catch is CancellationError {
+                RelayLog.record(category: "RelayManagement",
+                                message: "Relay warmup cancelled",
+                                suppressConsole: true)
+            } catch {
+                RelayLog.record(category: "RelayManagement",
+                                message: "Relay warmup failed: \(error.localizedDescription)",
+                                suppressConsole: true)
+                await MainActor.run {
+                    guard self.isCurrentRun(runID), self.serverState == .running else { return }
+                    self.setStatusMessage(
+                        String(
+                            localized: "Listening for conversations…",
+                            locale: LocalizationManager.preferredLocale()
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    private func runRelayLoopDetached(for runID: UUID) async {
+        let inferenceProvider = await MainActor.run { makeProvider() }
+        guard !Task.isCancelled else { return }
+        let isStillCurrent = await MainActor.run { self.isCurrentRun(runID) }
+        guard isStillCurrent else { return }
+        await dependencies.startCloudKitProcessing(inferenceProvider)
 
         // Keep the task alive with a very light heartbeat so cancellation works.
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 300 * 1_000_000_000) // 5-minute heartbeat
-        }
-
-        if Task.isCancelled { return }
-
-        await MainActor.run {
-            withAnimation(animation) {
-                serverState = .stopped
-            }
-            setStatusMessage(
-                String(
-                    localized: "Relay stopped",
-                    locale: LocalizationManager.preferredLocale()
-                )
-            )
-            scheduleCatalogUpdate(statusOverride: .idle)
         }
     }
 
@@ -1805,7 +2029,7 @@ struct RelayManagementView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .background(AppTheme.windowBackground.ignoresSafeArea())
-        .task { viewModel.bind(modelManager: modelManager) }
+        .task { viewModel.bind(modelManager: modelManager, chatVM: chatVM) }
         .task { await viewModel.refreshConnectedClientsSnapshot() }
         .onAppear { syncConfigurationFields() }
         .onChange(of: viewModel.serverState) { _ in
@@ -1978,14 +2202,6 @@ struct RelayManagementView: View {
                             .foregroundStyle(AppTheme.text)
                     } icon: {
                         Image(systemName: "chevron.left.slash.chevron.right")
-                            .foregroundStyle(Color.accentColor)
-                    }
-                    Label {
-                        Text(LocalizedStringKey("Noema REST API — /api/v0/* for model catalog & operations"))
-                            .font(FontTheme.caption)
-                            .foregroundStyle(AppTheme.text)
-                    } icon: {
-                        Image(systemName: "gearshape.2")
                             .foregroundStyle(Color.accentColor)
                     }
                 }

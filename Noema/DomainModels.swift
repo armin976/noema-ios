@@ -2,11 +2,62 @@
 import Foundation
 import SwiftUI
 
-public enum ModelFormat: String, Codable, CaseIterable, Hashable, Sendable {
+public enum ModelFormat: String, CaseIterable, Hashable, Sendable {
     case gguf = "GGUF"
     case mlx = "MLX"
-    case slm  = "SLM"
-    case apple = "APPLE"
+    case et  = "ET"
+    case ane = "ANE"
+    case afm = "AFM"
+}
+
+extension ModelFormat: Codable {
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        if let format = ModelFormat(compatibleRawValue: raw) {
+            self = format
+        } else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unsupported model format value: \(raw)"
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
+public enum ETBackend: String, Codable, CaseIterable, Hashable, Sendable {
+    case xnnpack = "XNNPACK"
+    case coreml = "CoreML"
+    case mps = "MPS"
+}
+
+extension ETBackend {
+    var displayName: String { rawValue }
+
+    var tagGradient: LinearGradient {
+        switch self {
+        case .xnnpack:
+            return LinearGradient(colors: [Color.indigo, Color.blue], startPoint: .topLeading, endPoint: .bottomTrailing)
+        case .coreml:
+            return LinearGradient(colors: [Color.green, Color.teal], startPoint: .topLeading, endPoint: .bottomTrailing)
+        case .mps:
+            return LinearGradient(colors: [Color.orange, Color.red], startPoint: .topLeading, endPoint: .bottomTrailing)
+        }
+    }
+
+    var supportedOnCurrentDevice: Bool {
+        switch self {
+        case .xnnpack:
+            return true
+        case .coreml, .mps:
+            return DeviceGPUInfo.supportsGPUOffload
+        }
+    }
 }
 
 struct MoEInfo: Codable, Hashable, Sendable {
@@ -45,28 +96,57 @@ extension MoEInfo {
 }
 
 extension ModelFormat {
+    var displayName: String {
+        switch self {
+        case .ane:
+            return "CML"
+        default:
+            return rawValue
+        }
+    }
+
+    init?(compatibleRawValue raw: String) {
+        switch raw.uppercased() {
+        case "SLM":
+            self = .et
+        case "APPLE", "CML":
+            self = .ane
+        default:
+            self.init(rawValue: raw)
+        }
+    }
+
     var tagGradient: LinearGradient {
         switch self {
         case .mlx:
             return LinearGradient(colors: [Color.orange, Color.pink], startPoint: .topLeading, endPoint: .bottomTrailing)
         case .gguf:
             return LinearGradient(colors: [Color.blue, Color.purple], startPoint: .topLeading, endPoint: .bottomTrailing)
-        case .slm:
+        case .et:
             return LinearGradient(colors: [Color.cyan, Color.blue], startPoint: .topLeading, endPoint: .bottomTrailing)
-        case .apple:
+        case .ane:
             return LinearGradient(colors: [Color.green, Color.teal], startPoint: .topLeading, endPoint: .bottomTrailing)
+        case .afm:
+            return LinearGradient(colors: [Color.indigo, Color.blue], startPoint: .topLeading, endPoint: .bottomTrailing)
         }
     }
 
     /// Attempts to infer the format from a model file URL.
     /// Unknown extensions default to GGUF for backwards compatibility with GGML.
     static func detect(from url: URL) -> ModelFormat {
+        if url.scheme?.lowercased() == "afm" {
+            return .afm
+        }
         let ext = url.pathExtension.lowercased()
         switch ext {
+        case "afm":
+            return .afm
         case "mlx":
             return .mlx
-        case "bundle":
-            return .slm
+        case "bundle", "pte":
+            return .et
+        case "mlmodel", "mlpackage", "mlmodelc":
+            return .ane
         case "gguf", "ggml", "bin":
             return .gguf
         default:
@@ -77,6 +157,21 @@ extension ModelFormat {
 
 public struct QuantInfo: Identifiable, Hashable, Codable, Sendable {
     public var id: String { label }
+
+    public struct DownloadPart: Hashable, Codable, Sendable {
+        public let path: String
+        public let sizeBytes: Int64
+        public let sha256: String?
+        public let downloadURL: URL
+    }
+
+    public struct AuxiliaryFile: Hashable, Codable, Sendable {
+        public let path: String
+        public let sizeBytes: Int64
+        public let sha256: String?
+        public let downloadURL: URL
+    }
+
     public let label: String
     public let format: ModelFormat
     public let sizeBytes: Int64
@@ -84,9 +179,120 @@ public struct QuantInfo: Identifiable, Hashable, Codable, Sendable {
     public let sha256: String?
     /// Optional URL to a configuration JSON accompanying the model
     public let configURL: URL?
+    /// Optional multipart metadata for split GGUFs. Nil means single-file quant.
+    public let downloadParts: [DownloadPart]?
+    /// Optional repo-advertised importance matrix (iMatrix) companion for IQ GGUF quants.
+    public let importanceMatrix: AuxiliaryFile?
+
+    public init(
+        label: String,
+        format: ModelFormat,
+        sizeBytes: Int64,
+        downloadURL: URL,
+        sha256: String?,
+        configURL: URL?,
+        downloadParts: [DownloadPart]? = nil,
+        importanceMatrix: AuxiliaryFile? = nil
+    ) {
+        self.label = label
+        self.format = format
+        self.sizeBytes = sizeBytes
+        self.downloadURL = downloadURL
+        self.sha256 = sha256
+        self.configURL = configURL
+        self.downloadParts = downloadParts
+        self.importanceMatrix = importanceMatrix
+    }
 }
 
 extension QuantInfo {
+    private static func normalizedRelativePath(raw: String, fallback: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidate = trimmed.isEmpty ? fallback : trimmed
+        let components = candidate
+            .replacingOccurrences(of: "\\", with: "/")
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .filter { component in
+                component != "." && component != ".."
+            }
+            .map(String.init)
+        if components.isEmpty {
+            return fallback
+        }
+        return components.joined(separator: "/")
+    }
+
+    static func relativeDownloadPath(path: String, fallbackURL: URL) -> String {
+        normalizedRelativePath(raw: path, fallback: fallbackURL.lastPathComponent)
+    }
+
+    var allRelativeDownloadPaths: [String] {
+        allDownloadParts.map { part in
+            Self.relativeDownloadPath(path: part.path, fallbackURL: part.downloadURL)
+        }
+    }
+
+    var primaryDownloadRelativePath: String {
+        if let first = allDownloadParts.first {
+            return Self.relativeDownloadPath(path: first.path, fallbackURL: first.downloadURL)
+        }
+        return Self.relativeDownloadPath(path: downloadURL.lastPathComponent, fallbackURL: downloadURL)
+    }
+
+    var isMultipart: Bool {
+        guard let downloadParts else { return false }
+        return downloadParts.count > 1
+    }
+
+    var partCount: Int {
+        if let downloadParts { return max(downloadParts.count, 1) }
+        return 1
+    }
+
+    var allDownloadParts: [DownloadPart] {
+        if let downloadParts, !downloadParts.isEmpty { return downloadParts }
+        return [
+            DownloadPart(
+                path: downloadURL.lastPathComponent,
+                sizeBytes: sizeBytes,
+                sha256: sha256,
+                downloadURL: downloadURL
+            )
+        ]
+    }
+
+    var primaryDownloadPart: DownloadPart {
+        if let first = allDownloadParts.first { return first }
+        return DownloadPart(
+            path: downloadURL.lastPathComponent,
+            sizeBytes: sizeBytes,
+            sha256: sha256,
+            downloadURL: downloadURL
+        )
+    }
+
+    func copying(
+        label: String? = nil,
+        format: ModelFormat? = nil,
+        sizeBytes: Int64? = nil,
+        downloadURL: URL? = nil,
+        sha256: String?? = nil,
+        configURL: URL?? = nil,
+        downloadParts: [DownloadPart]?? = nil,
+        importanceMatrix: AuxiliaryFile?? = nil
+    ) -> QuantInfo {
+        QuantInfo(
+            label: label ?? self.label,
+            format: format ?? self.format,
+            sizeBytes: sizeBytes ?? self.sizeBytes,
+            downloadURL: downloadURL ?? self.downloadURL,
+            sha256: sha256 ?? self.sha256,
+            configURL: configURL ?? self.configURL,
+            downloadParts: downloadParts ?? self.downloadParts,
+            importanceMatrix: importanceMatrix ?? self.importanceMatrix
+        )
+    }
+
     /// Attempts to infer the quantization bit-width from the label (e.g. Q4_K_M → 4, "MLX 4bit" → 4).
     var inferredBitWidth: Int? {
         if let range = label.range(of: #"(\d{1,2})(?:\s*bit)?"#, options: .regularExpression) {
@@ -109,6 +315,211 @@ extension QuantInfo {
         let disallowedTokens = ["q1", "q2", "iq1", "iq2"]
         return !disallowedTokens.contains { lowered.contains($0) }
     }
+
+    var isLowBitQuant: Bool {
+        if let bits = inferredBitWidth {
+            return bits <= 2
+        }
+
+        let lowered = label.lowercased()
+        let lowBitTokens = ["q1", "q2", "iq1", "iq2"]
+        return lowBitTokens.contains { lowered.contains($0) }
+    }
+
+    var isIQQuant: Bool {
+        quantTypeDescriptor.family == .iq
+    }
+
+    var requiresImportanceMatrix: Bool {
+        format == .gguf && isIQQuant && importanceMatrix != nil
+    }
+
+    struct QuantTypeDescriptor: Hashable, Sendable {
+        enum Family: String, Hashable, Sendable {
+            case fullPrecision
+            case mxfp
+            case iq
+            case kQuant
+            case legacy
+            case q8_0
+            case generic
+        }
+
+        let family: Family
+        let isUD: Bool
+        let nominalBits: Int?
+        let tier: String?
+        let chipLabel: String
+        let title: String
+        let body: String
+    }
+
+    var quantTypeDescriptor: QuantTypeDescriptor {
+        let upper = label.uppercased()
+        let isUD = upper.hasPrefix("UD-") || upper.hasPrefix("UD_")
+        let normalized: String = {
+            guard isUD else { return upper }
+            return String(upper.dropFirst(3))
+        }()
+        let bits = inferredBitWidth
+
+        let isFullPrecision: Bool = {
+            if normalized == "BF16" || normalized == "F16" || normalized == "FP16" || normalized == "F32" || normalized == "FP32" {
+                return true
+            }
+            if let range = normalized.range(of: #"(?i)(?:^|_)(bf16|f16|fp16|f32|fp32)(?:_|$)"#, options: .regularExpression) {
+                return !range.isEmpty
+            }
+            return false
+        }()
+
+        let isMXFP: Bool = {
+            if normalized.hasPrefix("MXFP") { return true }
+            if let range = normalized.range(of: #"(?i)(?:^|_)mxfp\d+(?:_|$)"#, options: .regularExpression) {
+                return !range.isEmpty
+            }
+            return false
+        }()
+
+        let family: QuantTypeDescriptor.Family = {
+            if isFullPrecision { return .fullPrecision }
+            if isMXFP { return .mxfp }
+            if normalized.hasPrefix("IQ"), normalized.dropFirst(2).first?.isNumber == true { return .iq }
+            if normalized.hasPrefix("Q8_0") { return .q8_0 }
+            if normalized.hasPrefix("Q"), normalized.contains("_K") { return .kQuant }
+            if normalized.hasPrefix("Q"), (normalized.contains("_0") || normalized.contains("_1")) { return .legacy }
+            return .generic
+        }()
+
+        let tier: String? = {
+            let tokens = ["XXS", "XS", "XL", "NL", "S", "M", "L"]
+            for token in tokens where normalized.contains("_\(token)") {
+                return token
+            }
+            return nil
+        }()
+
+        let chipBase: String = {
+            switch family {
+            case .fullPrecision:
+                return "Full Precision"
+            case .mxfp:
+                if let bits { return "MXFP\(bits)" }
+                return "MXFP"
+            case .iq: return "IQ"
+            case .kQuant: return "K-Quant"
+            case .legacy: return "Legacy"
+            case .q8_0: return "Q8_0"
+            case .generic:
+                switch format {
+                case .mlx:
+                    if let bits { return "INT\(bits)" }
+                    return "MLX"
+                case .et: return "ET"
+                case .ane: return "CML"
+                case .afm: return "AFM"
+                case .gguf: return "Quant"
+                }
+            }
+        }()
+
+        let chipLabel = isUD ? "UD \(chipBase)" : chipBase
+
+        let titleBase: String = {
+            switch family {
+            case .fullPrecision: return "Full Precision"
+            case .mxfp: return "MXFP Quant"
+            case .iq: return "IQ Quant"
+            case .kQuant: return "K-Quant"
+            case .legacy: return "Legacy Quant"
+            case .q8_0: return "Q8_0 Quant"
+            case .generic:
+                switch format {
+                case .mlx:
+                    if let bits { return "MLX INT\(bits)" }
+                    return "MLX Quant"
+                case .afm:
+                    return "AFM System Model"
+                case .gguf: return "Quantization"
+                default: return "\(format.displayName) Quant"
+                }
+            }
+        }()
+
+        var paragraphs: [String] = []
+
+        switch family {
+        case .fullPrecision:
+            paragraphs.append("This file is full precision (for example BF16/FP16/FP32), not a low-bit quantized variant.")
+            paragraphs.append("Expect higher memory and storage usage than quantized files, with quality closest to the source weights.")
+        case .mxfp:
+            paragraphs.append("MXFP files use mixed floating-point quantization (commonly MXFP4) designed for efficient inference with better quality retention than many integer low-bit schemes.")
+            if let bits {
+                paragraphs.append("This is nominally MXFP\(bits), so it targets lower memory usage than full precision while preserving more fidelity than very aggressive quants.")
+            }
+            if normalized.contains("_MOE") {
+                paragraphs.append("The MOE suffix indicates a variant intended for mixture-of-experts architectures.")
+            }
+        case .iq:
+            paragraphs.append("IQ quants are importance-aware GGUF quantizations that try to preserve quality better at very low bitrates (especially 2–3 bit).")
+            if let bits {
+                paragraphs.append("This is nominally a \(bits)-bit IQ quant, so it trades memory and speed for fidelity relative to higher-bit options.")
+            }
+            if let tier {
+                paragraphs.append("The \(tier) suffix is a variant tier. Larger tiers usually keep more information and improve quality, with a larger file.")
+            }
+        case .kQuant:
+            paragraphs.append("K-quants are modern GGUF quant formats that usually offer better quality-per-size than older _0/_1 quants at the same nominal bit width.")
+            if let bits {
+                paragraphs.append("This is nominally a \(bits)-bit K-quant. Higher bit widths typically improve quality and increase size.")
+            }
+            if let tier {
+                paragraphs.append("The \(tier) suffix is a K-quant variant tier. S is usually smaller/faster, M is balanced, and L/XL tend to preserve more quality.")
+            }
+        case .legacy:
+            paragraphs.append("This is a legacy GGUF quant family (_0/_1). These are still usable, but modern K-quants or IQ-quants are often better quality-per-size.")
+            if normalized.contains("_1") {
+                paragraphs.append("The _1 variant is a legacy refinement that can improve quality over _0, depending on the model.")
+            } else if normalized.contains("_0") {
+                paragraphs.append("The _0 variant is the simpler legacy scheme for this bit width.")
+            }
+        case .q8_0:
+            paragraphs.append("Q8_0 is a legacy-style GGUF quant, but it is commonly used as a high-quality compressed option with behavior close to higher-precision weights.")
+            paragraphs.append("It is larger than 4–6 bit quants, but often reduces quantization artifacts noticeably.")
+        case .generic:
+            if format == .mlx {
+                if let bits {
+                    paragraphs.append("This MLX variant uses INT\(bits) quantization.")
+                    paragraphs.append("For MLX, the bit width is the key quality/speed indicator: lower INT bits are smaller/faster, higher INT bits preserve more quality.")
+                } else {
+                    paragraphs.append("This is an MLX quantized variant. For MLX builds, the INT bit width (for example INT4/INT8) is the main quality/speed signal.")
+                }
+            } else {
+                paragraphs.append("This quant label does not match the common GGUF IQ / K-Quant / legacy naming families. It may be backend-specific or model-release-specific.")
+                paragraphs.append("Treat speed and quality as empirical for this variant on your hardware/runtime.")
+            }
+        }
+
+        if isUD {
+            paragraphs.append("UD means Unsloth Dynamic quantization. It uses model-aware calibration and often improves quality-per-size versus a non-UD file with a similar nominal label.")
+        }
+
+        if family == .iq && importanceMatrix != nil {
+            paragraphs.append("This repo advertises an importance matrix (iMatrix) companion for IQ quants. Noema downloads it alongside the weights so the intended IQ quantization is applied.")
+        }
+
+        paragraphs.append("Quant labels are conventions, not a universal standard across all backends. Exact quality and speed can vary by runtime and release.")
+
+        return QuantTypeDescriptor(
+            family: family,
+            isUD: isUD,
+            nominalBits: bits,
+            tier: tier,
+            chipLabel: chipLabel,
+            title: isUD && !titleBase.hasPrefix("UD ") ? "UD \(titleBase)" : titleBase,
+            body: paragraphs.joined(separator: "\n\n")
+        )
+    }
 }
 
 public struct ModelRecord: Identifiable, Hashable, Codable, Sendable {
@@ -117,24 +528,44 @@ public struct ModelRecord: Identifiable, Hashable, Codable, Sendable {
     public let publisher: String
     /// One line summary shown in lists and detail headers
     public let summary: String?
+    public let parameterCountLabel: String?
     public let hasInstallableQuant: Bool
     public let formats: Set<ModelFormat>
     public let installed: Bool
     public let tags: [String]?
     public let pipeline_tag: String?
     public let minRAMBytes: Int64?
+    public let recommendedETBackend: ETBackend?
+    public let supportsVision: Bool
 
-    public init(id: String, displayName: String, publisher: String, summary: String?, hasInstallableQuant: Bool, formats: Set<ModelFormat>, installed: Bool, tags: [String]?, pipeline_tag: String?, minRAMBytes: Int64? = nil) {
+    public init(
+        id: String,
+        displayName: String,
+        publisher: String,
+        summary: String?,
+        parameterCountLabel: String? = nil,
+        hasInstallableQuant: Bool,
+        formats: Set<ModelFormat>,
+        installed: Bool,
+        tags: [String]?,
+        pipeline_tag: String?,
+        minRAMBytes: Int64? = nil,
+        recommendedETBackend: ETBackend? = nil,
+        supportsVision: Bool = false
+    ) {
         self.id = id
         self.displayName = displayName
         self.publisher = publisher
         self.summary = summary
+        self.parameterCountLabel = parameterCountLabel
         self.hasInstallableQuant = hasInstallableQuant
         self.formats = formats
         self.installed = installed
         self.tags = tags
         self.pipeline_tag = pipeline_tag
         self.minRAMBytes = minRAMBytes
+        self.recommendedETBackend = recommendedETBackend
+        self.supportsVision = supportsVision
     }
 }
 
@@ -142,6 +573,7 @@ public struct ModelDetails: Identifiable, Hashable, Codable, Equatable, Sendable
     public let id: String
     /// Canonical one line summary for the model
     public let summary: String?
+    public let parameterCountLabel: String?
     public let quants: [QuantInfo]
     public let promptTemplate: String?
     /// Optional conservative RAM requirement (bytes) for the lowest quant we ship for this model.
@@ -150,11 +582,13 @@ public struct ModelDetails: Identifiable, Hashable, Codable, Equatable, Sendable
 
     public init(id: String,
                 summary: String?,
+                parameterCountLabel: String? = nil,
                 quants: [QuantInfo],
                 promptTemplate: String?,
                 minRAMBytes: Int64? = nil) {
         self.id = id
         self.summary = summary
+        self.parameterCountLabel = parameterCountLabel
         self.quants = quants
         self.promptTemplate = promptTemplate
         self.minRAMBytes = minRAMBytes
@@ -186,7 +620,7 @@ extension ModelDetails {
 
 enum ModelSource: String, Codable, CaseIterable, Hashable, Sendable {
     case huggingFace = "HF"
-    case leap = "LEAP"
+    case appleFoundation = "AFM"
 }
 
 /// Common metadata for any downloadable model entry.
@@ -202,18 +636,6 @@ protocol DownloadableModel: Identifiable {
     var source: ModelSource { get }
 }
 
-struct LeapModel: DownloadableModel, Codable, Sendable {
-    let id: String
-    let name: String
-    let sizeMB: Double
-    let minRAM: Int
-    let remoteURL: URL
-    var localPath: URL?
-    let about: String?
-    let format: ModelFormat = .slm
-    let source: ModelSource = .leap
-}
-
 extension QuantInfo: DownloadableModel {
     var name: String { label }
     var sizeMB: Double { Double(sizeBytes) / 1_048_576.0 }
@@ -221,7 +643,14 @@ extension QuantInfo: DownloadableModel {
     var remoteURL: URL { downloadURL }
     var localPath: URL? { nil }
     var about: String? { nil }
-    var source: ModelSource { .huggingFace }
+    var source: ModelSource {
+        switch format {
+        case .afm:
+            return .appleFoundation
+        case .gguf, .mlx, .et, .ane:
+            return .huggingFace
+        }
+    }
 }
 
 // MARK: - Dataset support
@@ -266,6 +695,7 @@ struct LocalDataset: Identifiable, Hashable {
     var lastUsedDate: Date?
     var isSelected: Bool = false
     var isIndexed: Bool = false
+    var requiresReindex: Bool = false
 }
 
 // MARK: - Dataset processing / indexing status (UI + pipeline)
@@ -280,7 +710,7 @@ public enum DatasetProcessingStage: String, Codable, Sendable {
 }
 
 /// Progress payload published while preparing a dataset.
-public struct DatasetProcessingStatus: Codable, Sendable {
+public struct DatasetProcessingStatus: Codable, Sendable, Equatable {
     public let stage: DatasetProcessingStage
     /// 0.0 ... 1.0 where 1.0 means finished for the current stage
     public let progress: Double

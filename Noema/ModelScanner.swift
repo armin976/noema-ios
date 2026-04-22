@@ -8,9 +8,11 @@ enum ModelScanner {
             let cCount = Int(gguf_layer_count(url.path))
             if cCount > 0 { return cCount }
             return GGUFMetadata.layerCount(at: url) ?? 0
-        case .mlx, .slm:
+        case .mlx, .et:
             return 0
-        case .apple:
+        case .ane:
+            return 0
+        case .afm:
             return 0
         }
     }
@@ -30,7 +32,7 @@ enum ModelScanner {
             return GGUFMetadata.moeInfo(at: target)
         case .mlx:
             return MLXMetadata.moeInfo(at: url)
-        case .slm, .apple:
+        case .et, .ane, .afm:
             return nil
         }
     }

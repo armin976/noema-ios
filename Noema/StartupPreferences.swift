@@ -232,6 +232,7 @@ enum StartupLoader {
     static func performStartupLoad(chatVM: ChatVM,
                                    modelManager: AppModelManager,
                                    offGrid: Bool) async {
+        guard !UITestLaunchConfiguration.isFakeChatReadyEnabled else { return }
         guard !chatVM.modelLoaded, !chatVM.loading else { return }
 
         var preferences = StartupPreferencesStore.load()
@@ -298,6 +299,7 @@ enum StartupLoader {
                            name: selection.modelName.isEmpty ? selection.modelID : selection.modelName,
                            author: selection.backendName,
                            relayRecordName: selection.relayRecordName)
+        let remoteSettings = modelManager.remoteSettings(for: backend.id, model: remoteModel)
 
         let clampedTimeout = max(StartupPreferences.minTimeout, min(StartupPreferences.maxTimeout, timeout))
         let timeoutNanoseconds = UInt64(clampedTimeout * 1_000_000_000)
@@ -307,7 +309,7 @@ enum StartupLoader {
         return await withTaskGroup(of: RemoteOutcome.self, returning: Bool.self) { group in
             group.addTask {
                 do {
-                    try await chatVM.activateRemoteSession(backend: backend, model: remoteModel)
+                    try await chatVM.activateRemoteSession(backend: backend, model: remoteModel, settings: remoteSettings)
                     return .success
                 } catch {
                     await MainActor.run {

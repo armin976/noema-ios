@@ -9,6 +9,35 @@
 import SwiftUI
 import Foundation
 
+enum BlockMathWidthBehavior: Equatable {
+    case intrinsic
+    case wrapThenScroll
+}
+
+struct BlockMathStyle: Equatable {
+    let fontSize: CGFloat
+    let widthBehavior: BlockMathWidthBehavior
+    let useCache: Bool
+
+    static func standard(bodyFontSize: CGFloat) -> BlockMathStyle {
+#if os(macOS)
+        let fontSize = bodyFontSize * 1.5
+#else
+        let fontSize = preferredFontSize(.title3)
+#endif
+        return BlockMathStyle(fontSize: fontSize, widthBehavior: .intrinsic, useCache: true)
+    }
+
+    static func chat(bodyFontSize: CGFloat) -> BlockMathStyle {
+#if os(macOS)
+        let fontSize = bodyFontSize * 1.4
+#else
+        let fontSize = max(preferredFontSize(.title2), bodyFontSize * 1.35)
+#endif
+        return BlockMathStyle(fontSize: fontSize, widthBehavior: .wrapThenScroll, useCache: false)
+    }
+}
+
 struct MessageHoverCopySuppressionKey: EnvironmentKey {
     static let defaultValue: Binding<Bool>? = nil
 }
@@ -25,10 +54,17 @@ import AppKit
 
 struct MathRichText: View {
     let source: String
-    var bodyFont: Font = .body
+    var bodyFont: Font
+    private let blockMathStyle: BlockMathStyle
+
+    init(source: String, bodyFont: Font = .body, blockMathStyle: BlockMathStyle? = nil) {
+        self.source = source
+        self.bodyFont = bodyFont
+        self.blockMathStyle = blockMathStyle ?? .standard(bodyFontSize: preferredFontSize(.body))
+    }
 
     var body: some View {
-        RichMathTextLabel(source: source, bodyFont: bodyFont)
+        RichMathTextLabel(source: source, bodyFont: bodyFont, blockMathStyle: blockMathStyle)
             // VoiceOver was focusing on every tiny fragment because the composed
             // view tree breaks text into many subviews. Combine/override so the
             // whole paragraph is a single readable element.
@@ -45,15 +81,7 @@ struct MathRichText: View {
 private struct RichMathTextLabel: View {
     let source: String
     var bodyFont: Font
-    private var blockFontSize: CGFloat {
-#if os(macOS)
-        // Chat messages use the platform body size as the baseline. Scale block display
-        // math noticeably larger so $$ ... $$ content stands out relative to prose.
-        return preferredFontSize(.body) * 1.5
-#else
-        return preferredFontSize(.title3)
-#endif
-    }
+    let blockMathStyle: BlockMathStyle
 
     var body: some View {
         enum Segment { case inline([MathToken]); case block(String); case incomplete(String) }
@@ -116,10 +144,20 @@ private struct RichMathTextLabel: View {
                 case .block(let latex):
 #if os(macOS)
                     MacLatexHoverCopy(latex: latex) {
-                        BlockMathView(latex: latex, fontSize: blockFontSize)
+                        BlockMathView(
+                            latex: latex,
+                            fontSize: blockMathStyle.fontSize,
+                            useCache: blockMathStyle.useCache,
+                            widthBehavior: blockMathStyle.widthBehavior
+                        )
                     }
 #else
-                    BlockMathView(latex: latex, fontSize: blockFontSize)
+                    BlockMathView(
+                        latex: latex,
+                        fontSize: blockMathStyle.fontSize,
+                        useCache: blockMathStyle.useCache,
+                        widthBehavior: blockMathStyle.widthBehavior
+                    )
 #endif
                 case .incomplete(let raw):
                     Text(raw)
@@ -243,6 +281,26 @@ private struct WrappedInline: View {
     // after inline LaTeX). This lets commas or periods remain with the
     // preceding word when there's room.
     private func splitFragments(_ s: String) -> [String] {
+        func chunkLongFragment(_ fragment: String, maxChunkLength: Int = 22) -> [String] {
+            guard !fragment.contains(where: \.isWhitespace), fragment.count > maxChunkLength else {
+                return [fragment]
+            }
+            var chunks: [String] = []
+            chunks.reserveCapacity((fragment.count / maxChunkLength) + 1)
+            var current = ""
+            for ch in fragment {
+                current.append(ch)
+                if current.count >= maxChunkLength {
+                    chunks.append(current)
+                    current.removeAll(keepingCapacity: true)
+                }
+            }
+            if !current.isEmpty {
+                chunks.append(current)
+            }
+            return chunks
+        }
+
         guard !s.isEmpty else { return [] }
         let punctuation: Set<Character> = [",", ".", ";", ":", "!", "?", "-", "—", "–", ")", "]", "}", "\"", "'"]
         let openers: Set<Character> = ["(", "[", "{"]
@@ -277,7 +335,7 @@ private struct WrappedInline: View {
             lastKind = k
         }
         if !current.isEmpty { frags.append(current) }
-        return frags
+        return frags.flatMap { chunkLongFragment($0) }
     }
 
     // Convert to inline-only Markdown attributed fragments while respecting the

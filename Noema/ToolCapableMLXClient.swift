@@ -134,7 +134,20 @@ public final class ToolCapableMLXClient: ToolCapableLLM {
     private func buildXMLStylePromptFromMessages(_ messages: [ToolChatMessage], tools: [ToolSpec]? = nil) -> String {
         // Build comprehensive system message using active system preset (if any) plus tool catalog/instructions
         let existingSystem = messages.first(where: { $0.role == "system" })?.content
-        var systemContent = existingSystem?.isEmpty == false ? existingSystem! : SystemPromptResolver.general(currentFormat: .mlx, isVisionCapable: true, hasAttachedImages: false)
+        let availability = ToolAvailability(
+            webSearch: tools?.contains(where: { $0.function.name == "noema.web.retrieve" }) == true
+                && WebToolGate.isAvailable(currentFormat: .mlx),
+            python: tools?.contains(where: { $0.function.name == "noema.python.execute" }) == true
+                && PythonToolGate.isAvailable(currentFormat: .mlx),
+            memory: tools?.contains(where: { $0.function.name == "noema.memory" }) == true
+                && MemoryToolGate.isAvailable(currentFormat: .mlx)
+        )
+        var systemContent = existingSystem?.isEmpty == false ? existingSystem! : SystemPromptResolver.general(
+            currentFormat: .mlx,
+            isVisionCapable: true,
+            hasAttachedImages: false,
+            toolAvailabilityOverride: availability
+        )
         if let tools, !tools.isEmpty {
             let toolSchemas = generateXMLToolSchemas(tools)
             let detailedInstructions = generateDetailedToolInstructions(tools)
@@ -330,13 +343,10 @@ public final class ToolCapableMLXClient: ToolCapableLLM {
         IMPORTANT: You have \(toolCount) tool\(toolCount == 1 ? "" : "s") IMMEDIATELY AVAILABLE: \(toolNames)
         These tools are ALWAYS accessible - use them without hesitation!
 
-        ### WHEN TO USE TOOLS (Don't Overthink!):
-        USE IMMEDIATELY for:
-        - Current information, recent events, latest news, real-time data
-        - ANY query where facts might have changed since your training
-        - When you're uncertain about current details
-        
-        Don't hesitate or second-guess - if it could benefit from fresh data, USE THE TOOL!
+        ### WHEN TO USE TOOLS:
+        - Use web search for current information, recent events, or facts that may have changed.
+        - Use Python for calculations, statistics, parsing, transformations, algorithms, or any other computational work.
+        - If a tool would clearly improve accuracy, use it instead of guessing.
         
         ### EXACT TOOL FORMAT:
         <tool_call>
@@ -350,7 +360,7 @@ public final class ToolCapableMLXClient: ToolCapableLLM {
         4. Properly quote and escape all string values
         5. NO other text when making tool call
         6. Wait for tool_response before continuing
-        7. When the tool returns results, treat them as the authoritative/latest information—base your answer on them and do NOT question their legitimacy
+        7. When the tool returns results, base your answer on them rather than guessing.
         
         ### For Qwen and Tool-Capable Models:
         - This XML format is your native tool calling method
@@ -402,6 +412,19 @@ public final class ToolCapableMLXClient: ToolCapableLLM {
                 - Choose safesearch level based on content appropriateness needs
                 
                 """
+            } else if tool.function.name == "noema.python.execute" {
+                instructions += """
+                **Example Usage:**
+                <tool_call>
+                {"name": "noema.python.execute", "arguments": {"code": "values = [2, 4, 8]\\nprint(sum(values) / len(values))"}}
+                </tool_call>
+                
+                **Notes:**
+                - Always send runnable Python 3 code
+                - Use `print()` for any value you want returned
+                - The runtime is sandboxed with a 30-second timeout and no network access
+                
+                """
             }
         }
         
@@ -415,7 +438,8 @@ public final class ToolCapableMLXClient: ToolCapableLLM {
         ### Response Guidelines:
         - Be concise and relevant in your final response
         - Use the tool results to enhance your answer with current/accurate information
-        - Treat web search findings as the authoritative/latest facts; base your response on them over any conflicting prior knowledge without questioning their legitimacy
+        - Treat web search findings as the authoritative/latest facts for current-information queries
+        - Treat Python outputs as authoritative for the computation you executed
         - If multiple search results are returned, synthesize the most relevant information
         - Always maintain a helpful and professional tone
         
@@ -433,33 +457,49 @@ public final class ToolCapableMLXClient: ToolCapableLLM {
     private func buildJSONGrammarPromptFromMessages(_ messages: [ToolChatMessage], tools: [ToolSpec]? = nil) -> String {
         // Build a strong, explicit system instruction and serialize using model-aware templates
         let existingSystem = messages.first(where: { $0.role == "system" })?.content
-        var systemContent = existingSystem?.isEmpty == false ? existingSystem! : SystemPromptResolver.general(currentFormat: .mlx, isVisionCapable: true, hasAttachedImages: false)
-        if let tools, !tools.isEmpty, WebToolGate.isAvailable() {
+        let availability = ToolAvailability(
+            webSearch: tools?.contains(where: { $0.function.name == "noema.web.retrieve" }) == true
+                && WebToolGate.isAvailable(currentFormat: .mlx),
+            python: tools?.contains(where: { $0.function.name == "noema.python.execute" }) == true
+                && PythonToolGate.isAvailable(currentFormat: .mlx),
+            memory: tools?.contains(where: { $0.function.name == "noema.memory" }) == true
+                && MemoryToolGate.isAvailable(currentFormat: .mlx)
+        )
+        var systemContent = existingSystem?.isEmpty == false ? existingSystem! : SystemPromptResolver.general(
+            currentFormat: .mlx,
+            isVisionCapable: true,
+            hasAttachedImages: false,
+            toolAvailabilityOverride: availability
+        )
+        if let tools, !tools.isEmpty, availability.any {
             if messages.last?.role == "tool" {
                 systemContent += "\n\nAnalyze the provided tool results, treat them as authoritative, and generate a helpful, natural language response to the user's original question."
             } else {
                 let allowed = tools.map { $0.function.name }
                 let constraint = MLXJSONConstraints.createToolCallConstraint(toolNames: allowed)
                 let jsonUsage = """
-                WEB SEARCH AND TOOLS ARE ARMED AND AVAILABLE.
-                Use `noema.web.retrieve` when you need fresh/current info.
+                TOOLS ARE ARMED AND AVAILABLE.
+                Use `noema.web.retrieve` for fresh/current information.
+                Use `noema.python.execute` for calculations, code execution, parsing, algorithms, and other computational work.
+                Use `noema.memory` for durable user preferences, project constraints, and other cross-conversation facts.
 
-                You can use tools when the query genuinely needs fresh/current information. If it does not, answer directly without calling tools.
+                Use tools when they will materially improve accuracy. If they are not needed, answer directly without calling tools.
 
                 To use a tool, you MUST respond with ONLY a JSON object and absolutely no other text.
                 The JSON object MUST have this exact structure:
                 {"tool_name": "name_of_the_tool", "arguments": { "parameter": "value" }}
 
                 CRITICAL REQUIREMENTS:
-                1) First decide if web search is necessary. If yes, call a tool. If no, answer directly.
+                1) First decide if a tool is necessary. If yes, call exactly one. If no, answer directly.
                 2) Your tool-call response MUST be a valid JSON object (no backticks, no prose).
                 3) Do NOT include any other text before or after the JSON object.
                 4) Use the EXACT tool name from the catalog below in "tool_name".
                 5) Include all required parameters; optional parameters when helpful.
                 6) Make exactly ONE tool call, then WAIT for the tool result before continuing.
-                7) You may mention tools inside <think>, but finish reasoning and close the tag before emitting the <tool_call> tag or JSON object that actually triggers the call.
-                8) When the web search result arrives, treat it as authoritative—base your final answer on it and do NOT question its legitimacy.
-                9) Do not mix JSON and XML.
+                7) You may mention tools inside your Chain of Thought, but finish reasoning before emitting the <tool_call> tag or JSON object that actually triggers the call.
+                8) For Python, always send runnable Python 3 code and use print() for returned values.
+                9) When a tool result arrives, base your final answer on it instead of guessing.
+                10) Do not mix JSON and XML.
 
                 Available tools (including web search if present):
                 """ + generateJSONGrammarToolCatalog(tools) + "\n\n" + constraint

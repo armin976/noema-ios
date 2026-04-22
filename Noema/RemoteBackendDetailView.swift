@@ -24,6 +24,7 @@ struct RemoteBackendDetailView: View {
     @AppStorage("offGrid") private var offGrid = false
 
     @State private var actionMessage: RemoteBackendActionMessage?
+    @State private var remoteSettingsTarget: RemoteModelSettingsTarget?
     @State private var isEditing = false
     @State private var editedDraft: RemoteBackendDraft?
     @State private var hasDraftChanges = false
@@ -37,13 +38,41 @@ struct RemoteBackendDetailView: View {
     @State private var isAuthExpanded = false
     @State private var authExpansionBackendID: RemoteBackend.ID?
     @State private var localSSID: String?
+    @State private var openRouterKeyInfo: OpenRouterKeyInfo?
+    @State private var isRefreshingOpenRouterKeyInfo = false
+    @State private var openRouterSearchText = ""
+    @State private var openRouterFilter: RemoteModel.OpenRouterBrowserFilter = .all
+    @State private var openRouterFavoritesOnly = false
+    @State private var openRouterSelectedSupportedParameter: String?
+    @State private var openRouterSort: RemoteModel.OpenRouterBrowserSort = .automatic
+    @State private var openRouterInfoTarget: OpenRouterModelInfoTarget?
 #if os(iOS) || os(visionOS)
     @State private var showLANOverrideConfirmation = false
 #endif
     @FocusState private var focusedField: EditableField?
+    @FocusState private var openRouterSearchFocused: Bool
+
+    private struct RemoteModelSettingsTarget: Identifiable {
+        let backend: RemoteBackend
+        let model: RemoteModel
+
+        var id: String {
+            "\(backend.id.uuidString)|\(model.id)"
+        }
+    }
+
+    private struct OpenRouterModelInfoTarget: Identifiable {
+        let backend: RemoteBackend
+        let model: RemoteModel
+
+        var id: String {
+            "\(backend.id.uuidString)|info|\(model.id)"
+        }
+    }
 
     private enum EditableField: Hashable {
         case name, baseURL, hostID, chatPath, modelsPath, auth
+        case openRouterAPIKey
         case customModel(Int)
     }
 
@@ -84,6 +113,36 @@ struct RemoteBackendDetailView: View {
                 dismissButton: .default(Text(LocalizedStringKey("OK")))
             )
         }
+        .sheet(item: $remoteSettingsTarget) { target in
+            let initialSettings = modelManager.remoteSettings(for: target.backend.id, model: target.model)
+            RemoteModelSettingsSheet(
+                model: target.model,
+                endpointType: target.backend.endpointType,
+                initialSettings: initialSettings,
+                maxContextLength: target.model.maxContextLength,
+                resetSettings: target.model.openRouterDefaultSettings(base: initialSettings),
+                onSave: { settings in
+                    modelManager.saveRemoteSettings(settings, for: target.backend.id, model: target.model)
+                    vm.syncActiveRemoteModelPromptSettingsIfNeeded(
+                        backendID: target.backend.id,
+                        modelID: target.model.id,
+                        settings: settings
+                    )
+                },
+                onUse: { settings in
+                    modelManager.saveRemoteSettings(settings, for: target.backend.id, model: target.model)
+                    vm.syncActiveRemoteModelPromptSettingsIfNeeded(
+                        backendID: target.backend.id,
+                        modelID: target.model.id,
+                        settings: settings
+                    )
+                    use(model: target.model, in: target.backend, explicitSettings: settings)
+                }
+            )
+        }
+        .sheet(item: $openRouterInfoTarget) { target in
+            OpenRouterModelInfoSheet(model: target.model, backendName: target.backend.name)
+        }
     }
 
     @ViewBuilder
@@ -95,12 +154,14 @@ struct RemoteBackendDetailView: View {
 #endif
             .onAppear {
                 syncAuthExpansion(with: backend)
+                Task { await refreshOpenRouterKeyInfoIfNeeded(for: backend) }
 #if os(macOS)
                 updateMacModalTitle(using: backend)
 #endif
             }
             .onChange(of: backend.id) { _ in
                 syncAuthExpansion(with: backend)
+                Task { await refreshOpenRouterKeyInfoIfNeeded(for: backend) }
 #if os(macOS)
                 updateMacModalTitle(using: backend)
 #endif
@@ -262,6 +323,19 @@ struct RemoteBackendDetailView: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .padding(.top, 4)
+        } else if backend.isOpenRouter {
+            LabeledContent(LocalizedStringKey("Chat Endpoint")) {
+                Text(backend.chatEndpointURL?.absoluteString ?? backend.normalizedChatPath)
+                    .font(.system(.callout, design: .monospaced))
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+            }
+            LabeledContent(LocalizedStringKey("Models Endpoint")) {
+                Text(backend.modelsEndpointURL?.absoluteString ?? backend.normalizedModelsPath)
+                    .font(.system(.callout, design: .monospaced))
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+            }
         } else {
             editableRow(
                 title: LocalizedStringKey("Chat Path"),
@@ -329,6 +403,16 @@ struct RemoteBackendDetailView: View {
             let container = backend.baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
             if !container.isEmpty {
                 items.append(EndpointItem(title: String(localized: "CloudKit Container"), value: container, icon: "icloud"))
+            }
+        case .openRouter:
+            if let chat = backend.chatEndpointURL?.absoluteString {
+                items.append(EndpointItem(title: String(localized: "Chat Endpoint"), value: chat, icon: "bubble.left.and.bubble.right"))
+            }
+            if let models = backend.modelsEndpointURL?.absoluteString {
+                items.append(EndpointItem(title: String(localized: "Models Endpoint"), value: models, icon: "square.stack.3d.up"))
+            }
+            if let key = backend.absoluteURL(for: "/api/v1/key")?.absoluteString {
+                items.append(EndpointItem(title: String(localized: "Key Verification"), value: key, icon: "key"))
             }
         default:
             if let chat = backend.chatEndpointURL?.absoluteString {
@@ -421,25 +505,111 @@ struct RemoteBackendDetailView: View {
     private func authenticationSectionContent(for backend: RemoteBackend) -> some View {
         DisclosureGroup(isExpanded: $isAuthExpanded) {
             VStack(alignment: .leading, spacing: 6) {
-                if isEditing, let binding = draftBinding(for: \RemoteBackendDraft.authHeader, backend: backend) {
-                    editingFieldContainer {
-                        TextField(LocalizedStringKey("Bearer ..."), text: binding, axis: .vertical)
-                            .platformAutocapitalization(.never)
-                            .autocorrectionDisabled(true)
-                            .focused($focusedField, equals: .auth)
-                    }
-                } else {
-                    let value = backend.authHeader?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    if value.isEmpty {
+                if backend.isOpenRouter {
+                    let hasStoredKey = ((try? RemoteBackendCredentialStore.openRouterAPIKey(for: backend.id)) ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .isEmpty == false
+                    if hasStoredKey {
+                        Text(LocalizedStringKey("Stored in Keychain"))
+                            .font(.callout)
+                            .foregroundStyle(.primary)
+                    } else {
                         Text(LocalizedStringKey("Not provided"))
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .italic()
+                    }
+                    if let keyInfo = openRouterKeyInfo {
+                        LabeledContent(LocalizedStringKey("Key label")) {
+                            Text(keyInfo.label)
+                                .font(.callout)
+                                .foregroundStyle(.primary)
+                        }
+                        if let remaining = keyInfo.limitRemaining {
+                            LabeledContent(LocalizedStringKey("Remaining limit")) {
+                                Text(remaining.formatted(.currency(code: "USD")))
+                                    .font(.callout)
+                                    .foregroundStyle(.primary)
+                            }
+                        }
+                        LabeledContent(LocalizedStringKey("Free tier")) {
+                            Text(keyInfo.isFreeTier ? String(localized: "Yes") : String(localized: "No"))
+                                .font(.callout)
+                                .foregroundStyle(.primary)
+                        }
+                        if let expiresAt = keyInfo.expiresAt, !expiresAt.isEmpty {
+                            LabeledContent(LocalizedStringKey("Expires")) {
+                                Text(expiresAt)
+                                    .font(.callout)
+                                    .foregroundStyle(.primary)
+                            }
+                        }
+                    }
+                    if isRefreshingOpenRouterKeyInfo {
+                        ProgressView()
+                            .padding(.top, 4)
+                    }
+                    if isEditing {
+                        editingFieldContainer {
+                            SecureField(LocalizedStringKey("Replace OpenRouter API key"), text: Binding(
+                                get: { editedDraft?.openRouterAPIKey ?? "" },
+                                set: { newValue in
+                                    if editedDraft == nil { editedDraft = RemoteBackendDraft(from: backend) }
+                                    editedDraft?.openRouterAPIKey = newValue
+                                    hasDraftChanges = true
+                                }
+                            ))
+                            .platformAutocapitalization(.never)
+                            .autocorrectionDisabled(true)
+                            .focused($focusedField, equals: .openRouterAPIKey)
+                        }
+                    }
+                    HStack(spacing: 12) {
+                        Button(LocalizedStringKey("Replace Key")) {
+                            if !isEditing {
+                                startEditing(with: backend)
+                            }
+                            hasDraftChanges = true
+                            editedDraft?.openRouterAPIKey = ""
+                            focusedField = .openRouterAPIKey
+                        }
+                        .buttonStyle(.borderless)
+
+                        Button(LocalizedStringKey("Reverify")) {
+                            Task { await refreshOpenRouterKeyInfoIfNeeded(for: backend, force: true) }
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(isRefreshingOpenRouterKeyInfo || offGrid || !hasStoredKey)
+
+                        Button(role: .destructive) {
+                            clearOpenRouterAPIKey(for: backend)
+                        } label: {
+                            Text(LocalizedStringKey("Clear Key"))
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(!hasStoredKey)
+                    }
+                } else {
+                    if isEditing, let binding = draftBinding(for: \RemoteBackendDraft.authHeader, backend: backend) {
+                        editingFieldContainer {
+                            TextField(LocalizedStringKey("Bearer ..."), text: binding, axis: .vertical)
+                                .platformAutocapitalization(.never)
+                                .autocorrectionDisabled(true)
+                                .focused($focusedField, equals: .auth)
+                        }
                     } else {
-                        Text(value)
-                            .font(.callout)
-                            .foregroundStyle(.primary)
-                            .textSelection(.enabled)
+                        let value = backend.authHeader?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                        if value.isEmpty {
+                            Text(LocalizedStringKey("Not provided"))
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .italic()
+                        } else {
+                            Text(value)
+                                .font(.callout)
+                                .foregroundStyle(.primary)
+                                .textSelection(.enabled)
+                        }
                     }
                 }
             }
@@ -527,24 +697,34 @@ struct RemoteBackendDetailView: View {
             }
         }
         #else
-        Section(LocalizedStringKey("Models")) {
-            modelsSectionContent(for: backend)
+        if backend.isOpenRouter {
+            Section {
+                modelsSectionContent(for: backend)
+                    .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
+                    .listRowBackground(Color.clear)
+            }
+        } else {
+            Section(LocalizedStringKey("Models")) {
+                modelsSectionContent(for: backend)
+            }
         }
         #endif
     }
 
-    @ViewBuilder
     private func modelsSectionContent(for backend: RemoteBackend) -> some View {
-        let models = backend.cachedModels.filter { !$0.isEmbedding }
-        let decoratedModels = models.enumerated().map { index, model in
-            (index: index, model: model, isLoaded: model.isLoadedOnBackend)
-        }
-        let sortedModels = decoratedModels.sorted { lhs, rhs in
-            if lhs.isLoaded != rhs.isLoaded {
-                return lhs.isLoaded && !rhs.isLoaded
+        Group {
+            if backend.isOpenRouter {
+                openRouterModelsSectionContent(for: backend)
+            } else {
+                standardModelsSectionContent(for: backend)
             }
-            return lhs.index < rhs.index
         }
+    }
+
+    @ViewBuilder
+    private func standardModelsSectionContent(for backend: RemoteBackend) -> some View {
+        let sortedModels = standardSortedModels(for: backend)
+        let availability = modelAvailability(for: backend)
         if backend.isCloudRelay {
             Text(LocalizedStringKey("Responses are generated by the macOS relay server. Configure the provider (LM Studio or Ollama) on the Mac app."))
                 .font(.footnote)
@@ -555,6 +735,21 @@ struct RemoteBackendDetailView: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .padding(.bottom, 4)
+        }
+        if backend.endpointType == .lmStudio {
+            if case .available = modelAvailability(for: backend) {
+                HStack(spacing: 0) {
+                    Button {
+                        beginRemoteEndpointDownloadFlow(for: backend)
+                    } label: {
+                        Text(LocalizedStringKey("Download Model on Remote Endpoint"))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    Spacer(minLength: 0)
+                }
+                .padding(.bottom, 4)
+            }
         }
         if sortedModels.isEmpty {
             VStack(spacing: 8) {
@@ -573,18 +768,388 @@ struct RemoteBackendDetailView: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 12)
         } else {
-            ForEach(sortedModels, id: \.model.id) { entry in
-                RemoteModelRow(
-                    model: entry.model,
-                    endpointType: backend.endpointType,
-                    availability: modelAvailability(for: backend),
-                    isActivating: activatingModelID == entry.model.id,
-                    isActive: activeRemoteModelID == entry.model.id,
-                    isBackendLoaded: entry.isLoaded,
-                    useAction: { use(model: entry.model, in: backend) }
-                )
+            ForEach(sortedModels, id: \.id) { model in
+                standardRemoteModelRow(model, backend: backend, availability: availability)
             }
         }
+    }
+
+    private func openRouterModelsSectionContent(for backend: RemoteBackend) -> some View {
+        let allModels = openRouterAllModels(for: backend)
+        let supportedParameters = openRouterSupportedParameters(from: allModels)
+        let visibleModels = openRouterVisibleModels(for: backend, models: allModels)
+        let availability = modelAvailability(for: backend)
+
+        return VStack(alignment: .leading, spacing: 14) {
+            openRouterSearchBar
+            openRouterFilterToolbar(
+                totalCount: allModels.count,
+                visibleCount: visibleModels.count,
+                supportedParameters: supportedParameters
+            )
+
+            if visibleModels.isEmpty {
+                VStack(spacing: 10) {
+                    Text(openRouterEmptyStateText(totalCount: allModels.count))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    if hasActiveOpenRouterFilters {
+                        Button(LocalizedStringKey("Clear Filters")) {
+                            resetOpenRouterFilters()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    } else {
+                        Button {
+                            triggerManualRefresh()
+                        } label: {
+                            Label(LocalizedStringKey("Reload Models"), systemImage: "arrow.clockwise")
+                        }
+                        .disabled(refreshTask != nil)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        ForEach(visibleModels, id: \.id) { model in
+                            openRouterRemoteModelRow(model, backend: backend, availability: availability)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(minHeight: 280, idealHeight: 420, maxHeight: 420)
+                .simultaneousGesture(TapGesture().onEnded {
+                    dismissOpenRouterSearch()
+                })
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(AppTheme.cardFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppTheme.cardStroke, lineWidth: 1)
+        )
+        .simultaneousGesture(TapGesture().onEnded {
+            dismissOpenRouterSearch()
+        })
+    }
+
+    private func standardSortedModels(for backend: RemoteBackend) -> [RemoteModel] {
+        let models = backend.cachedModels.filter { !$0.isEmbedding }
+        let decoratedModels = models.enumerated().map { index, model in
+            (index: index, model: model, isLoaded: model.isLoadedOnBackend)
+        }
+        return decoratedModels.sorted { lhs, rhs in
+            if lhs.isLoaded != rhs.isLoaded {
+                return lhs.isLoaded && !rhs.isLoaded
+            }
+            return lhs.index < rhs.index
+        }
+        .map(\.model)
+    }
+
+    private func standardRemoteModelRow(_ model: RemoteModel,
+                                        backend: RemoteBackend,
+                                        availability: RemoteModelRow.Availability) -> some View {
+        RemoteModelRow(
+            model: model,
+            endpointType: backend.endpointType,
+            availability: availability,
+            isActivating: activatingModelID == model.id,
+            isActive: activeRemoteModelID == model.id,
+            isBackendLoaded: model.isLoadedOnBackend,
+            useAction: { use(model: model, in: backend) },
+            settingsAction: backend.endpointType == .lmStudio
+                ? { openRemoteSettings(for: model, backend: backend) }
+                : nil
+        )
+    }
+
+    private func openRouterAllModels(for backend: RemoteBackend) -> [RemoteModel] {
+        backend.cachedModels.filter { !$0.isEmbedding }
+    }
+
+    private func openRouterSupportedParameters(from models: [RemoteModel]) -> [String] {
+        Array(Set(models.flatMap(\.normalizedSupportedParameters))).sorted()
+    }
+
+    private func openRouterVisibleModels(for backend: RemoteBackend, models: [RemoteModel]) -> [RemoteModel] {
+        let filtered = openRouterFilteredModels(from: models, backendID: backend.id)
+        return sortedOpenRouterModels(filtered, backendID: backend.id)
+    }
+
+    private func openRouterRemoteModelRow(_ model: RemoteModel,
+                                          backend: RemoteBackend,
+                                          availability: RemoteModelRow.Availability) -> some View {
+        let isFavorite = modelManager.isOpenRouterFavorite(backendID: backend.id, modelID: model.id)
+        return RemoteModelRow(
+            model: model,
+            endpointType: backend.endpointType,
+            availability: availability,
+            isActivating: activatingModelID == model.id,
+            isActive: activeRemoteModelID == model.id,
+            isBackendLoaded: model.isLoadedOnBackend,
+            isFavorite: isFavorite,
+            useAction: { use(model: model, in: backend) },
+            settingsAction: { openRemoteSettings(for: model, backend: backend) },
+            favoriteAction: { _ = modelManager.toggleOpenRouterFavorite(backendID: backend.id, modelID: model.id) },
+            infoAction: { openRouterInfoTarget = OpenRouterModelInfoTarget(backend: backend, model: model) }
+        )
+    }
+
+    private var openRouterSearchBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField(LocalizedStringKey("Search models"), text: $openRouterSearchText)
+                .textFieldStyle(.plain)
+                .autocorrectionDisabled(true)
+                .focused($openRouterSearchFocused)
+#if os(iOS) || os(visionOS)
+                .textInputAutocapitalization(.never)
+#endif
+            if !openRouterSearchText.isEmpty {
+                Button {
+                    openRouterSearchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(AppTheme.cardFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(AppTheme.cardStroke, lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private func openRouterFilterToolbar(totalCount: Int,
+                                         visibleCount: Int,
+                                         supportedParameters: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    Button {
+                        openRouterFavoritesOnly.toggle()
+                    } label: {
+                        openRouterControlPill(
+                            openRouterFavoritesOnly ? "Favorites Only" : "Favorites",
+                            isActive: openRouterFavoritesOnly
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    Menu {
+                        Picker(selection: $openRouterFilter) {
+                            ForEach(RemoteModel.OpenRouterBrowserFilter.allCases) { filter in
+                                Text(LocalizedStringKey(filter.title)).tag(filter)
+                            }
+                        } label: {
+                            EmptyView()
+                        }
+
+                        Divider()
+
+                        Menu(LocalizedStringKey("Supported Parameter")) {
+                            Button(LocalizedStringKey("Any Parameter")) {
+                                openRouterSelectedSupportedParameter = nil
+                            }
+                            ForEach(supportedParameters, id: \.self) { parameter in
+                                Button {
+                                    openRouterSelectedSupportedParameter = parameter
+                                } label: {
+                                    if openRouterSelectedSupportedParameter == parameter {
+                                        Label(parameterDisplayName(parameter), systemImage: "checkmark")
+                                    } else {
+                                        Text(parameterDisplayName(parameter))
+                                    }
+                                }
+                            }
+                        }
+
+                        if hasActiveOpenRouterFilters {
+                            Divider()
+                            Button(LocalizedStringKey("Clear Filters")) {
+                                resetOpenRouterFilters()
+                            }
+                        }
+                    } label: {
+                        openRouterControlPill(openRouterFilterMenuTitle, isActive: openRouterFilter != .all || openRouterSelectedSupportedParameter != nil)
+                    }
+                    .buttonStyle(.plain)
+
+                    Menu {
+                        Picker(selection: $openRouterSort) {
+                            ForEach(RemoteModel.OpenRouterBrowserSort.allCases) { sort in
+                                Text(LocalizedStringKey(sort.title)).tag(sort)
+                            }
+                        } label: {
+                            EmptyView()
+                        }
+                    } label: {
+                        openRouterControlPill(openRouterSort.title, isActive: openRouterSort != .automatic)
+                    }
+                    .buttonStyle(.plain)
+
+                    if hasActiveOpenRouterFilters {
+                        Button {
+                            resetOpenRouterFilters()
+                        } label: {
+                            openRouterControlPill("Clear", isActive: false)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            Text(
+                String.localizedStringWithFormat(
+                    String(localized: "Showing %d of %d models"),
+                    visibleCount,
+                    totalCount
+                )
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    private func openRouterControlPill(_ text: String, isActive: Bool) -> some View {
+        Text(LocalizedStringKey(text))
+            .font(.caption.weight(.medium))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                Capsule()
+                    .fill(isActive ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.06))
+            )
+            .overlay(
+                Capsule()
+                    .stroke(isActive ? Color.accentColor.opacity(0.3) : Color.primary.opacity(0.08), lineWidth: 1)
+            )
+            .foregroundStyle(isActive ? Color.accentColor : .primary)
+    }
+
+    private var openRouterFilterMenuTitle: String {
+        if openRouterFilter == .all && openRouterSelectedSupportedParameter == nil {
+            return "Filters"
+        }
+        if let parameter = openRouterSelectedSupportedParameter, openRouterFilter == .all {
+            return parameterDisplayName(parameter)
+        }
+        return openRouterFilter.title
+    }
+
+    private var hasActiveOpenRouterFilters: Bool {
+        openRouterFavoritesOnly
+            || !openRouterSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || openRouterFilter != .all
+            || openRouterSelectedSupportedParameter != nil
+    }
+
+    private func resetOpenRouterFilters() {
+        openRouterSearchText = ""
+        openRouterFilter = .all
+        openRouterFavoritesOnly = false
+        openRouterSelectedSupportedParameter = nil
+        openRouterSort = .automatic
+        dismissOpenRouterSearch()
+    }
+
+    private func dismissOpenRouterSearch() {
+        openRouterSearchFocused = false
+        hideKeyboard()
+    }
+
+    private func openRouterFilteredModels(from models: [RemoteModel],
+                                          backendID: RemoteBackend.ID) -> [RemoteModel] {
+        models.filter { model in
+            if openRouterFavoritesOnly
+                && !modelManager.isOpenRouterFavorite(backendID: backendID, modelID: model.id) {
+                return false
+            }
+            return model.matchesOpenRouterSearch(openRouterSearchText)
+                && model.matchesOpenRouterFilter(openRouterFilter)
+                && model.matchesOpenRouterSupportedParameter(openRouterSelectedSupportedParameter)
+        }
+    }
+
+    private func sortedOpenRouterModels(_ models: [RemoteModel],
+                                        backendID: RemoteBackend.ID) -> [RemoteModel] {
+        let searchText = openRouterSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return models.sorted { lhs, rhs in
+            let lhsFavorite = modelManager.isOpenRouterFavorite(backendID: backendID, modelID: lhs.id)
+            let rhsFavorite = modelManager.isOpenRouterFavorite(backendID: backendID, modelID: rhs.id)
+            if lhsFavorite != rhsFavorite {
+                return lhsFavorite && !rhsFavorite
+            }
+            if lhs.isLoadedOnBackend != rhs.isLoadedOnBackend {
+                return lhs.isLoadedOnBackend && !rhs.isLoadedOnBackend
+            }
+            switch openRouterSort {
+            case .automatic:
+                if !searchText.isEmpty {
+                    let lhsRank = lhs.openRouterSearchRank(for: searchText)
+                    let rhsRank = rhs.openRouterSearchRank(for: searchText)
+                    if lhsRank != rhsRank {
+                        return lhsRank < rhsRank
+                    }
+                }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            case .alphabetical:
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            case .contextLength:
+                let lhsContext = lhs.maxContextLength ?? lhs.providerContextLength ?? 0
+                let rhsContext = rhs.maxContextLength ?? rhs.providerContextLength ?? 0
+                if lhsContext != rhsContext {
+                    return lhsContext > rhsContext
+                }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            case .promptPrice:
+                let lhsPrice = lhs.promptPricePerMillion ?? .greatestFiniteMagnitude
+                let rhsPrice = rhs.promptPricePerMillion ?? .greatestFiniteMagnitude
+                if lhsPrice != rhsPrice {
+                    return lhsPrice < rhsPrice
+                }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            case .completionPrice:
+                let lhsPrice = lhs.completionPricePerMillion ?? .greatestFiniteMagnitude
+                let rhsPrice = rhs.completionPricePerMillion ?? .greatestFiniteMagnitude
+                if lhsPrice != rhsPrice {
+                    return lhsPrice < rhsPrice
+                }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+        }
+    }
+
+    private func openRouterEmptyStateText(totalCount: Int) -> LocalizedStringKey {
+        if totalCount == 0 {
+            return offGrid ? "Remote access is disabled." : "No compatible models available"
+        }
+        return "No models match the current search or filters"
+    }
+
+    private func parameterDisplayName(_ parameter: String) -> String {
+        parameter
+            .replacingOccurrences(of: "_", with: " ")
+            .split(separator: " ")
+            .map { $0.capitalized }
+            .joined(separator: " ")
     }
 
 #if os(macOS)
@@ -1411,6 +1976,7 @@ struct RemoteBackendDetailView: View {
         case .chatPath: return \RemoteBackendDraft.chatPath
         case .modelsPath: return \RemoteBackendDraft.modelsPath
         case .auth: return \RemoteBackendDraft.authHeader
+        case .openRouterAPIKey: return \RemoteBackendDraft.openRouterAPIKey
         case .customModel:
             fatalError("Custom model fields use a dedicated binding")
         }
@@ -1470,6 +2036,48 @@ struct RemoteBackendDetailView: View {
     private func deleteBackend() {
         modelManager.deleteRemoteBackend(id: backendID)
         close()
+    }
+
+    @MainActor
+    private func refreshOpenRouterKeyInfoIfNeeded(for backend: RemoteBackend, force: Bool = false) async {
+        guard backend.isOpenRouter else {
+            openRouterKeyInfo = nil
+            return
+        }
+        guard !offGrid else {
+            openRouterKeyInfo = nil
+            return
+        }
+        if isRefreshingOpenRouterKeyInfo && !force { return }
+        let key = ((try? RemoteBackendCredentialStore.openRouterAPIKey(for: backend.id)) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else {
+            openRouterKeyInfo = nil
+            return
+        }
+
+        isRefreshingOpenRouterKeyInfo = true
+        defer { isRefreshingOpenRouterKeyInfo = false }
+        do {
+            openRouterKeyInfo = try await RemoteBackendAPI.verifyOpenRouterAPIKey(key, backendID: backend.id)
+        } catch {
+            openRouterKeyInfo = nil
+            await logger.log("[RemoteBackendDetail] OpenRouter key verification failed for '\(backend.name)': \(error.localizedDescription)")
+        }
+    }
+
+    private func clearOpenRouterAPIKey(for backend: RemoteBackend) {
+        do {
+            try RemoteBackendCredentialStore.removeOpenRouterAPIKey(for: backend.id)
+            openRouterKeyInfo = nil
+            if editedDraft == nil {
+                editedDraft = RemoteBackendDraft(from: backend)
+            }
+            editedDraft?.openRouterAPIKey = ""
+            actionMessage = RemoteBackendActionMessage(message: String(localized: "OpenRouter API key cleared."), isError: false)
+        } catch {
+            actionMessage = RemoteBackendActionMessage(message: error.localizedDescription, isError: true)
+        }
     }
 
 #if os(iOS) || os(visionOS)
@@ -1609,7 +2217,7 @@ struct RemoteBackendDetailView: View {
     }
 #endif
 
-    private func use(model: RemoteModel, in backend: RemoteBackend) {
+    private func use(model: RemoteModel, in backend: RemoteBackend, explicitSettings: ModelSettings? = nil) {
         let availability = modelAvailability(for: backend)
         switch availability {
         case .offGrid:
@@ -1638,7 +2246,8 @@ struct RemoteBackendDetailView: View {
                 }
             }
             do {
-                try await vm.activateRemoteSession(backend: backend, model: model)
+                let resolvedSettings = explicitSettings ?? modelManager.remoteSettings(for: backend.id, model: model)
+                try await vm.activateRemoteSession(backend: backend, model: model, settings: resolvedSettings)
                 await MainActor.run {
                     tabRouter.selection = .chat
                 }
@@ -1659,6 +2268,11 @@ struct RemoteBackendDetailView: View {
             }
         }
         activationTask = task
+    }
+
+    private func openRemoteSettings(for model: RemoteModel, backend: RemoteBackend) {
+        guard backend.endpointType == .lmStudio || backend.isOpenRouter else { return }
+        remoteSettingsTarget = RemoteModelSettingsTarget(backend: backend, model: model)
     }
 
     private func modelAvailability(for backend: RemoteBackend) -> RemoteModelRow.Availability {
@@ -1805,7 +2419,7 @@ struct RemoteBackendDetailView: View {
         isPersistingDraft = true
         defer { isPersistingDraft = false }
         do {
-            try modelManager.updateRemoteBackend(id: backendID, using: draft)
+            try await modelManager.updateRemoteBackend(id: backendID, using: draft)
             isEditing = false
             editedDraft = nil
             hasDraftChanges = false
@@ -1856,6 +2470,13 @@ struct RemoteBackendDetailView: View {
 #else
         dismiss()
 #endif
+    }
+
+    private func beginRemoteEndpointDownloadFlow(for backend: RemoteBackend) {
+        modelManager.setLMStudioRemoteDownloadTarget(backend.id)
+        tabRouter.selection = .explore
+        UserDefaults.standard.set(ExploreSection.models.rawValue, forKey: "exploreSection")
+        close()
     }
 }
 
@@ -1965,15 +2586,56 @@ struct RemoteModelRow: View {
     let isActivating: Bool
     let isActive: Bool
     let isBackendLoaded: Bool
+    let isFavorite: Bool
     let useAction: () -> Void
+    let settingsAction: (() -> Void)?
+    let favoriteAction: (() -> Void)?
+    let infoAction: (() -> Void)?
+
+    init(model: RemoteModel,
+         endpointType: RemoteBackend.EndpointType,
+         availability: Availability,
+         isActivating: Bool,
+         isActive: Bool,
+         isBackendLoaded: Bool,
+         isFavorite: Bool = false,
+         useAction: @escaping () -> Void,
+         settingsAction: (() -> Void)? = nil,
+         favoriteAction: (() -> Void)? = nil,
+         infoAction: (() -> Void)? = nil) {
+        self.model = model
+        self.endpointType = endpointType
+        self.availability = availability
+        self.isActivating = isActivating
+        self.isActive = isActive
+        self.isBackendLoaded = isBackendLoaded
+        self.isFavorite = isFavorite
+        self.useAction = useAction
+        self.settingsAction = settingsAction
+        self.favoriteAction = favoriteAction
+        self.infoAction = infoAction
+    }
 
     var body: some View {
+        if endpointType == .openRouter {
+            openRouterBody
+        } else {
+            standardBody
+        }
+    }
+
+    private var standardBody: some View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
                     Text(model.name)
                         .font(.headline)
                         .fontWeight(.semibold)
+                    if supportsFavorite {
+                        Image(systemName: isFavorite ? "star.fill" : "star")
+                            .font(.caption)
+                            .foregroundStyle(.yellow)
+                    }
                     if model.isCustom {
                         chip(text: "Custom", color: .gray)
                     }
@@ -1992,6 +2654,12 @@ struct RemoteModelRow: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+                if endpointType == .openRouter, let description = model.trimmedDescriptionText {
+                    Text(description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
                 badgesRow
                 if let parent = model.parentModel, !parent.isEmpty {
                     Label("Parent: \(parent)", systemImage: "arrow.merge")
@@ -2029,65 +2697,157 @@ struct RemoteModelRow: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
+                if endpointType == .openRouter {
+                    if let providerContextLength = model.providerContextLength, providerContextLength > 0 {
+                        Label("Provider context: \(providerContextLength)", systemImage: "rectangle.and.text.magnifyingglass")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let maxCompletionTokens = model.maxCompletionTokens, maxCompletionTokens > 0 {
+                        Label("Max output: \(maxCompletionTokens)", systemImage: "arrow.up.forward")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
-            Spacer()
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if supportsSettings {
+                    settingsAction?()
+                }
+            }
+            Spacer(minLength: 8)
             trailingControl
         }
         .padding(.vertical, 8)
+    }
+
+    private var openRouterBody: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(model.name)
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(.primary)
+
+                        if let author = sanitizedAuthor {
+                            Text(author)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Text(model.id)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .lineLimit(2)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    if isBackendLoaded {
+                        openRouterMetaChip(text: "Loaded", color: .green)
+                    }
+                }
+
+                if let description = model.trimmedDescriptionText {
+                    Text(description)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                RemoteModelChipWrapLayout(horizontalSpacing: 8, verticalSpacing: 8) {
+                    if let providerContextLength = model.providerContextLength, providerContextLength > 0 {
+                        openRouterMetaChip(text: "Context \(providerContextLength.formatted())", color: .accentColor)
+                    }
+                    ForEach(familyBadges, id: \.self) { family in
+                        openRouterMetaChip(text: family, color: .secondary, muted: true)
+                    }
+                }
+            }
+
+            openRouterActions
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.primary.opacity(0.035))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+        )
     }
 
     @ViewBuilder
     private var trailingControl: some View {
         switch availability {
         case .offGrid:
-            Label("Offline", systemImage: "wifi.slash")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        case .unreachable(let message):
-            VStack(alignment: .trailing, spacing: 4) {
-                Label("Unavailable", systemImage: "exclamationmark.triangle")
+            HStack(spacing: 8) {
+                actionButtons
+                Label("Offline", systemImage: "wifi.slash")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if !message.isEmpty {
-                    Text(message)
-                        .font(.caption2)
+            }
+        case .unreachable(let message):
+            HStack(alignment: .top, spacing: 8) {
+                actionButtons
+                VStack(alignment: .trailing, spacing: 4) {
+                    Label("Unavailable", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.trailing)
+                    if !message.isEmpty {
+                        Text(message)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.trailing)
+                    }
                 }
             }
         case .available:
-            if isActive {
-                Label("Using", systemImage: "checkmark.circle")
-                    .font(.caption)
-                    .foregroundColor(.green)
-            } else {
-                Button(action: useAction) {
-                    if isActivating {
-                        ProgressView()
-                    } else {
-                        Text("Use")
+            HStack(spacing: 8) {
+                actionButtons
+                if isActive {
+                    Label("Using", systemImage: "checkmark.circle")
+                        .font(.caption)
+                        .foregroundColor(.green)
+                } else {
+                    Button(action: useAction) {
+                        if isActivating {
+                            ProgressView()
+                        } else {
+                            Text("Use")
+                        }
                     }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(isActivating)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(isActivating)
             }
         }
     }
 
     @ViewBuilder
     private var badgesRow: some View {
-        HStack(spacing: 6) {
+        RemoteModelChipWrapLayout(horizontalSpacing: 6, verticalSpacing: 6) {
             if let quant = model.quantization, !quant.isEmpty {
                 Text(quant)
                     .font(.caption2)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(Capsule().fill(Color.accentColor.opacity(0.2)))
                     .foregroundColor(Color.accentColor)
             }
             if let format = model.compatibilityFormat {
-                Text(format.rawValue)
+                Text(format.displayName)
                     .font(.caption2)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(format.tagGradient)
@@ -2100,8 +2860,31 @@ struct RemoteModelRow: View {
             if shouldShowExtendedChips, let parameter = model.formattedParameterCount {
                 chip(text: parameter, color: .orange)
             }
-            if shouldShowExtendedChips, endpointType.isRelay == false, let size = model.formattedFileSize {
-                chip(text: size, color: .blue)
+            if endpointType == .openRouter {
+                if model.supportsTools {
+                    chip(text: "Tools", color: .blue)
+                }
+                if model.supportsStructuredOutputs {
+                    chip(text: "Structured", color: .teal)
+                }
+                if model.supportsReasoning {
+                    chip(text: "Reasoning", color: .purple)
+                }
+                if model.isVisionModel {
+                    chip(text: "Vision", color: .pink)
+                }
+                if model.isModerated == true {
+                    chip(text: "Moderated", color: .orange)
+                }
+                if let promptPrice = model.promptPricePerMillion {
+                    chip(text: "Input \(priceString(promptPrice, suffix: "/M"))", color: .green)
+                }
+                if let completionPrice = model.completionPricePerMillion {
+                    chip(text: "Output \(priceString(completionPrice, suffix: "/M"))", color: .mint)
+                }
+                if let requestPrice = model.requestPrice {
+                    chip(text: "Request \(priceString(requestPrice, suffix: "/req"))", color: .indigo)
+                }
             }
         }
     }
@@ -2109,10 +2892,130 @@ struct RemoteModelRow: View {
     private func chip(text: String, color: Color) -> some View {
         Text(text)
             .font(.caption2)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(Capsule().fill(color.opacity(0.18)))
             .foregroundColor(color)
+    }
+
+    @ViewBuilder
+    private var actionButtons: some View {
+        HStack(spacing: 8) {
+            if supportsModelInfo {
+                Button(action: { infoAction?() }) {
+                    Image(systemName: "info.circle")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityLabel(LocalizedStringKey("Show Model Info"))
+            }
+            if supportsSettings {
+                Button(action: { settingsAction?() }) {
+                    Image(systemName: "gearshape")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityLabel(LocalizedStringKey("Open Settings"))
+            }
+            if supportsFavorite {
+                Button(action: { favoriteAction?() }) {
+                    Image(systemName: isFavorite ? "star.fill" : "star")
+                        .foregroundStyle(isFavorite ? .yellow : .secondary)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityLabel(isFavorite ? LocalizedStringKey("Remove Favorite") : LocalizedStringKey("Add Favorite"))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var openRouterActions: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 8) {
+                if supportsModelInfo {
+                    openRouterIconButton(systemImage: "info.circle", accessibilityLabel: "Show Model Info") {
+                        infoAction?()
+                    }
+                }
+                if supportsSettings {
+                    openRouterIconButton(systemImage: "slider.horizontal.3", accessibilityLabel: "Open Settings") {
+                        settingsAction?()
+                    }
+                }
+                if supportsFavorite {
+                    openRouterIconButton(systemImage: isFavorite ? "star.fill" : "star", accessibilityLabel: isFavorite ? "Remove Favorite" : "Add Favorite", tint: isFavorite ? .yellow : .secondary) {
+                        favoriteAction?()
+                    }
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            switch availability {
+            case .offGrid:
+                Label("Offline", systemImage: "wifi.slash")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            case .unreachable:
+                Label("Unavailable", systemImage: "exclamationmark.triangle")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            case .available:
+                if isActive {
+                    Label("Using", systemImage: "checkmark.circle.fill")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.green)
+                } else {
+                    Button(action: useAction) {
+                        if isActivating {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Text("Use")
+                                .font(.caption.weight(.semibold))
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(isActivating)
+                }
+            }
+        }
+    }
+
+    private func openRouterIconButton(systemImage: String,
+                                      accessibilityLabel: String,
+                                      tint: Color = .accentColor,
+                                      action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(tint)
+                .frame(width: 32, height: 32)
+                .background(
+                    Circle()
+                        .fill(Color.primary.opacity(0.05))
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(LocalizedStringKey(accessibilityLabel))
+    }
+
+    private func openRouterMetaChip(text: String, color: Color, muted: Bool = false) -> some View {
+        Text(text)
+            .font(.caption2.weight(.medium))
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(
+                Capsule()
+                    .fill(muted ? Color.primary.opacity(0.06) : color.opacity(0.12))
+            )
+            .foregroundStyle(muted ? Color.secondary : color)
     }
 
     private var isOllama: Bool {
@@ -2151,6 +3054,453 @@ struct RemoteModelRow: View {
 
     private var shouldShowExtendedChips: Bool {
         !isOllama
+    }
+
+    private var supportsSettings: Bool {
+        settingsAction != nil
+    }
+
+    private var supportsFavorite: Bool {
+        endpointType == .openRouter && favoriteAction != nil
+    }
+
+    private var supportsModelInfo: Bool {
+        endpointType == .openRouter && infoAction != nil
+    }
+
+    private func priceString(_ value: Double, suffix: String) -> String {
+        let format: String
+        switch value {
+        case 0..<0.01:
+            format = "%.4f"
+        case 0..<1:
+            format = "%.3f"
+        default:
+            format = "%.2f"
+        }
+        return "$" + String(format: format, value) + suffix
+    }
+}
+
+private struct RemoteModelSettingsSheet: View {
+    let model: RemoteModel
+    let endpointType: RemoteBackend.EndpointType
+    let initialSettings: ModelSettings
+    let maxContextLength: Int?
+    let resetSettings: ModelSettings?
+    let onSave: (ModelSettings) -> Void
+    let onUse: (ModelSettings) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var settings: ModelSettings
+
+    init(
+        model: RemoteModel,
+        endpointType: RemoteBackend.EndpointType,
+        initialSettings: ModelSettings,
+        maxContextLength: Int?,
+        resetSettings: ModelSettings?,
+        onSave: @escaping (ModelSettings) -> Void,
+        onUse: @escaping (ModelSettings) -> Void
+    ) {
+        self.model = model
+        self.endpointType = endpointType
+        self.initialSettings = initialSettings
+        self.maxContextLength = maxContextLength
+        self.resetSettings = resetSettings
+        self.onSave = onSave
+        self.onUse = onUse
+        _settings = State(initialValue: initialSettings)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if endpointType == .openRouter, let resetSettings {
+                    Section(LocalizedStringKey("Model Defaults")) {
+                        Button(LocalizedStringKey("Reset to Model Defaults")) {
+                            settings = resetSettings
+                        }
+                        if let description = model.trimmedDescriptionText {
+                            Text(description)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                Section(LocalizedStringKey("Context Length")) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(LocalizedStringKey("Context Length"))
+                            Spacer()
+                            Text(Int(settings.contextLength).formatted())
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                        Slider(
+                            value: contextLengthSliderBinding,
+                            in: 1...Double(resolvedMaxContext),
+                            step: Double(contextStep)
+                        )
+                        HStack {
+                            Text("1")
+                            Spacer()
+                            Text(
+                                String.localizedStringWithFormat(
+                                    String(localized: "Max %@"),
+                                    resolvedMaxContext.formatted()
+                                )
+                            )
+                        }
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                    }
+                }
+                Section(LocalizedStringKey("Sampling")) {
+                    sliderRow(title: LocalizedStringKey("Temperature"), value: $settings.temperature, range: 0...2, step: 0.05)
+                    sliderRow(
+                        title: LocalizedStringKey("Top-p"),
+                        value: $settings.topP,
+                        range: 0...1,
+                        step: 0.01,
+                        valueLabel: valueString(settings.topP)
+                    )
+                    Stepper(value: $settings.topK, in: 1...2048, step: 1) {
+                        Text(
+                            String.localizedStringWithFormat(
+                                String(localized: "Top-k: %@"),
+                                String(settings.topK)
+                            )
+                        )
+                    }
+                    sliderRow(
+                        title: LocalizedStringKey("Min-p"),
+                        value: $settings.minP,
+                        range: 0...1,
+                        step: 0.01,
+                        valueLabel: valueString(settings.minP)
+                    )
+                    sliderRow(
+                        title: LocalizedStringKey("Repetition penalty"),
+                        value: repetitionPenaltyBinding,
+                        range: 0.1...3.0,
+                        step: 0.01,
+                        valueLabel: valueString(Double(settings.repetitionPenalty))
+                    )
+                }
+                Section(LocalizedStringKey("Model System Prompt")) {
+                    Picker(LocalizedStringKey("System Prompt"), selection: $settings.systemPromptMode) {
+                        Text(LocalizedStringKey("Use Global Default")).tag(SystemPromptMode.inheritGlobal)
+                        Text(LocalizedStringKey("Use Model Prompt")).tag(SystemPromptMode.override)
+                        Text(LocalizedStringKey("Exclude Global Default")).tag(SystemPromptMode.excludeGlobal)
+                    }
+
+                    if settings.systemPromptMode == .override {
+                        TextEditor(text: systemPromptOverrideBinding)
+                            .frame(minHeight: 140)
+#if os(iOS) || os(visionOS)
+                            .scrollContentBackground(.hidden)
+#endif
+                    }
+
+                    Text(systemPromptModeDescription)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle(LocalizedStringKey("Settings"))
+#if !os(macOS)
+            .navigationBarTitleDisplayMode(.inline)
+#endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(LocalizedStringKey("Close")) {
+                        dismiss()
+                    }
+                }
+                ToolbarItemGroup(placement: .confirmationAction) {
+                    Button(LocalizedStringKey("Save")) {
+                        let normalized = normalizedSettings()
+                        onSave(normalized)
+                        dismiss()
+                    }
+
+                    Button(LocalizedStringKey("Use")) {
+                        let normalized = normalizedSettings()
+                        onUse(normalized)
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private var resolvedMaxContext: Int {
+        if let maxContextLength, maxContextLength > 0 {
+            return maxContextLength
+        }
+        return 262_144
+    }
+
+    private var contextStep: Int {
+        resolvedMaxContext > 16_384 ? 256 : 128
+    }
+
+    private var contextLengthSliderBinding: Binding<Double> {
+        Binding<Double>(
+            get: { settings.contextLength },
+            set: { newValue in
+                settings.contextLength = max(1, min(Double(resolvedMaxContext), newValue.rounded()))
+            }
+        )
+    }
+
+    private var repetitionPenaltyBinding: Binding<Double> {
+        Binding<Double>(
+            get: { Double(settings.repetitionPenalty) },
+            set: { newValue in
+                settings.repetitionPenalty = Float(newValue)
+            }
+        )
+    }
+
+    private var systemPromptOverrideBinding: Binding<String> {
+        Binding(
+            get: { settings.systemPromptOverride ?? "" },
+            set: { settings.systemPromptOverride = $0 }
+        )
+    }
+
+    private var systemPromptModeDescription: LocalizedStringKey {
+        switch settings.systemPromptMode {
+        case .inheritGlobal:
+            return LocalizedStringKey("Uses the default system prompt from Settings for this model.")
+        case .override:
+            return LocalizedStringKey("Use a model-specific prompt instead of the shared Settings prompt.")
+        case .excludeGlobal:
+            return LocalizedStringKey("Skip the editable Settings prompt for this model while keeping Noema's built-in system guidance.")
+        }
+    }
+
+    private func sliderRow(
+        title: LocalizedStringKey,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        step: Double,
+        valueLabel: String? = nil
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(title)
+                Spacer()
+                if let valueLabel {
+                    Text(valueLabel)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
+            Slider(value: value, in: range, step: step)
+        }
+    }
+
+    private func normalizedSettings() -> ModelSettings {
+        func quantize(_ value: Double, step: Double) -> Double {
+            guard step > 0 else { return value }
+            return (value / step).rounded() * step
+        }
+
+        var normalized = settings
+        normalized.contextLength = max(1, min(Double(resolvedMaxContext), normalized.contextLength.rounded()))
+        normalized.topP = quantize(max(0, min(1, normalized.topP)), step: 0.01)
+        normalized.topK = max(1, normalized.topK)
+        normalized.minP = quantize(max(0, min(1, normalized.minP)), step: 0.01)
+        normalized.temperature = quantize(max(0, min(2, normalized.temperature)), step: 0.01)
+        let repeatPenalty = quantize(Double(max(0.1, min(3.0, normalized.repetitionPenalty))), step: 0.01)
+        normalized.repetitionPenalty = Float(repeatPenalty)
+        return normalized.normalizedSystemPromptSettings()
+    }
+
+    private func valueString(_ value: Double) -> String {
+        value.formatted(.number.precision(.fractionLength(2)))
+    }
+}
+
+private struct OpenRouterModelInfoSheet: View {
+    let model: RemoteModel
+    let backendName: String
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section(LocalizedStringKey("Overview")) {
+                    infoRow(title: "Backend", value: backendName)
+                    infoRow(title: "Model ID", value: model.id)
+                    infoRow(title: "Publisher", value: model.publisher)
+                    infoRow(title: "Author", value: model.author)
+                    infoRow(title: "Architecture", value: model.architecture)
+                    infoRow(title: "Provider Context", value: model.providerContextLength.map { String($0) })
+                    infoRow(title: "Max Output", value: model.maxCompletionTokens.map { String($0) })
+                    infoRow(title: "Expiration", value: model.expirationDateRaw)
+                    if let description = model.trimmedDescriptionText {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(LocalizedStringKey("Description"))
+                                .font(.subheadline.weight(.medium))
+                            Text(description)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+
+                Section(LocalizedStringKey("Capabilities")) {
+                    capabilityRow("Tools", enabled: model.supportsTools)
+                    capabilityRow("Structured Outputs", enabled: model.supportsStructuredOutputs)
+                    capabilityRow("Reasoning", enabled: model.supportsReasoning)
+                    capabilityRow("Vision", enabled: model.isVisionModel)
+                    capabilityRow("Moderated", enabled: model.isModerated == true)
+                    if let supportedParameters = model.supportedParameters, !supportedParameters.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(LocalizedStringKey("Supported Parameters"))
+                                .font(.subheadline.weight(.medium))
+                            Text(supportedParameters.joined(separator: ", "))
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+
+                Section(LocalizedStringKey("Pricing")) {
+                    infoRow(title: "Input", value: model.promptPricePerMillion.map { priceString($0, suffix: " / 1M tokens") })
+                    infoRow(title: "Output", value: model.completionPricePerMillion.map { priceString($0, suffix: " / 1M tokens") })
+                    infoRow(title: "Image", value: model.imagePricePerMillion.map { priceString($0, suffix: " / 1M units") })
+                    infoRow(title: "Request", value: model.requestPrice.map { priceString($0, suffix: " / request") })
+                }
+
+                if model.defaultTemperature != nil
+                    || model.defaultTopP != nil
+                    || model.defaultTopK != nil
+                    || model.defaultRepetitionPenalty != nil {
+                    Section(LocalizedStringKey("Default Parameters")) {
+                        infoRow(title: "Temperature", value: model.defaultTemperature.map(numberString))
+                        infoRow(title: "Top-p", value: model.defaultTopP.map(numberString))
+                        infoRow(title: "Top-k", value: model.defaultTopK.map { String($0) })
+                        infoRow(title: "Repetition Penalty", value: model.defaultRepetitionPenalty.map(numberString))
+                    }
+                }
+            }
+            .navigationTitle(LocalizedStringKey("Model Info"))
+#if !os(macOS)
+            .navigationBarTitleDisplayMode(.inline)
+#endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(LocalizedStringKey("Close")) {
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    @ViewBuilder
+    private func infoRow(title: String, value: String?) -> some View {
+        if let value, !value.isEmpty {
+            HStack(alignment: .top) {
+                Text(LocalizedStringKey(title))
+                Spacer(minLength: 16)
+                Text(value)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+                    .textSelection(.enabled)
+            }
+        }
+    }
+
+    private func capabilityRow(_ title: String, enabled: Bool) -> some View {
+        HStack {
+            Text(LocalizedStringKey(title))
+            Spacer()
+            Image(systemName: enabled ? "checkmark.circle.fill" : "xmark.circle")
+                .foregroundStyle(enabled ? Color.green : Color.secondary)
+        }
+    }
+
+    private func numberString(_ value: Double) -> String {
+        value.formatted(.number.precision(.fractionLength(2)))
+    }
+
+    private func priceString(_ value: Double, suffix: String) -> String {
+        let format: String
+        switch value {
+        case 0..<0.01:
+            format = "%.4f"
+        case 0..<1:
+            format = "%.3f"
+        default:
+            format = "%.2f"
+        }
+        return "$" + String(format: format, value) + suffix
+    }
+}
+
+private struct RemoteModelChipWrapLayout: Layout {
+    var horizontalSpacing: CGFloat = 8
+    var verticalSpacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard !subviews.isEmpty else { return .zero }
+        let maxWidth = proposal.width ?? .infinity
+        var currentX: CGFloat = 0
+        var currentY: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var usedWidth: CGFloat = 0
+
+        for (index, subview) in subviews.enumerated() {
+            let size = subview.sizeThatFits(ProposedViewSize(width: maxWidth.isFinite ? maxWidth : nil, height: nil))
+            if currentX > 0 && currentX + size.width > maxWidth {
+                currentX = 0
+                currentY += rowHeight + verticalSpacing
+                rowHeight = 0
+            }
+
+            rowHeight = max(rowHeight, size.height)
+            currentX += size.width
+            usedWidth = max(usedWidth, currentX)
+            if index != subviews.count - 1 {
+                currentX += horizontalSpacing
+            }
+        }
+
+        return CGSize(width: min(usedWidth, maxWidth), height: currentY + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard !subviews.isEmpty else { return }
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
+
+        for (index, subview) in subviews.enumerated() {
+            let size = subview.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+            if x > bounds.minX && x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += rowHeight + verticalSpacing
+                rowHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(width: size.width, height: size.height))
+            x += size.width
+            rowHeight = max(rowHeight, size.height)
+            if index != subviews.count - 1 {
+                x += horizontalSpacing
+            }
+        }
     }
 }
 

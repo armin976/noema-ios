@@ -4,6 +4,7 @@ import SwiftUI
 
 struct GuidedWalkthroughOverlay: View {
     @EnvironmentObject private var manager: GuidedWalkthroughManager
+    @EnvironmentObject private var downloadController: DownloadController
     @Environment(\.colorScheme) private var colorScheme
     var allowedSteps: Set<GuidedWalkthroughManager.Step>
 
@@ -32,8 +33,8 @@ struct GuidedWalkthroughOverlay: View {
 
             ZStack {
                 Color.clear
-                    .contentShape(Rectangle())
                     .ignoresSafeArea()
+                    .allowsHitTesting(false)
 
                 if highlightVisible {
                     haloLayer(for: highlightRect)
@@ -82,6 +83,7 @@ struct GuidedWalkthroughOverlay: View {
             .transition(.opacity)
             .overlay(
                 Color.clear
+                    .allowsHitTesting(false)
                     .onAppear {
                         startPulse()
                         if let forced = forcedPlacement(for: manager.step) {
@@ -137,7 +139,7 @@ struct GuidedWalkthroughOverlay: View {
             Text("Write prompts, instructions, or notes here. Press return to add new lines.")
                 .multilineTextAlignment(.center)
         case .chatWebSearch:
-            Text("Arm web search when you truly need outside info. It has a small daily limit and most chats don’t require it.")
+            Text("Arm web search when you truly need outside info. Most chats don’t require it.")
                 .multilineTextAlignment(.center)
         case .storedIntro:
             Text("Downloaded models and datasets live here so you can manage them offline.")
@@ -147,11 +149,11 @@ struct GuidedWalkthroughOverlay: View {
                 Text("Nice! You already have the recommended GGUF starter model ready to use.")
                     .multilineTextAlignment(.center)
             } else {
-                Text("Start with a reliable Qwen 3 1.7B build. It balances capability with small download size.")
+                Text("Start with a reliable Qwen 3.5 2B build. It balances capability with a small download size.")
                     .multilineTextAlignment(.center)
             }
         case .storedFormats:
-            Text("GGUF works everywhere. MLX targets Apple Silicon speed. SLM focuses on responsiveness on any device.")
+            Text("GGUF works everywhere. MLX targets Apple Silicon speed. ET focuses on responsiveness on any device.")
                 .multilineTextAlignment(.center)
         case .modelSettingsIntro:
             Text("These options stay in simple mode for clarity. Let’s cover the essentials.")
@@ -184,7 +186,7 @@ struct GuidedWalkthroughOverlay: View {
             Text("Switch the selector to MLX for Apple Silicon‑optimized builds that excel at speed.")
                 .multilineTextAlignment(.center)
         case .exploreSLM:
-            Text("Pick the SLM format when you want ultra-responsive models that run well anywhere.")
+            Text("Pick the ET format when you want ultra-responsive models that run well anywhere.")
                 .multilineTextAlignment(.center)
         case .settingsIntro:
             Text("Adjust appearance, privacy options, and network preferences here.")
@@ -205,7 +207,7 @@ struct GuidedWalkthroughOverlay: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Recommended Starter Model")
                 .font(.headline)
-            Text("Qwen 3 1.7B GGUF (Q3_K_M) gives you a dependable starting point. Delete it anytime if you need space.")
+            Text("Qwen 3.5 2B GGUF gives you a dependable starting point. Delete it anytime if you need space.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -222,6 +224,14 @@ struct GuidedWalkthroughOverlay: View {
                         set: { _ in }
                     ),
                     downloading: manager.recommendedDownloading,
+                    remoteMode: false,
+                    remoteStatusText: nil,
+                    remoteErrorText: nil,
+                    remoteUnsupportedReason: nil,
+                    remoteCompleted: false,
+                    openUnavailableReason: nil,
+                    showsLowQualityMarker: quant.isLowBitQuant,
+                    downloadController: downloadController,
                     openAction: {
                         await manager.openRecommendedModel()
                     },

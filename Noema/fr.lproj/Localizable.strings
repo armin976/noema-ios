@@ -31,7 +31,7 @@
 "App Memory Usage (estimated)" = "Utilisation de la mémoire de l'application (estimée)";
 "App memory usage budget: %@ (conservative)" = "Budget d'utilisation de la mémoire de l'application : %@ (conservateur)";
 "Approx. Tokens" = "Env. Jetons";
-"Arm web search when you truly need outside info. It has a small daily limit and most chats don’t require it." = "Activez la recherche sur le Web lorsque vous avez vraiment besoin d’informations extérieures. Il a une petite limite quotidienne et la plupart des chats ne l’exigent pas.";
+"Arm web search when you truly need outside info. Most chats don’t require it." = "Activez la recherche sur le Web lorsque vous avez vraiment besoin d’informations extérieures. La plupart des discussions n’en ont pas besoin.";
 "Ask Noema anything" = "Demandez n'importe quoi à Noema";
 "Ask…" = "Demander…";
 "Attach Photos" = "Joindre des photos";
@@ -72,6 +72,7 @@
 "Creativity: %@. Low values focus responses; high values add variety." = "Créativité : %@. Les valeurs faibles concentrent les réponses ; des valeurs élevées ajoutent de la variété.";
 "Dark" = "Sombre";
 "Dataset" = "Ensemble de données";
+"Processing Prompt" = "Traitement du prompt";
 "Dataset indexing in progress..." = "Indexation du jeu de données en cours...";
 "Dataset ready to use" = "Ensemble de données prêt à l'emploi";
 "Datasets" = "Ensembles de données";
@@ -196,6 +197,9 @@
 "No models yet" = "Aucun modèle pour l'instant";
 "No parameters" = "Aucun paramètre";
 "No quant files available" = "Aucun fichier quantitatif disponible";
+"Low quality" = "Basse qualité";
+"Low-quality quantizations" = "Quantifications de basse qualité";
+"This repository only includes 1-bit or 2-bit quantizations. They may be degraded compared with higher-bit builds." = "Ce dépôt ne contient que des quantifications 1 bit ou 2 bits. Elles peuvent être dégradées par rapport aux builds avec plus de bits.";
 "No recent devices. We'll list clients the next time they talk to this relay." = "Aucun appareil récent. Nous listerons les clients la prochaine fois qu'ils parleront à ce relais.";
 "No remote endpoints configured yet." = "Aucun point de terminaison distant configuré pour le moment.";
 "No remote endpoints configured." = "Aucun point de terminaison distant configuré.";
@@ -416,8 +420,8 @@
 "Vision" = "Vision";
 "Continue" = "Continuer";
 "Try bullet" = "Essayez :\n• D’autres mots-clés (ex. « gemma-3 » au lieu de « gemma 3 »)\n• %@\n• Ajuster le filtre texte/vision\n• Vérifier vos filtres de recherche";
-"Select one or more .gguf files. For vision models, also select the projector .gguf (files containing ‘mmproj’ or ‘projector’). Files will be copied into your local model library." = "Select one or more .gguf files. For vision models, also select the projector .gguf (files containing ‘mmproj’ or ‘projector’). Files will be copied into your local model library.";
-"Select the model folder that contains config.json and the weights (safetensors/npz). The entire folder will be imported into your local model library." = "Select the model folder that contains config.json and the weights (safetensors/npz). The entire folder will be imported into your local model library.";
+"Select one or more .gguf files. For vision models, also select the projector .gguf (files containing 'mmproj' or 'projector'). Files will be copied into your local model library." = "Sélectionnez un ou plusieurs fichiers .gguf. Pour les modèles de vision, sélectionnez aussi le fichier .gguf du projecteur (fichiers contenant « mmproj » ou « projector »). Les fichiers seront copiés dans votre bibliothèque de modèles locale.";
+"Select the model folder that contains config.json and the weights (safetensors/npz). The entire folder will be imported into your local model library." = "Sélectionnez le dossier du modèle contenant config.json et les poids (safetensors/npz). Le dossier entier sera importé dans votre bibliothèque de modèles locale.";
 "K Cache Quantization" = "Quantification du cache K";
 "V Cache Quantization" = "Quantification du cache V";
 "Favorite Limit Reached" = "Limite de favoris atteinte";
@@ -524,6 +528,7 @@
 "Write a Review" = "Rédiger un avis";
 "Notes & Issues" = "Notes et problèmes";
 "Qwen3-1.7B is a compact and efficient model from the Qwen3 family, suitable for on-device usage with strong general capabilities." = "Qwen3-1.7B est un modèle compact et efficace de la famille Qwen3, adapté à l’usage embarqué avec de solides capacités générales.";
+"Bonsai-8B-GGUF is a 1-bit, GGUF-packaged 8B language model built on a Qwen3-8B dense architecture and designed for efficient local inference with llama.cpp across CUDA, Metal, CPU, and mobile environments." = "Bonsai-8B-GGUF is a 1-bit, GGUF-packaged 8B language model built on a Qwen3-8B dense architecture and designed for efficient local inference with llama.cpp across CUDA, Metal, CPU, and mobile environments.";
 "Gemma 3n E2B is a lightweight instruction-tuned model from Google's Gemma family, optimized for efficient on-device conversations." = "Gemma 3n E2B est un modèle léger, affiné pour les instructions, issu de la famille Gemma de Google, optimisé pour des conversations locales efficaces.";
 "Gemma 3n E2B is an instruction-tuned variant of Google's Gemma family built for efficient reasoning on low-resource devices.\nAvailable in GGUF quants (Q3_K_M, Q4_K_M, Q6_K) and an MLX 4-bit build for Apple Silicon.\n" = "Gemma 3n E2B est une variante orientée instructions de la famille Gemma, conçue pour un raisonnement efficace sur des appareils à ressources limitées.\nDisponible en quants GGUF (Q3_K_M, Q4_K_M, Q6_K) et en build MLX 4 bits pour Apple Silicon.\n";
 "Phi-4 Mini Reasoning is a lightweight model from the Phi-4 family, tuned for strong reasoning and efficiency across tasks." = "Phi-4 Mini Reasoning est un modèle léger de la famille Phi-4, optimisé pour le raisonnement et l’efficacité sur diverses tâches.";
@@ -609,6 +614,7 @@
 /* Tabs & accessibility labels */
 "Stored" = "Stocké";
 "Web Search" = "Recherche Web";
+"Python" = "Python";
 "Open Stored" = "Ouvrir Stocké";
 "Message input" = "Saisie du message";
 "What is Web Search button?" = "Qu’est-ce que le bouton Recherche Web ?";
@@ -687,3 +693,336 @@
 "Open Model Library" = "Bibliothèque de modèles";
 "Favorites" = "Favoris";
 "Recent" = "Récents";
+"Context Overflow" = "Dépassement du contexte";
+"Truncate Middle" = "Tronquer le milieu";
+"Rolling Window" = "Fenêtre glissante";
+"Stop at Limit" = "Arrêter à la limite";
+"When context overflows, keep the beginning and latest turns while removing middle turns." = "Lorsque le contexte dépasse la limite, conserver le début et les derniers échanges tout en supprimant les échanges intermédiaires.";
+"When context overflows, keep recent turns and drop the earliest conversation." = "Lorsque le contexte dépasse la limite, conserver les échanges récents et supprimer les plus anciens.";
+"When context overflows, stop generation and show an error instead of trimming." = "Lorsque le contexte dépasse la limite, arrêter la génération et afficher une erreur au lieu de tronquer.";
+"Middle conversation turns were trimmed to fit this model's context window." = "Les échanges du milieu de la conversation ont été supprimés pour s'adapter à la fenêtre de contexte du modèle.";
+"Earlier conversation turns were trimmed to fit this model's context window." = "Les premiers échanges de la conversation ont été supprimés pour s'adapter à la fenêtre de contexte du modèle.";
+"Generation stopped at the context limit for this model." = "La génération s'est arrêtée à la limite de contexte de ce modèle.";
+"Memory quality deteriorates in the middle of the conversation when trimming is applied." = "La qualité de la mémoire se dégrade au milieu de la conversation lorsque le découpage est appliqué.";
+"Memory quality deteriorates for the beginning of the conversation when trimming is applied." = "La qualité de la mémoire se dégrade pour le début de la conversation lorsque le découpage est appliqué.";
+"Memory quality no longer improves because generation is stopped once the limit is reached." = "La qualité de la mémoire ne s'améliore plus car la génération s'arrête une fois la limite atteinte.";
+"The model context window was exceeded." = "La fenêtre de contexte du modèle a été dépassée.";
+"Prompt tokens: %@ • Context limit: %@." = "Tokens du prompt : %@ • Limite de contexte : %@.";
+"Context limit: %@ tokens." = "Limite de contexte : %@ tokens.";
+"Context Length Exceeded" = "Longueur de contexte dépassée";
+"Context Length Exceeded (%@ > %@ tokens). Stop at Limit is enabled, so this turn was not sent." = "Longueur de contexte dépassée (%1$@ > %2$@ tokens). L'arrêt à la limite est activé, ce message n'a pas été envoyé.";
+"Context Length Exceeded. Stop at Limit is enabled, so this turn was not sent." = "Longueur de contexte dépassée. L'arrêt à la limite est activé, ce message n'a pas été envoyé.";
+"Context Length Exceeded. Middle turns were trimmed, but the prompt is still too large. Increase context length or shorten this chat." = "Longueur de contexte dépassée. Les échanges du milieu ont été supprimés, mais le prompt est encore trop volumineux. Augmentez la longueur du contexte ou raccourcissez la conversation.";
+"Context Length Exceeded. Older turns were trimmed, but the prompt is still too large. Increase context length or shorten this chat." = "Longueur de contexte dépassée. Les anciens échanges ont été supprimés, mais le prompt est encore trop volumineux. Augmentez la longueur du contexte ou raccourcissez la conversation.";
+"Context Length Exceeded. Stop at Limit is enabled, so generation was halted before sending." = "Longueur de contexte dépassée. L'arrêt à la limite est activé, la génération a été arrêtée avant l'envoi.";
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Settings & Startup                                                       */
+/* ───────────────────────────────────────────────────────────────────────── */
+"About RAM Usage" = "À propos de l'utilisation de la RAM";
+"Appearance" = "Apparence";
+"App Data Reset" = "Données de l'app réinitialisées";
+"Chat History Deleted" = "Historique des conversations supprimé";
+"Join Early Testers" = "Rejoindre les testeurs précoces";
+"Local default" = "Défaut local";
+"Add remote default" = "Ajouter un défaut distant";
+"Memory Budget" = "Budget mémoire";
+"Reopen Onboarding" = "Réouvrir l'accueil";
+"Startup Defaults" = "Paramètres de démarrage par défaut";
+"When both are available" = "Quand les deux sont disponibles";
+"Remote timeout: %ds" = "Délai distant : %ds";
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Custom Backend                                                           */
+/* ───────────────────────────────────────────────────────────────────────── */
+"Custom Backend" = "Backend personnalisé";
+"Auth header (optional)" = "En-tête d'authentification (optionnel)";
+"Model identifier" = "Identifiant du modèle";
+"Add Identifier" = "Ajouter un identifiant";
+"Remove identifier" = "Supprimer l'identifiant";
+"Connections to localhost may not work from other devices. Replace it with your machine's LAN IP address to allow remote access." = "Les connexions à localhost peuvent ne pas fonctionner depuis d'autres appareils. Remplacez-le par l'adresse IP LAN de votre machine pour permettre l'accès distant.";
+"Launch Ollama with `OLLAMA_HOST=0.0.0.0` so it can accept remote clients." = "Lancez Ollama avec `OLLAMA_HOST=0.0.0.0` pour accepter les clients distants.";
+"Could not connect to the Ollama server. Make sure Ollama is running on %@ and is configured to accept connections from this device (for example by launching it with `OLLAMA_HOST=0.0.0.0`)." = "Impossible de se connecter au serveur Ollama. Assurez-vous qu'Ollama est en cours d'exécution sur %@ et qu'il est configuré pour accepter les connexions depuis cet appareil (par exemple en le lançant avec `OLLAMA_HOST=0.0.0.0`).";
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Embedding & Download                                                     */
+/* ───────────────────────────────────────────────────────────────────────── */
+"Download Embedding Model" = "Télécharger le modèle d'embedding";
+"Embedding happens locally on your device" = "L'intégration se fait localement sur votre appareil";
+"Failed to Delete Embedding Model" = "Échec de la suppression du modèle d'embedding";
+"Installing…" = "Installation…";
+"Verifying…" = "Vérification…";
+"Retry download" = "Réessayer le téléchargement";
+"Resume" = "Reprendre";
+"You can pause and resume downloads if needed" = "Vous pouvez mettre les téléchargements en pause et les reprendre si besoin";
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Explore & Model Library                                                  */
+/* ───────────────────────────────────────────────────────────────────────── */
+"Discover and download local models" = "Découvrez et téléchargez des modèles locaux";
+"Section" = "Section";
+"Filter" = "Filtre";
+"Select All" = "Tout sélectionner";
+"Clear All" = "Tout effacer";
+"Vision-capable" = "Compatible vision";
+"Mixture-of-Experts" = "Mixture-of-Experts";
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Dataset Recommendation                                                   */
+/* ───────────────────────────────────────────────────────────────────────── */
+"Est. Time" = "Temps estim.";
+"Peak RAM" = "RAM maximale";
+"Things to keep in mind" = "Points à garder en tête";
+"Close other applications to free up RAM" = "Fermez les autres applications pour libérer de la RAM";
+"Larger datasets take exponentially more time" = "Les jeux de données plus grands prennent exponentiellement plus de temps";
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Noema Relay – status messages                                            */
+/* ───────────────────────────────────────────────────────────────────────── */
+"Relay stopped" = "Relais arrêté";
+"Loaded model ready" = "Modèle chargé et prêt";
+"Failed to load model" = "Échec du chargement du modèle";
+"Refreshing relay catalog…" = "Actualisation du catalogue du relais…";
+"Relay catalog refreshed" = "Catalogue du relais actualisé";
+"Failed to refresh catalog: %@" = "Échec de l'actualisation du catalogue : %@";
+"Updating LAN status…" = "Mise à jour de l'état du réseau local…";
+"Failed to update LAN status" = "Échec de la mise à jour de l'état du réseau local";
+"Activating %@…" = "Activation de %@…";
+"Relay switched to %@" = "Relais basculé sur %@";
+"Failed to activate %@" = "Échec de l'activation de %@";
+"Relay idle after ejecting %@" = "Relais inactif après éjection de %@";
+"Failed to eject %@" = "Échec de l'éjection de %@";
+"Checking exposed endpoints…" = "Vérification des endpoints exposés…";
+"Failed to start LAN server" = "Échec du démarrage du serveur LAN";
+"Starting relay…" = "Démarrage du relais…";
+"Starting relay… Offline: %@" = "Démarrage du relais… Hors ligne : %@";
+"Listening for conversations…" = "En écoute des conversations…";
+"iOS requested a relay switch. Start the relay to respond." = "iOS a demandé un changement de relais. Démarrez le relais pour répondre.";
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Noema Relay – Bluetooth & CloudKit                                       */
+/* ───────────────────────────────────────────────────────────────────────── */
+"Bluetooth ready to advertise" = "Bluetooth prêt à diffuser";
+"Warming up Bluetooth radio…" = "Préchauffage de la radio Bluetooth…";
+"Broadcasting relay details" = "Diffusion des détails du relais";
+"Pairing refreshed %@" = "Appairage actualisé %@";
+"Client Wi-Fi: %@" = "Wi-Fi du client : %@";
+"Last seen %@" = "Vu pour la dernière fois %@";
+"Checking iCloud availability…" = "Vérification de la disponibilité iCloud…";
+"CloudKit unavailable" = "CloudKit indisponible";
+"Connected to iCloud" = "Connecté à iCloud";
+"Sign in to iCloud to enable the relay" = "Connectez-vous à iCloud pour activer le relais";
+"iCloud access is restricted" = "L'accès à iCloud est restreint";
+"Unable to determine iCloud status" = "Impossible de déterminer l'état iCloud";
+"CloudKit status unknown" = "État CloudKit inconnu";
+"Set a CloudKit container identifier in RelayConfiguration.swift to publish the catalog." = "Définissez un identifiant de conteneur CloudKit dans RelayConfiguration.swift pour publier le catalogue.";
+"Verifying access to %@…" = "Vérification de l'accès à %@…";
+"Open System Settings → Apple ID and sign in with the same account as your iPhone or iPad." = "Ouvrez Réglages Système → Apple ID et connectez-vous avec le même compte que votre iPhone ou iPad.";
+"Screen Time or device management restrictions may be blocking iCloud access." = "Temps d'écran ou les restrictions de gestion d'appareil peuvent bloquer l'accès à iCloud.";
+"Check your internet connection and try again." = "Vérifiez votre connexion Internet et réessayez.";
+"Relay catalog is still syncing. Initial publishes typically finish within about 30 seconds after you start the relay." = "Le catalogue du relais est encore en synchronisation. Les premières publications se terminent généralement en 30 secondes environ après le démarrage du relais.";
+"Publishing catalog updates to CloudKit…" = "Publication des mises à jour du catalogue dans CloudKit…";
+"Catalog is live and ready for paired devices." = "Le catalogue est en ligne et prêt pour les appareils appairés.";
+"Start the relay to resume CloudKit updates." = "Démarrez le relais pour reprendre les mises à jour CloudKit.";
+"Waiting for the first catalog publish from this Mac." = "En attente de la première publication du catalogue depuis ce Mac.";
+"CloudKit reported an error while publishing the catalog. Restart the relay to retry." = "CloudKit a signalé une erreur lors de la publication du catalogue. Redémarrez le relais pour réessayer.";
+"Catalog version %@ synced %@." = "Version du catalogue %@ synchronisée %@.";
+"Catalog version %@ is ready." = "Version du catalogue %@ prête.";
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Noema Relay – exposure controls                                          */
+/* ───────────────────────────────────────────────────────────────────────── */
+"Hide every relay source from paired devices" = "Masquer toutes les sources relais des appareils appairés";
+"Expose every relay source to paired devices" = "Exposer toutes les sources relais aux appareils appairés";
+"auth" = "auth";
+"no auth" = "sans auth";
+"hidden" = "masqué";
+"unavailable" = "indisponible";
+"Eject button unloads relay model" = "Le bouton d'éjection décharge le modèle du relais";
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Working set & RAM                                                        */
+/* ───────────────────────────────────────────────────────────────────────── */
+"Working set estimate (%@): %@ @ %d tokens" = "Estimation de l'ensemble de travail (%@) : %@ @ %d tokens";
+"Select one or more .gguf files. For vision models, also select the projector .gguf (files containing ‘mmproj’ or ‘projector’). Files will be copied into your local model library." = "Sélectionnez un ou plusieurs fichiers .gguf. Pour les modèles de vision, sélectionnez aussi le fichier .gguf du projecteur (fichiers contenant « mmproj » ou « projector »). Les fichiers seront copiés dans votre bibliothèque de modèles locale.";
+"Could not connect to Ollama at localhost. When connecting from another device, replace \"localhost\" with your computer's IP address or hostname and start Ollama with `OLLAMA_HOST=0.0.0.0` so it can accept remote connections." = "Impossible de se connecter à Ollama sur localhost. Lors d'une connexion depuis un autre appareil, remplacez \"localhost\" par l'adresse IP ou le nom d'hôte de votre ordinateur et lancez Ollama avec `OLLAMA_HOST=0.0.0.0` pour qu'il accepte les connexions distantes.";
+
+/* Web Search & Vision Attachment Buttons */
+"Custom SearXNG URL" = "Custom SearXNG URL";
+"Using default: https://search.noemaai.com. Search requests are available without quotas." = "Using default: https://search.noemaai.com. Search requests are available without quotas.";
+"Using custom instance: %@" = "Using custom instance: %@";
+"Web Search Unavailable" = "Web Search Unavailable";
+"Tool Calling" = "Tool Calling";
+"Web Search is currently unreliable with MLX models due to MLX limitations." = "Web Search is currently unreliable with MLX models due to MLX limitations.";
+"This model does not support function calling; web search requires it." = "This model does not support function calling; web search requires it.";
+"Web search can't be used while a dataset is active or indexing." = "Web search can't be used while a dataset is active or indexing.";
+"Off‑Grid mode is on. Network features like web search are disabled." = "Off‑Grid mode is on. Network features like web search are disabled.";
+"Web Search is turned off in Settings." = "Web Search is turned off in Settings.";
+"Web Search is currently unavailable." = "Web Search is currently unavailable.";
+"Disabled: load a model in Stored first" = "Disabled: load a model in Stored first";
+"Disabled: MLX models can't use reliable web search right now" = "Disabled: MLX models can't use reliable web search right now";
+"Disabled: model lacks function calling support" = "Disabled: model lacks function calling support";
+"Disabled while using a dataset" = "Disabled while using a dataset";
+"Web search is currently unreliable on MLX due to platform limitations." = "Web search is currently unreliable on MLX due to platform limitations.";
+"This model does not advertise function calling support in its model card; web search is disabled." = "This model does not advertise function calling support in its model card; web search is disabled.";
+"Toggle web search tool. Uses SearXNG. Requires models with function calling support." = "Toggle web search tool. Uses SearXNG. Requires models with function calling support.";
+"Actions" = "Actions";
+"Add Photos" = "Add Photos";
+"Disable Web Search" = "Disable Web Search";
+"Enable Web Search" = "Enable Web Search";
+"More actions" = "More actions";
+"Vision Attachments Unavailable" = "Vision Attachments Unavailable";
+"Photo Access Needed" = "Photo Access Needed";
+"Camera Unavailable" = "Camera Unavailable";
+"Open Settings" = "Open Settings";
+"Allow photo access to show your recent pictures or use All Photos." = "Allow photo access to show your recent pictures or use All Photos.";
+"This device doesn't have a camera available. Try picking from All Photos instead." = "This device doesn't have a camera available. Try picking from All Photos instead.";
+"Vision features are disabled by configuration." = "Vision features are disabled by configuration.";
+"Load a model before attaching images." = "Load a model before attaching images.";
+"The active model can't process images." = "The active model can't process images.";
+"You've already attached the maximum of %d images." = "You've already attached the maximum of %d images.";
+"Vision attachments are currently unavailable." = "Vision attachments are currently unavailable.";
+"Disabled: %@" = "Disabled: %@";
+"Disabled: %1$@ %2$@" = "Disabled: %1$@ %2$@";
+"Open quick actions for photos and web search." = "Open quick actions for photos and web search.";
+"Add photos to your next message." = "Add photos to your next message.";
+"Add more photos or review attached images." = "Add more photos or review attached images.";
+"Attach up to %d images (order preserved). No resizing needed — llama.cpp preprocesses images automatically." = "Attach up to %d images (order preserved). No resizing needed — llama.cpp preprocesses images automatically.";
+"All Photos" = "All Photos";
+"Enabled" = "Enabled";
+"Disabled" = "Disabled";
+"No recent photos yet." = "No recent photos yet.";
+"Allow photo access to see recents." = "Allow photo access to see recents.";
+"Tap All Photos to choose manually." = "Tap All Photos to choose manually.";
+
+
+/* LM Studio remote endpoint download */
+"Download Model on Remote Endpoint" = "Télécharger le modèle sur le point de terminaison distant";
+"Remote endpoint download mode" = "Mode de téléchargement sur le point de terminaison distant";
+"New downloads from Explore will be sent to %@ until you clear this mode." = "Les nouveaux téléchargements depuis Explore seront envoyés vers %@ jusqu’à ce que vous désactiviez ce mode.";
+"New downloads from this screen will be sent to %@." = "Les nouveaux téléchargements depuis cet écran seront envoyés vers %@.";
+"Remote access is disabled in Off-Grid mode." = "L’accès distant est désactivé en mode Hors ligne.";
+"Remote endpoint download target is unavailable." = "La cible de téléchargement du point de terminaison distant est indisponible.";
+"Remote endpoint downloads currently support GGUF quantizations only." = "Les téléchargements sur point de terminaison distant prennent actuellement en charge uniquement les quantifications GGUF.";
+"Remote endpoint did not return a download job ID." = "Le point de terminaison distant n’a pas renvoyé d’identifiant de tâche de téléchargement.";
+"Downloading on remote endpoint" = "Téléchargement en cours sur le point de terminaison distant";
+"Download paused on remote endpoint" = "Téléchargement en pause sur le point de terminaison distant";
+"Downloaded on remote endpoint" = "Téléchargé sur le point de terminaison distant";
+"Remote download failed" = "Échec du téléchargement distant";
+"Already downloaded on remote endpoint" = "Déjà téléchargé sur le point de terminaison distant";
+"Downloaded on Remote Endpoint" = "Téléchargé sur le point de terminaison distant";
+"Unavailable" = "Indisponible";
+"Retry" = "Réessayer";
+"Clear" = "Effacer";
+"Remote model download failed." = "Le téléchargement du modèle distant a échoué.";
+"Remote model downloads are only supported for LM Studio endpoints." = "Les téléchargements de modèles distants sont pris en charge uniquement pour les points de terminaison LM Studio.";
+"Using system Python 3." = "Using system Python 3.";
+"Python runtime unavailable." = "Python runtime unavailable.";
+"Embedded Python runtime is missing from the app bundle." = "Embedded Python runtime is missing from the app bundle.";
+"Embedded Python standard library is missing from the app bundle." = "Embedded Python standard library is missing from the app bundle.";
+"Embedded Python runtime unavailable. Falling back to system Python 3." = "Embedded Python runtime unavailable. Falling back to system Python 3.";
+"System Python 3 is not available on this Mac." = "System Python 3 is not available on this Mac.";
+"Take Photo" = "Take Photo";
+"Opens the camera to attach a photo to your next message." = "Opens the camera to attach a photo to your next message.";
+"Recent photo %d" = "Recent photo %d";
+"Adds this photo to your next message." = "Adds this photo to your next message.";
+"Removes this photo from your next message." = "Removes this photo from your next message.";
+"Selected" = "Selected";
+"Dismiss" = "Ignorer";
+"Cancel Embedding?" = "Annuler l'intégration ?";
+"Cancel Embedding" = "Annuler l'intégration";
+"You can restart this process in the dataset details at any time." = "Vous pouvez redémarrer ce processus à tout moment depuis les détails du jeu de données.";
+"Embedding is resource intensive. For best performance, plug in your device. Do you want to proceed on battery?" = "L’intégration consomme beaucoup de ressources. Pour de meilleures performances, branchez votre appareil. Voulez-vous continuer sur batterie ?";
+"For best performance, please plug in your device until this completes." = "Pour de meilleures performances, veuillez brancher votre appareil jusqu'à la fin de l'opération.";
+"Ready to compute embeddings. Tap Confirm to start. For best performance, plug in your device." = "Prêt à calculer les intégrations. Touchez Confirmer pour commencer. Pour de meilleures performances, branchez votre appareil.";
+"Checking embedding model…" = "Vérification du modèle d'intégration…";
+"Downloading embedding model…" = "Téléchargement du modèle d'intégration…";
+"Warming up embedding model…" = "Initialisation du modèle d'intégration…";
+"Preparing chunks" = "Préparation des segments";
+"Embedding complete" = "Intégration terminée";
+"Failed to download embedding model: %@" = "Échec du téléchargement du modèle d'intégration : %@";
+"Failed to initialize" = "Échec de l'initialisation";
+"Extract" = "Extraire";
+"Compress" = "Compresser";
+"Embed" = "Intégrer";
+"Ready for use" = "Prêt à l'emploi";
+"No retrievable text found in imported files" = "Aucun texte exploitable n'a été trouvé dans les fichiers importés";
+"Extracting text from files (images ignored)" = "Extraction du texte à partir des fichiers (images ignorées)";
+"Normalizing whitespace and merging paragraphs" = "Normalisation des espaces et fusion des paragraphes";
+"Stopped" = "Arrêté";
+"%d%% · %@" = "%d%% · %@";
+"~%dm %02ds" = "~%dm %02ds";
+"Stop" = "Arrêter";
+"Proceed" = "Continuer";
+"Proceed on battery power?" = "Continuer sur batterie ?";
+"Extracting" = "Extraction";
+"Compressing" = "Compression";
+"Failed" = "Échec";
+"Memory" = "Memory";
+"Persistent Memory" = "Persistent Memory";
+"What is Persistent Memory?" = "What is Persistent Memory?";
+"Memory entries persist across conversations on this device. When enabled, tool-capable models can read or update them automatically." = "Memory entries persist across conversations on this device. When enabled, tool-capable models can read or update them automatically.";
+"Add Memory" = "Add Memory";
+"%d saved" = "%d saved";
+"No memories saved yet." = "No memories saved yet.";
+"When enabled, models can save durable facts like stable preferences or recurring project constraints to on-device memory that persists across conversations." = "When enabled, models can save durable facts like stable preferences or recurring project constraints to on-device memory that persists across conversations.";
+"Delete Memory" = "Delete Memory";
+"This permanently removes the selected memory entry." = "This permanently removes the selected memory entry.";
+"New Memory" = "New Memory";
+"Edit Memory" = "Edit Memory";
+"Memory Title" = "Memory Title";
+"Use memory for durable facts that should remain available in future conversations." = "Use memory for durable facts that should remain available in future conversations.";
+"No memory entries returned." = "No memory entries returned.";
+"Provide either an entry id or a title." = "Provide either an entry id or a title.";
+"Memory entry not found." = "Memory entry not found.";
+"A memory entry with that title already exists." = "A memory entry with that title already exists.";
+"Memory title cannot be empty." = "Memory title cannot be empty.";
+"Memory content cannot be empty." = "Memory content cannot be empty.";
+"The text to replace was not found in the memory entry." = "The text to replace was not found in the memory entry.";
+"Insert index is outside the memory entry content." = "Insert index is outside the memory entry content.";
+
+"Manage Memories" = "Manage Memories";
+"%d of %d saved" = "%d of %d saved";
+"Memory is full. Delete an entry to add another." = "Memory is full. Delete an entry to add another.";
+"Memories" = "Memories";
+"View, edit, or delete saved memories. This list is limited to 20 entries." = "View, edit, or delete saved memories. This list is limited to 20 entries.";
+"Up to %d memories can be stored across conversations on this device." = "Up to %d memories can be stored across conversations on this device.";
+"You can store up to 20 memory entries." = "You can store up to 20 memory entries.";
+
+"Memory limited: %d of %d preloaded" = "Memory limited: %d of %d preloaded";
+"Memory not preloaded" = "Memory not preloaded";
+"Memory Limited" = "Memory Limited";
+"Memory Not Preloaded" = "Memory Not Preloaded";
+"Only %d of %d saved memories were preloaded for this turn. The remaining memories were skipped so the current model stays within its context budget." = "Only %d of %d saved memories were preloaded for this turn. The remaining memories were skipped so the current model stays within its context budget.";
+"Saved memories were not preloaded for this turn because the current model's context budget is too small." = "Saved memories were not preloaded for this turn because the current model's context budget is too small.";
+"System Prompt Intro" = "System Prompt Intro";
+"Edit only Noema's opening instructions. Tool, retrieval, memory, date/time, styling, and safety instructions are managed by Noema and cannot be edited here. If this field is left blank, Noema uses the default intro." = "Edit only Noema's opening instructions. Tool, retrieval, memory, date/time, styling, and safety instructions are managed by Noema and cannot be edited here. If this field is left blank, Noema uses the default intro.";
+"System Prompt" = "System Prompt";
+"Model System Prompt" = "Model System Prompt";
+"Use Global Default" = "Use Global Default";
+"Use Model Prompt" = "Use Model Prompt";
+"Exclude Global Default" = "Exclude Global Default";
+"Uses the default system prompt from Settings for this model." = "Uses the default system prompt from Settings for this model.";
+"Use a model-specific prompt instead of the shared Settings prompt." = "Use a model-specific prompt instead of the shared Settings prompt.";
+"Skip the editable Settings prompt for this model while keeping Noema's built-in system guidance." = "Skip the editable Settings prompt for this model while keeping Noema's built-in system guidance.";
+"Reset System Prompt" = "Reset System Prompt";
+"Restore Noema's default system prompt? Your custom text will be replaced." = "Restore Noema's default system prompt? Your custom text will be replaced.";
+"Reset System Prompt Intro" = "Reset System Prompt Intro";
+"Restore Noema's default opening instructions? Your custom intro will be replaced, but the protected Noema-managed instructions remain unchanged." = "Restore Noema's default opening instructions? Your custom intro will be replaced, but the protected Noema-managed instructions remain unchanged.";
+"Reset to Default" = "Reset to Default";
+"Return Key Sends" = "La touche Retour envoie";
+"Return Inserts New Line" = "Retour insere une nouvelle ligne";
+"Return inserts a new line. Use the Send button to send." = "Retour insere une nouvelle ligne. Utilisez le bouton Envoyer pour envoyer.";
+"Return sends your message instead of inserting a new line." = "Retour envoie votre message au lieu d'inserer une nouvelle ligne.";
+"Return inserts a new line. Use Command-Return or the Send button to send." = "Retour insere une nouvelle ligne. Utilisez Commande-Retour ou le bouton Envoyer pour envoyer.";
+"Return sends your message." = "Retour envoie votre message.";
+"Return Key Behavior" = "Comportement de la touche Retour";
+"Download Cleanup Complete" = "Download Cleanup Complete";
+"Clean Download Leftovers" = "Clean Download Leftovers";
+"Cleaning Download Leftovers…" = "Cleaning Download Leftovers…";
+"Remove incomplete downloads, stale resume data, and temporary download files without deleting installed models or datasets." = "Remove incomplete downloads, stale resume data, and temporary download files without deleting installed models or datasets.";
+"Removed %1$d temporary file(s), %2$d resume item(s), and %3$d stale download record(s). Repaired %4$d download artifact(s)." = "Removed %1$d temporary file(s), %2$d resume item(s), and %3$d stale download record(s). Repaired %4$d download artifact(s).";
+"Sampling unavailable for Argmax models" = "L'echantillonnage n'est pas disponible pour les modeles Argmax";
+"Configured context" = "Configured context";
+"Reserved for response" = "Reserved for response";
+"Usable prompt budget" = "Usable prompt budget";

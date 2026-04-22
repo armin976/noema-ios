@@ -7,21 +7,25 @@ import Foundation
 public final class ToolRegistrar {
     public static let shared = ToolRegistrar()
     private var isInitialized = false
+    private var isInitializing = false
     
     private init() {}
     
     public func initializeTools() async {
-        guard !isInitialized else { return }
+        guard !isInitialized, !isInitializing else { return }
+        isInitializing = true
+        defer { isInitializing = false }
         
         await logger.log("[ToolRegistrar] Initializing tools...")
         
         // Register web search tool
         await registerWebSearchTool()
-        
-        // Add more tools here as they become available
-        // registerDatasetSearchTool()
-        // registerCodeAnalysisTool()
-        // registerCalculatorTool()
+
+        // Register Python code execution tool
+        await registerPythonTool()
+
+        // Register persistent memory tool
+        await registerMemoryTool()
         
         isInitialized = true
         await logger.log("[ToolRegistrar] Tool initialization complete. Registered tools: \(ToolRegistry.shared.registeredToolNames)")
@@ -32,63 +36,81 @@ public final class ToolRegistrar {
         ToolRegistry.shared.register(webTool)
         await logger.log("[ToolRegistrar] Registered WebRetrieveTool (SearXNG)")
     }
+
+    private func registerPythonTool() async {
+        let pythonTool = PythonTool()
+        ToolRegistry.shared.register(pythonTool)
+        await logger.log("[ToolRegistrar] Registered PythonTool")
+    }
+
+    private func registerMemoryTool() async {
+        let memoryTool = MemoryTool()
+        ToolRegistry.shared.register(memoryTool)
+        await logger.log("[ToolRegistrar] Registered MemoryTool")
+    }
 }
 
 // MARK: - Tool Factory
 
 public struct ToolFactory {
-    
-    // Factory method for creating tool instances with proper configuration
+
     public static func createWebSearchTool() -> WebRetrieveTool {
         return WebRetrieveTool()
     }
-    
-    // Add more factory methods for other tools as needed
-    /*
-    public static func createDatasetSearchTool() -> DatasetSearchTool {
-        // Implementation for dataset search tool
+
+    public static func createPythonTool() -> PythonTool {
+        return PythonTool()
     }
-    
-    public static func createCodeAnalysisTool() -> CodeAnalysisTool {
-        // Implementation for code analysis tool
+
+    public static func createMemoryTool() -> MemoryTool {
+        return MemoryTool()
     }
-    */
 }
 
 // MARK: - Tool Configuration
 
 public struct ToolConfiguration {
     public let webSearchEnabled: Bool
+    public let pythonEnabled: Bool
+    public let memoryEnabled: Bool
     public let offlineMode: Bool
     public let maxToolTurns: Int
     public let toolTimeout: TimeInterval
-    
+
     public init(
         webSearchEnabled: Bool = true,
+        pythonEnabled: Bool = true,
+        memoryEnabled: Bool = true,
         offlineMode: Bool = false,
         maxToolTurns: Int = 4,
         toolTimeout: TimeInterval = 30.0
     ) {
         self.webSearchEnabled = webSearchEnabled
+        self.pythonEnabled = pythonEnabled
+        self.memoryEnabled = memoryEnabled
         self.offlineMode = offlineMode
         self.maxToolTurns = maxToolTurns
         self.toolTimeout = toolTimeout
     }
-    
+
     public static var `default`: ToolConfiguration {
         return ToolConfiguration()
     }
-    
+
     public static func fromUserDefaults() -> ToolConfiguration {
         let defaults = UserDefaults.standard
-        
+
         let webSearchEnabled = defaults.object(forKey: "webSearchEnabled") as? Bool ?? true
+        let pythonEnabled = defaults.object(forKey: "pythonEnabled") as? Bool ?? true
+        let memoryEnabled = defaults.object(forKey: "memoryEnabled") as? Bool ?? true
         let offlineMode = defaults.object(forKey: "offGrid") as? Bool ?? false
         let maxToolTurns = defaults.object(forKey: "maxToolTurns") as? Int ?? 4
         let toolTimeout = defaults.object(forKey: "toolTimeout") as? TimeInterval ?? 30.0
-        
+
         let cfg = ToolConfiguration(
             webSearchEnabled: webSearchEnabled,
+            pythonEnabled: pythonEnabled,
+            memoryEnabled: memoryEnabled,
             offlineMode: offlineMode,
             maxToolTurns: maxToolTurns,
             toolTimeout: toolTimeout
@@ -120,13 +142,20 @@ public final class ToolManager {
             await ToolRegistrar.shared.initializeTools()
         }
     }
+
+    private func resolvedConfiguration() -> ToolConfiguration {
+        let latest = ToolConfiguration.fromUserDefaults()
+        configuration = latest
+        return latest
+    }
     
     public func createToolLoop(for backend: any ToolCapableLLM) async -> ToolLoop {
+        let config = resolvedConfiguration()
         let registry = await ToolRegistry.shared
         let toolLoop = ToolLoop(
             llm: backend,
             registry: registry,
-            maxToolTurns: configuration.maxToolTurns,
+            maxToolTurns: config.maxToolTurns,
             temperature: 0.7
         )
         
@@ -135,13 +164,19 @@ public final class ToolManager {
     }
     
     public func isToolAvailable(_ toolName: String) async -> Bool {
-        guard !configuration.offlineMode else { return false }
-        
+        let configuration = resolvedConfiguration()
         switch toolName {
         case "noema.web.retrieve":
+            guard !configuration.offlineMode else { return false }
             // Use gate and require function-calling support by model card/capability detector
             return configuration.webSearchEnabled && WebToolGate.isAvailable(currentFormat: nil)
+        case "noema.python.execute":
+            // Python is local — no offline restriction
+            return configuration.pythonEnabled && PythonToolGate.isAvailable(currentFormat: nil)
+        case "noema.memory":
+            return configuration.memoryEnabled && MemoryToolGate.isAvailable(currentFormat: nil)
         default:
+            guard !configuration.offlineMode else { return false }
             let registry = await ToolRegistry.shared
             return registry.tool(named: toolName) != nil
         }
@@ -149,6 +184,7 @@ public final class ToolManager {
     
     public var availableTools: [String] {
         get async {
+            _ = resolvedConfiguration()
             let registry = await ToolRegistry.shared
             var tools: [String] = []
             for toolName in registry.registeredToolNames {

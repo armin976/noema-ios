@@ -1,15 +1,16 @@
 // ArchitectureTemplates.swift
 import Foundation
+import NoemaPackages
 
 /// Curated Jinja chat templates for specific model architectures.
-/// These are prioritized for GGUF and MLX models; if none match, we fall back
+/// These are prioritized for GGUF, MLX, and CML text models; if none match, we fall back
 /// to existing config/tokenizer/GGUF metadata or family heuristics.
 enum ArchitectureTemplates {
     /// Returns a curated Jinja chat template string for the given local model
-    /// when the format is GGUF or MLX. Returns nil when no curated mapping applies.
+    /// when the format is GGUF, MLX, or CML. Returns nil when no curated mapping applies.
     static func template(for model: LocalModel) -> String? {
         let format = model.format
-        guard format == .gguf || format == .mlx else { return nil }
+        guard format == .gguf || format == .mlx || format == .ane else { return nil }
         // Use the best-guess identifier based on file/folder name
         let ident = model.url.deletingPathExtension().lastPathComponent.lowercased()
 
@@ -22,6 +23,10 @@ enum ArchitectureTemplates {
         // DeepSeek R1 Distill on Llama: use DeepSeek markers with Llama-style generation prompt
         if ident.contains("deepseek") && ident.contains("distill") && ident.contains("llama") {
             return Templates.deepseekR1DistillOnLlama
+        }
+
+        if TemplateDrivenModelSupport.isQwen35(modelID: model.modelID, modelURL: model.url) {
+            return nil
         }
 
         // Qwen3 family

@@ -32,7 +32,7 @@ final class ToolEnabledBackendRouter {
                 throw NSError(
                     domain: "Noema",
                     code: -3,
-                    userInfo: [NSLocalizedDescriptionKey: "MLX models require A13+ GPU on this device. For best performance, use SLM (Leap) models; otherwise use GGUF."]
+                    userInfo: [NSLocalizedDescriptionKey: "MLX models require A13+ GPU on this device. For best performance, use ET models; otherwise use GGUF."]
                 )
             }
             var b = EnhancedMLXBackend()

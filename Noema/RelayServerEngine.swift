@@ -679,6 +679,7 @@ actor RelayServerEngine {
         guard case .local(let model) = descriptor.kind else {
             throw InferenceError.notConfigured
         }
+        NotificationCenter.default.post(name: .relayWillLoadLocalModel, object: nil)
         applyEnvironmentVariables(from: descriptor.settings)
 
         let client: AnyLLMClient
@@ -708,10 +709,12 @@ actor RelayServerEngine {
             client = AnyLLMClient(llama)
         case .mlx:
             client = try await MLXBridge.makeTextClient(url: model.url, settings: descriptor.settings)
-        case .slm:
-            throw InferenceError.other("Leap SLM models are not supported by relay yet")
-        case .apple:
+        case .et:
+            throw InferenceError.other("ET models are not supported by relay yet")
+        case .ane:
             throw InferenceError.other("Apple Core ML models are not supported by relay")
+        case .afm:
+            throw InferenceError.other("Apple Foundation Models are not supported by relay")
         }
 
         var entry = LoadedClient(client: client, descriptor: descriptor, lastUsed: Date(), evictionTask: nil)
@@ -734,6 +737,7 @@ actor RelayServerEngine {
             unsetenv("LLAMA_KV_OFFLOAD")
             unsetenv("LLAMA_MMAP")
             unsetenv("LLAMA_KEEP")
+            unsetenv("LLAMA_WARMUP")
             unsetenv("LLAMA_SEED")
             unsetenv("LLAMA_FLASH_ATTENTION")
             unsetenv("LLAMA_V_QUANT")
@@ -768,6 +772,11 @@ actor RelayServerEngine {
         setenv("LLAMA_KV_OFFLOAD", kvOffload ? "1" : "0", 1)
         setenv("LLAMA_MMAP", settings.useMmap ? "1" : "0", 1)
         setenv("LLAMA_KEEP", settings.keepInMemory ? "1" : "0", 1)
+        if settings.disableWarmup {
+            setenv("LLAMA_WARMUP", "0", 1)
+        } else {
+            unsetenv("LLAMA_WARMUP")
+        }
 
         if let seed = settings.seed {
             setenv("LLAMA_SEED", String(seed), 1)
@@ -1017,7 +1026,6 @@ actor RelayServerEngine {
         var finishReason = "stop"
         var tokenCount = 0
         let stopSequences = parameters.stop
-        let maxTokens = parameters.maxTokens
         var shouldCancel = false
 
         do {
@@ -1025,11 +1033,6 @@ actor RelayServerEngine {
                 tokenCount += 1
                 buffer.append(chunk)
                 yield?(chunk)
-                if let maxTokens, tokenCount >= maxTokens {
-                    finishReason = "length"
-                    shouldCancel = true
-                    break
-                }
                 if let match = stopSequences.first(where: { buffer.hasSuffix($0) }) {
                     buffer.removeLast(match.count)
                     finishReason = "stop"
@@ -1106,16 +1109,21 @@ actor RelayServerEngine {
         guard case .local(let model) = descriptor.kind else { return }
         guard needsLoopback(for: descriptor) else { return }
         LlamaServerBridge.stop()
+        let resolvedMMProj = explicitMMProj ?? ProjectorLocator.projectorPath(alongside: model.url)
         let port = LlamaServerBridge.start(
-            host: "127.0.0.1",
-            preferredPort: 0,
-            ggufPath: model.url.path,
-            mmprojPath: explicitMMProj
+            TemplateDrivenModelSupport.loopbackStartConfiguration(
+                modelID: model.modelID,
+                modelURL: model.url,
+                ggufPath: model.url.path,
+                mmprojPath: resolvedMMProj
+            )
         )
         if port > 0 {
-            let projName = explicitMMProj.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "merged"
+            let projName = resolvedMMProj.map { URL(fileURLWithPath: $0).lastPathComponent }
+                ?? (GGUFMetadata.hasMultimodalProjector(at: model.url) ? "merged" : "none")
+            let templateLabel = TemplateDrivenModelSupport.templateLabel(modelID: model.modelID, modelURL: model.url)
             RelayLog.record(category: "RelayServerEngine",
-                            message: "Loopback vision server started on 127.0.0.1:\(port) (\(projName))",
+                            message: "Loopback vision server started on 127.0.0.1:\(port) (\(projName)) template=\(templateLabel)",
                             suppressConsole: true)
         } else {
             RelayLog.record(category: "RelayServerEngine",
